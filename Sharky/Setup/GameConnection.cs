@@ -8,11 +8,39 @@
         string starcraftExe;
         string starcraftDir;
 
+        public GameConnection()
+        {
+            try
+            {
+                readSettings();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"GameConnection: Warning - readSettings failed in constructor: {ex.Message}");
+            }
+        }
+
         public void StartSC2Instance(int port)
         {
             var processStartInfo = new ProcessStartInfo(starcraftExe);
             processStartInfo.Arguments = String.Format("-listen {0} -port {1} -displayMode 0", address, port);
-            processStartInfo.WorkingDirectory = FilePath.Combine(starcraftDir, "Support64");
+            var supportDir = FilePath.Combine(starcraftDir, "Support64");
+            processStartInfo.WorkingDirectory = supportDir;
+
+            // Add support and version directories to the PATH so DLLs like iccuc52.dll are found
+            var exeDir = FilePath.GetDirectoryName(starcraftExe);
+            var path = Environment.GetEnvironmentVariable("PATH");
+            if (!path.Contains(supportDir))
+            {
+                path = supportDir + ";" + path;
+            }
+            if (!path.Contains(exeDir))
+            {
+                path = exeDir + ";" + path;
+            }
+            processStartInfo.EnvironmentVariables["PATH"] = path;
+            processStartInfo.UseShellExecute = false;
+
             Process.Start(processStartInfo);
         }
 
@@ -83,6 +111,20 @@
                     {
                         starcraftExe = argument;
                         starcraftDir = FilePath.GetDirectoryName(FilePath.GetDirectoryName(FilePath.GetDirectoryName(starcraftExe)));
+
+                        // Add SC2 DLL directories to the current process path so native dependencies like iccuc52.dll are found
+                        var supportDir = FilePath.Combine(starcraftDir, "Support64");
+                        var exeDir = FilePath.GetDirectoryName(starcraftExe);
+                        var path = Environment.GetEnvironmentVariable("PATH");
+                        if (!path.Contains(supportDir))
+                        {
+                            path = supportDir + ";" + path;
+                        }
+                        if (!path.Contains(exeDir))
+                        {
+                            path = exeDir + ";" + path;
+                        }
+                        Environment.SetEnvironmentVariable("PATH", path);
                     }
                 }
             }
@@ -261,6 +303,10 @@
                 }
 
                 var actions = bot.OnFrame(observation);
+                    //System.Diagnostics.Debugger.Break();
+
+            
+
 
                 var generatedActions = actions.Count();
                 actions = actions.Where(action => action?.ActionRaw?.UnitCommand?.UnitTags == null ||

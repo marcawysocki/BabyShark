@@ -1,0 +1,20 @@
+We need check if M1 or M2 is the Large Mineral.  Team T-Teal first target, We make that Mineral TA. The far Mineral between M1 and M2 will be TB  We need to Find T1 between W2, W3,W4. The Worker closesr to TA. If W4 is T1 then W3 is T3 and W2 is T2. If W2 is T1 then W3 is T3. If W3 is T1 then between W4 and W2, the closest to TB becomes T2 and the remainder is T3 Next, we need an average point of T1 and T3 we draw a line from that point to the TA Mineral.  I think if Both T1 and T3 both aim at points on the line, perhaps T1 issues a move to half the distance towards the mineral and T3 aims for a quarter the distance then T3 will try to move behind T1 and T1 should accerate towards the Mineral.
+
+If RL Matrix Learned different bumps, pushes, angles, and moves and measured the improvements.
+
+That's just Team T-Teal, the are a lot of points and conditions that need to be stored for each map and spawn location  
+For Now, I would like to turn off Machine Learning and reserve that for a later release edition.
+
+Team S-Salmon That will be M3 and M4 and W5 and W6, They will become Minerals SA Large and SB far, and S1 and S2. S2 will be bumping from behind and then breaking off towards SB after an initial Bump.
+
+Team B-Blue, M5,M6 and W7 and W8 act under the simular relative rules as Team M.
+
+Team Y-Yellow, M7, M8, W9,W10,W11.  If W9 is closest to YB then it becomes Y2, W10 is Y1, and W11 is Y3.  If W11 is closest to YB then between W9 and W10 the closest to WA is W1 and the remainder W3
+
+W1 will be S3 and W12 will be B3
+
+Per Map and Per Spawn Location  we need to store the original W12 thru W1 labels and the final Team assignment labels.  THe Minerals by X,Y and their final Team label.  Booleans based on conditions like Settings.Teal-M1-is-TA, Settings.Yellow-M8-is-YB.  I will know more as we code the mining part.  If we have bools set in BaseDto then respawns have less testing logic.
+
+The initial mining will have T1 Move to the half way point of the common line it has with T3 and T3 will move a quarter distance down that line. On Frame will keep checking if T1 is close enough to mine or new points moved to.  T2 will keep moving towards TB until close enough to mine. Finally T3 gets in position to mine when T1 completes.  Yellow works the same way.  Blue and Salmon have a common line between the 1's and 2's. The 2's initiate a bump then break off to the B minerals. The 3's arrive before the 1's complete mining.
+
+The four teams will have 4 common bumping lines and goto points along the lines that will likely change with testing.

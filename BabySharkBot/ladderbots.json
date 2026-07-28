@@ -1,0 +1,10 @@
+{
+  "Bots": {
+    "BabySharkBot": {
+      "Race": "Zerg",
+      "Type": "dotnetcore",
+      "RootPath": "./",
+      "FileName": "BabySharkBot.dll"
+    }
+  }
+}

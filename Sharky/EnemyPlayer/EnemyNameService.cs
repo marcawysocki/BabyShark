@@ -4,6 +4,11 @@
     {
         public string GetNameFromGame(Game game, List<EnemyPlayer> enemies)
         {
+            if (game?.EnemyChat == null)
+            {
+                return string.Empty;
+            }
+
             foreach (var chat in game.EnemyChat)
             {
                 var name = GetNameFromChat(chat.Value, enemies);
@@ -12,6 +17,7 @@
                     return name;
                 }
             }
+
             return string.Empty;
         }
 

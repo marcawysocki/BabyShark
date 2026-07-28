@@ -1,0 +1,4 @@
+Repository: https://github.com/sharknice/Sharky
+Vendored commit: <replace-with-commit-hash>
+Vendored date: 2025-12-03
+How obtained: cloned locally; maintainer confirmed permission via Discord DM (see MAINTAINER_CONFIRMATION.txt and maintainer-confirmation.png)

@@ -1,0 +1,53 @@
+# Third-Party Licenses
+
+This file collects licenses and attribution for third-party code/data vendored or referenced by this repository.
+Include the original copyright and permission notice for each third-party component you redistribute or embed.
+
+---
+
+## Sharky (sharknice/Sharky)
+- Source: https://github.com/sharknice/Sharky
+- Vendored path: vendor/Sharky/
+- Commit: <commit-hash>
+- Maintainer confirmation: "you can do whatever you want with it" — sharknice (Discord DM), 2025-12-03. Screenshot saved at vendor/Sharky/maintainer-confirmation.png. MAINTAINER_CONFIRMATION.txt included.
+- License applied to vendored snapshot by Marc A Wysocki: MIT (see vendor/Sharky/LICENSE).
+
+
+
+## BurnySC2 (sc2-techtree)
+- Source: https://github.com/BurnySc2/sc2-techtree
+- Local path (suggested): `BurnySC2/`
+- Notes: Used as a data source for tech-tree / unit/build costs. When importing data or code from this project keep the copyright + permission notice below in any redistributed files.
+
+Copyright (c) 2019 Hannes Karppila
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+---
+
+## How to add an entry
+1. Add the third-party source directory under a vendor subfolder (e.g., `BurnySC2/`) or note the external package + version.
+2. Copy the original copyright/permission notice into this file (or into a license file inside the vendor folder) — do **not** remove or alter the original notice.
+3. Add a short note describing how you used the asset (data import, direct vendoring, runtime dependency) and the source URL and commit/tag if available.
+4. If you generate derived artifacts (converted JSON, generated C#), add an attribution line in the generated file header referencing the original source and this license file.
+
+---
+
+(End of file)

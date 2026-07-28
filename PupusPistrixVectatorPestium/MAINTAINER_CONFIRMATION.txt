@@ -1,0 +1,7 @@
+ vendor/Sharky/MAINTAINER_CONFIRMATION.txt
+Source: https://github.com/sharknice/Sharky
+Maintainer: sharknice
+Saved message (screenshot retained in vendor/Sharky/maintainer-confirmation.png):
+  "you can do whatever you want with it" — sharknice, 2025-12-03 (Discord DM screenshot)
+Saved by: Marc A Wysocki
+Notes: Maintainer gave explicit permission to copy, modify, and redistribute. Keep this file and the screenshot with the vendored snapshot.

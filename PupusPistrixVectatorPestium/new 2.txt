@@ -1,0 +1,315 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using MemoryPack;
+using Newtonsoft.Json;
+using SC2APIProtocol;
+using MemoryPack; // Add this line
+
+namespace Maw.Managers
+{
+    public class InitialMapData
+    {
+        public BaseLocationData GetNewMiningData(ResponseGameInfo gameInfo, ResponseData data, ResponseObservation observation, Point2D startLoc)
+        {
+            Console.WriteLine("InitialMapData: GetNewMiningData called");
+
+            var mineralTypes = new HashSet<UnitTypes>
+            {
+                UnitTypes.NEUTRAL_MINERALFIELD,
+                UnitTypes.NEUTRAL_MINERALFIELD750,
+                UnitTypes.NEUTRAL_RICHMINERALFIELD,
+                UnitTypes.NEUTRAL_RICHMINERALFIELD750,
+                UnitTypes.NEUTRAL_PURIFIERMINERALFIELD,
+                UnitTypes.NEUTRAL_PURIFIERMINERALFIELD750,
+                UnitTypes.NEUTRAL_PURIFIERRICHMINERALFIELD,
+                UnitTypes.NEUTRAL_PURIFIERRICHMINERALFIELD750,
+                UnitTypes.NEUTRAL_LABMINERALFIELD,
+                UnitTypes.NEUTRAL_LABMINERALFIELD750,
+                UnitTypes.NEUTRAL_BATTLESTATIONMINERALFIELD,
+                UnitTypes.NEUTRAL_BATTLESTATIONMINERALFIELD750
+            };
+
+            var vespeneTypes = new HashSet<UnitTypes>
+            {
+                UnitTypes.NEUTRAL_VESPENEGEYSER,
+                UnitTypes.NEUTRAL_RICHVESPENEGEYSER,
+                UnitTypes.NEUTRAL_PURIFIERVESPENEGEYSER
+            };
+
+            // Lists will be populated in a single pass after we have start locations
+            // so that units may also be assigned to their nearest start when needed.
+            var mineralList = new List<Vector2Dto>();
+            var vespeneList = new List<Vector2Dto>();
+            // Temporary list of starting workers (positions) discovered in the raw units scan
+            var workerList = new List<Vector2Dto>();
+
+            // Extract all start locations from the game info
+
+            var startLocations = new List<Vector2Dto>();
+            int startLocationIndex = 0;
+            if (gameInfo?.StartRaw?.StartLocations != null)
+            {
+                for (int i = 0; i < gameInfo.StartRaw.StartLocations.Count; i++)
+                {
+                    var loc = gameInfo.StartRaw.StartLocations[i];
+                    var dto = new Vector2Dto(loc.X, loc.Y);
+                    startLocations.Add(dto);
+
+                    // Check if this location matches the player's start location
+                    if (Math.Abs(loc.X - startLoc.X) < 0.01f && Math.Abs(loc.Y - startLoc.Y) < 0.01f)
+                    {
+                        startLocationIndex = i + 1; // 1-based index
+                    }
+                }
+            }
+
+            // Use engine-provided start locations from ResponseGameInfo.StartRaw as authoritative.
+            // Do not fallback to external sources here; Maw-only runs rely on the API.
+
+            // Debug: print discovered start locations and player start index
+            try
+            {
+                Console.WriteLine($"InitialMapData: discovered {startLocations.Count} start locations");
+                for (int i = 0; i < startLocations.Count; i++)
+                {
+                    var s = startLocations[i];
+                    Console.WriteLine($"InitialMapData: StartLocation[{i}] = X={s.X:F2}, Y={s.Y:F2}");
+                }
+                Console.WriteLine($"InitialMapData: player StartLocationIndex = {startLocationIndex}");
+            }
+            catch { }
+
+            // No inference or fallbacks allowed here; rely strictly on gameInfo.StartRaw.StartLocations.
+
+            // Single-pass unit scan: collect minerals, vespene, and workers, and map
+            // discovered start units to nearest start location for later use.
+            var discoveredStartUnits = new Dictionary<int, List<Unit>>();
+            for (int i = 0; i < startLocations.Count; i++) discoveredStartUnits[i] = new List<Unit>();
+
+            if (observation?.Observation?.RawData?.Units != null)
+            {
+                foreach (var unit in observation.Observation.RawData.Units)
+                {
+                    try
+                    {
+                        if (unit?.Pos == null) continue;
+                        var ut = (UnitTypes)unit.UnitType;
+                        if (mineralTypes.Contains(ut))
+                        {
+                            mineralList.Add(new Vector2Dto(unit.Pos.X, unit.Pos.Y));
+                        }
+                        else if (vespeneTypes.Contains(ut))
+                        {
+                            vespeneList.Add(new Vector2Dto(unit.Pos.X, unit.Pos.Y));
+                        }
+                        else if (ut == UnitTypes.ZERG_DRONE || ut == UnitTypes.TERRAN_SCV || ut == UnitTypes.PROTOSS_PROBE)
+                        {
+                            workerList.Add(new Vector2Dto(unit.Pos.X, unit.Pos.Y));
+                        }
+
+                        // If this is a self starting unit, map it to nearest start index
+                        if (unit.Alliance == Alliance.Self)
+                        {
+                            int bestIdx = -1; double bestD = double.MaxValue;
+                            for (int si = 0; si < startLocations.Count; si++)
+                            {
+                                var s = startLocations[si];
+                                var d = Math.Sqrt(Math.Pow(unit.Pos.X - s.X, 2) + Math.Pow(unit.Pos.Y - s.Y, 2));
+                                if (d < bestD) { bestD = d; bestIdx = si; }
+                            }
+                            if (bestIdx >= 0 && bestD <= 9f)
+                            {
+                                if (ut == UnitTypes.ZERG_HATCHERY || ut == UnitTypes.ZERG_OVERLORD || ut == UnitTypes.ZERG_LARVA || ut == UnitTypes.ZERG_DRONE)
+                                {
+                                    discoveredStartUnits[bestIdx].Add(unit);
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            // (start-location mineral centers are computed after we determine the
+            // global main mineral center-of-mass below)
+
+            // Filter minerals and vespene within distance 9 from start location
+            const float mainDistance = 9f;
+            var mainMinerals = mineralList.Where(m => 
+                Math.Sqrt(Math.Pow(m.X - startLoc.X, 2) + Math.Pow(m.Y - startLoc.Y, 2)) < mainDistance).ToList();
+            var mainVespene = vespeneList.Where(v => 
+                Math.Sqrt(Math.Pow(v.X - startLoc.X, 2) + Math.Pow(v.Y - startLoc.Y, 2)) < mainDistance).ToList();
+
+            // Calculate center of mass for main minerals
+            Vector2Dto mineralCenterOfMass = null;
+            if (mainMinerals.Count > 0)
+            {
+                float avgX = mainMinerals.Average(m => m.X);
+                float avgY = mainMinerals.Average(m => m.Y);
+                mineralCenterOfMass = new Vector2Dto(avgX, avgY);
+            }
+
+            // For each declared start location, compute the mineral center-of-mass
+            // of nearby mineral patches so we can persist this per-start data for
+            // future runs (avoids recomputing map geometry every game). Always
+            // produce a Vector2Dto per start location (no nulls).
+            var startLocationMineralCenters = new List<Vector2Dto>();
+            foreach (var sl in startLocations)
+            {
+                var nearby = mineralList.Where(m =>
+                    Math.Sqrt(Math.Pow(m.X - sl.X, 2) + Math.Pow(m.Y - sl.Y, 2)) < mainDistance).ToList();
+
+                if (nearby.Count > 0)
+                {
+                    float sx = nearby.Average(m => m.X);
+                    float sy = nearby.Average(m => m.Y);
+                    startLocationMineralCenters.Add(new Vector2Dto(sx, sy));
+                }
+                else
+                {
+                    if (mineralCenterOfMass != null)
+                        startLocationMineralCenters.Add(new Vector2Dto(mineralCenterOfMass.X, mineralCenterOfMass.Y));
+                    else
+                        startLocationMineralCenters.Add(new Vector2Dto(sl.X, sl.Y));
+                }
+            }
+
+            // Populate a BaseLocationData DTO with the mineral and vespene patches so callers can use it immediately
+            var baseData = new BaseLocationData()
+            {
+                Version = Settings.SpeedMiningVersion ?? "0",
+                StartLocations = startLocations,
+                StartLocationIndex = startLocationIndex,
+                MineralPatches = mineralList,
+                VespenePatches = vespeneList,
+                MainMinerals = mainMinerals,
+                MainVespene = mainVespene,
+                MineralCenterOfMass = mineralCenterOfMass,
+                StartLocationMineralCenters = startLocationMineralCenters
+            };
+
+            // Ensure there's a per-start placeholder for StartingUnitsByStartLocation
+            // so saved records remain stable even when workers haven't been assigned
+            // for every start location yet.
+            if (baseData.StartingUnitsByStartLocation == null)
+                baseData.StartingUnitsByStartLocation = new List<List<WorkerEntryDto>>();
+
+            for (int i = 0; i < baseData.StartLocations.Count; i++)
+            {
+                // Add empty list placeholders if not already present
+                if (i >= baseData.StartingUnitsByStartLocation.Count)
+                {
+                    baseData.StartingUnitsByStartLocation.Add(new List<WorkerEntryDto>());
+                }
+                var list = baseData.StartingUnitsByStartLocation[i];
+                if (list.Count == 0)
+                {
+                    // Use the per-start mineral center as a reasonable placeholder position
+                    var pos = startLocationMineralCenters.Count > i ? startLocationMineralCenters[i] : baseData.StartLocations[i];
+
+                    // Try to infer the actual starting composition from this observation
+                    // (useful on the first play when real units are present). Fall back
+                    // to any previously persisted composition for this start index, and
+                    // finally to a safe default.
+                    int hatcheryCount = 0;
+                    int overlordCount = 0;
+                    int larvaCount = 0;
+                    int droneCount = 0;
+
+                    try
+                    {
+                        if (observation?.Observation?.RawData?.Units != null)
+                        {
+                            var nearbyUnits = observation.Observation.RawData.Units.Where(u => u != null && u.Pos != null &&
+                                Math.Sqrt(Math.Pow(u.Pos.X - baseData.StartLocations[i].X, 2) + Math.Pow(u.Pos.Y - baseData.StartLocations[i].Y, 2)) < mainDistance
+                                && u.Alliance == Alliance.Self).ToList();
+
+                            hatcheryCount = nearbyUnits.Count(u => u.UnitType == (uint)UnitTypes.ZERG_HATCHERY);
+                            overlordCount = nearbyUnits.Count(u => u.UnitType == (uint)UnitTypes.ZERG_OVERLORD);
+                            larvaCount = nearbyUnits.Count(u => u.UnitType == (uint)UnitTypes.ZERG_LARVA);
+                            droneCount = nearbyUnits.Count(u => u.UnitType == (uint)UnitTypes.ZERG_DRONE);
+                        }
+                    }
+                    catch { }
+
+                    // If we didn't observe any starters, try persisted composition
+                    if (hatcheryCount + overlordCount + larvaCount + droneCount == 0)
+                    {
+                        if (baseData.StartingCompositionByStartLocation != null && i < baseData.StartingCompositionByStartLocation.Count)
+                        {
+                            var persisted = baseData.StartingCompositionByStartLocation[i];
+                            hatcheryCount = Math.Max(0, persisted.HatcheryCount);
+                            overlordCount = Math.Max(0, persisted.OverlordCount);
+                            larvaCount = Math.Max(0, persisted.LarvaCount);
+                            droneCount = Math.Max(0, persisted.DroneCount);
+                        }
+                    }
+
+                    // Final fallback to conservative defaults (common Zerg start)
+                    if (hatcheryCount + overlordCount + larvaCount + droneCount == 0)
+                    {
+                        hatcheryCount = 1;
+                        overlordCount = 1;
+                        larvaCount = 3;
+                        droneCount = 12;
+                    }
+
+                    // Persist the inferred composition for future runs
+                    while (baseData.StartingCompositionByStartLocation.Count <= i)
+                        baseData.StartingCompositionByStartLocation.Add(new StartingCompositionDto());
+                    baseData.StartingCompositionByStartLocation[i] = new StartingCompositionDto(hatcheryCount, overlordCount, larvaCount, droneCount);
+
+                    // Add placeholders in consistent ordering
+                    // Prefer the actual observed hatchery position if available; otherwise
+                    // fall back to the declared start location.
+                    Vector2Dto hatcheryPos = baseData.StartLocations[i];
+                    try
+                    {
+                        if (discoveredStartUnits != null && discoveredStartUnits.TryGetValue(i, out var dlist))
+                        {
+                            var observedHatch = dlist.FirstOrDefault(u => u != null && u.UnitType == (uint)UnitTypes.ZERG_HATCHERY && u.Pos != null);
+                            if (observedHatch != null)
+                            {
+                                hatcheryPos = new Vector2Dto(observedHatch.Pos.X, observedHatch.Pos.Y);
+                            }
+                        }
+                    }
+                    catch { }
+
+                    for (int h = 0; h < hatcheryCount; h++)
+                        list.Add(new WorkerEntryDto { UnitTag = 0, Position = hatcheryPos, UnitType = (uint)UnitTypes.ZERG_HATCHERY, Label = string.Empty });
+
+                    for (int o = 0; o < overlordCount; o++)
+                        list.Add(new WorkerEntryDto { UnitTag = 0, Position = pos, UnitType = (uint)UnitTypes.ZERG_OVERLORD, Label = string.Empty });
+
+                    for (int l = 0; l < larvaCount; l++)
+                        list.Add(new WorkerEntryDto { UnitTag = 0, Position = pos, UnitType = (uint)UnitTypes.ZERG_LARVA, Label = string.Empty });
+
+                    for (int d = 0; d < droneCount; d++)
+                        list.Add(new WorkerEntryDto { UnitTag = 0, Position = pos, UnitType = (uint)UnitTypes.ZERG_DRONE, Label = string.Empty });
+                }
+            }
+
+            // Serialize the mineral and vespene lists into Maw.Globals.currentMapMineralsFullMap (but do not write to disk yet)
+            try
+            {
+                var bytes = MemoryPackSerializer.Serialize(mineralList);
+                Maw.Globals.currentMapMineralsFullMap = Convert.ToBase64String(bytes);
+                Console.WriteLine($"InitialMapData: serialized {mineralList.Count} mineral patches and {vespeneList.Count} vespene geysers with MemoryPack ({bytes.Length} bytes)");
+            }
+            catch (Exception ex)
+            {
+                // Fallback to JSON bytes if MemoryPack serialization isn't available for the DTOs yet
+                var json = JsonConvert.SerializeObject(mineralList);
+                var bytes = Encoding.UTF8.GetBytes(json);
+                Maw.Globals.currentMapMineralsFullMap = Convert.ToBase64String(bytes);
+                Console.WriteLine($"InitialMapData: MemoryPack failed ({ex.Message}), saved JSON fallback ({bytes.Length} bytes)");
+            }
+
+            return baseData;
+        }
+    }
+
+    }

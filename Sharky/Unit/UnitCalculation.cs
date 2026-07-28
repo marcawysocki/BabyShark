@@ -93,7 +93,14 @@
             //PreviousUnits[frame] = unit;
             PreviousUnit = unit;
             Unit = unit;
-            UnitTypeData = sharkyUnitData.UnitData[(UnitTypes)unit.UnitType];
+            if (sharkyUnitData.UnitData.ContainsKey((UnitTypes)unit.UnitType))
+            {
+                UnitTypeData = sharkyUnitData.UnitData[(UnitTypes)unit.UnitType];
+            }
+            else
+            {
+                UnitTypeData = new UnitTypeData { UnitId = unit.UnitType, Name = ((UnitTypes)unit.UnitType).ToString() };
+            }
 
             Repairers = repairers;
 

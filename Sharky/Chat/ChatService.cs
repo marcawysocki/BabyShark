@@ -123,7 +123,7 @@
             {
                 chatAction.ActionChat.Channel = ActionChat.Types.Channel.Team;
             }
-            ActiveChatData.ChatActions.Add(chatAction);
+            //ActiveChatData.ChatActions.Add(chatAction);
         }
     }
 }
