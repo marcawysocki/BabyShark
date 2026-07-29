@@ -142,7 +142,9 @@ namespace BabySharkBot.Services
                         if (state.TeamAssignments.Any()) { SetPhase(TestPhase.AcceleratingWorkerOne); stateChanged = true; }
                         break;
                     case TestPhase.AcceleratingWorkerOne:
-                        commands.AddRange(HandleAcceleratingWorkerOne(frame, mapData, state, workerEntries, workerCount, workerByLabel));
+                        var accCommands = HandleAcceleratingWorkerOne(frame, mapData, state, workerEntries, workerCount, workerByLabel);
+                        if (_phase == TestPhase.AlignAtMineralA && !accCommands.Any()) { stateChanged = true; continue; }
+                        commands.AddRange(accCommands);
                         return commands;
                     case TestPhase.AlignAtMineralA:
                         // After frame 35, once we transition to alignment, immediately issue harvest commands to all workers

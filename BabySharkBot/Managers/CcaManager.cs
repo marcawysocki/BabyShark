@@ -128,6 +128,9 @@ namespace BabySharkBot.Managers
                 {
                     Console.WriteLine($"CcaManager: frame {frame} reached, initiating handoff to BabySharkMiningManager.");
                     
+                    // Capture final actions from CCA service at the handoff frame
+                    var actionsAtHandoff = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, null)?.ToList() ?? new List<SC2Action>();
+
                     // Signal mining started to unregister this manager and DrawOnlyManager
                     _miningManager.SignalMiningStarted();
                     
@@ -146,7 +149,7 @@ namespace BabySharkBot.Managers
                     }
                     catch { }
                     
-                    return Array.Empty<SC2Action>();
+                    return actionsAtHandoff;
                 }
 
                 var actions = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, null);

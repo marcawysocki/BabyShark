@@ -334,17 +334,18 @@ namespace BabySharkBot.Setup
                             var mineralKey = $"{mineralPos.X:F2},{mineralPos.Y:F2},{mineralPos.Z:F2}";
                             mineralTypeByPosition[mineralKey] = unit.UnitType;
 
-                            uint resourceMarker = Convert.ToUInt32(GetMineralResourceMarker(unit, ut));
-                            if (tempBaseDto.MineralTypeContentsAreUniform.TryGetValue(unit.UnitType, out var contentsAreUniform) &&
-                                contentsAreUniform &&
-                                tempBaseDto.MineralTypeMaxContents.TryGetValue(unit.UnitType, out var maxContentsForType))
-                            {
-                                resourceMarker = (uint)maxContentsForType;
-                            }
-                            else if (tempBaseDto.MineralTypeMaxContents.ContainsKey(unit.UnitType))
-                            {
-                                resourceMarker = 0u;
-                            }
+                             uint resourceMarker = Convert.ToUInt32(GetMineralResourceMarker(unit, ut));
+                             if (tempBaseDto.MineralTypeContentsAreUniform.TryGetValue(unit.UnitType, out var contentsAreUniform))
+                             {
+                                 if (contentsAreUniform && tempBaseDto.MineralTypeMaxContents.TryGetValue(unit.UnitType, out var maxContentsForType))
+                                 {
+                                     resourceMarker = (uint)maxContentsForType;
+                                 }
+                                 else
+                                 {
+                                     resourceMarker = 0u;
+                                 }
+                             }
 
 
                             mineralList.Add(mineralPos);

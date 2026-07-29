@@ -62,7 +62,7 @@ namespace BabySharkBot.Services
             Vector2Dto mineralClusterCenter,
             List<Vector2Dto> mineralPositions,
             List<Vector2Dto> geyserPositions,
-            List<Vector2Dto> startLocations = null)
+            List<Vector2Dto>? startLocations = null)
         {
             if (mineralPositions == null || mineralPositions.Count == 0)
             {
