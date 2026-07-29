@@ -218,17 +218,17 @@ namespace BabySharkBot.Services
 
                 if (workerCount == 8)
                 {
-                    if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA));
-                    if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, mineralB));
+                    if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame));
+                    if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, mineralB, frame));
                 }
                 else if (workerCount == 12)
                 {
                     bool isCrossover = (team.TeamNumber == 1 && state.TealM1IsFar) || (team.TeamNumber == 2 && state.TealM1IsFar) || (team.TeamNumber == 3 && state.YellowM8IsFar) || (team.TeamNumber == 4 && state.YellowM8IsFar);
                     if (isCrossover)
                     {
-                        if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA));
-                        if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB));
-                        if (w3 != null) commands.AddRange(ProcessWorkerMovement(w3, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB));
+                        if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame));
+                        if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame));
+                        if (w3 != null) commands.AddRange(ProcessWorkerMovement(w3, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame));
                         continue;
                     }
 
@@ -242,10 +242,10 @@ namespace BabySharkBot.Services
                     }
                     else
                     {
-                        if (lead != null) commands.AddRange(ProcessWorkerMovement(lead, mineralA));
-                        if (partner != null) commands.AddRange(ProcessWorkerMovement(partner, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB));
+                        if (lead != null) commands.AddRange(ProcessWorkerMovement(lead, mineralA, frame));
+                        if (partner != null) commands.AddRange(ProcessWorkerMovement(partner, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame));
                     }
-                    if (side != null) commands.AddRange(ProcessWorkerMovement(side, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralB : mineralA));
+                    if (side != null) commands.AddRange(ProcessWorkerMovement(side, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralB : mineralA, frame));
                 }
             }
             return commands;
@@ -277,14 +277,14 @@ namespace BabySharkBot.Services
                 var mag = MathF.Sqrt(dirX * dirX + dirY * dirY);
                 dirX /= mag; dirY /= mag;
 
-                if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA));
+                if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame));
                 if (w3 != null)
                 {
                     var w3Target = new Point2D { X = mineralA.Position.X - dirX * 1.0f, Y = mineralA.Position.Y - dirY * 1.0f };
                     // For W3 micro-positioning, we use MOVE. Once it's close enough, ProcessWorkerMovement triggers Harvest.
-                    commands.AddRange(ProcessWorkerMovement(w3, mineralA));
+                    commands.AddRange(ProcessWorkerMovement(w3, mineralA, frame));
                 }
-                if (w2 != null && mineralB != null) commands.AddRange(ProcessWorkerMovement(w2, mineralB));
+                if (w2 != null && mineralB != null) commands.AddRange(ProcessWorkerMovement(w2, mineralB, frame));
             }
             return commands;
         }
@@ -303,23 +303,23 @@ namespace BabySharkBot.Services
                 var targetY = (avgY + mineral.Position.Y) * 0.5f;
                 var leadMove = new Point2D { X = (lead.Position.X + targetX) * 0.5f, Y = (lead.Position.Y + targetY) * 0.5f };
                 var partnerMove = new Point2D { X = partner.Position.X + (targetX - partner.Position.X) * 0.25f, Y = partner.Position.Y + (targetY - partner.Position.Y) * 0.25f };
-                commands.AddRange(MoveTo(lead.UnitTag, leadMove));
-                commands.AddRange(MoveTo(partner.UnitTag, partnerMove));
+                commands.AddRange(MoveTo(lead.UnitTag, leadMove, frame));
+                commands.AddRange(MoveTo(partner.UnitTag, partnerMove, frame));
             }
             else
             {
-                commands.AddRange(ProcessWorkerMovement(lead, mineral));
-                commands.AddRange(ProcessWorkerMovement(partner, mineral));
+                commands.AddRange(ProcessWorkerMovement(lead, mineral, frame));
+                commands.AddRange(ProcessWorkerMovement(partner, mineral, frame));
             }
             return commands;
         }
 
-        private IEnumerable<SC2APIProtocol.Action> ProcessWorkerMovement(WorkerEntryDto worker, OrderedMineral mineral)
+        private IEnumerable<SC2APIProtocol.Action> ProcessWorkerMovement(WorkerEntryDto worker, OrderedMineral mineral, int frame)
         {
             if (worker == null || mineral == null) return Array.Empty<SC2APIProtocol.Action>();
             if (Distance(worker.Position, mineral.Position) <= 1.5f) return Harvest(worker.UnitTag, mineral.Position, mineral.UnitTag);
             var movePoint = new Point2D { X = (worker.Position.X + mineral.Position.X) * 0.5f, Y = (worker.Position.Y + mineral.Position.Y) * 0.5f };
-            return MoveTo(worker.UnitTag, movePoint);
+            return MoveTo(worker.UnitTag, movePoint, frame);
         }
 
         private IEnumerable<SC2APIProtocol.Action> Harvest(ulong tag, Vector2Dto mineralPos, ulong mineralTag = 0)
@@ -350,10 +350,12 @@ namespace BabySharkBot.Services
             return liveWorkers.FirstOrDefault(w => string.Equals(w.Label, logical.FinalLabel, StringComparison.OrdinalIgnoreCase) || string.Equals(w.Label, logical.StartLabel, StringComparison.OrdinalIgnoreCase) || (w.Label != null && w.Label.Equals(targetWLabel, StringComparison.OrdinalIgnoreCase)));
         }
 
-        private IEnumerable<SC2APIProtocol.Action> MoveTo(ulong tag, Point2D point)
+        private IEnumerable<SC2APIProtocol.Action> MoveTo(ulong tag, Point2D point, int frame = -1)
         {
             if (tag == 0) return Array.Empty<SC2APIProtocol.Action>();
-            var cmd = new ActionRawUnitCommand { AbilityId = 16, TargetWorldSpacePos = point };
+            // Use AbilityId 1 (MOVE) before frame 35, and AbilityId 16 (SMART) at/after frame 35 for handoff.
+            int abilityId = (frame != -1 && frame < 35) ? 1 : 16;
+            var cmd = new ActionRawUnitCommand { AbilityId = abilityId, TargetWorldSpacePos = point };
             cmd.UnitTags.Add(tag);
             return new List<SC2APIProtocol.Action> { new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = cmd } } };
         }
