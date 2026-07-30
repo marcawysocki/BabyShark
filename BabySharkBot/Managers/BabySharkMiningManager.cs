@@ -226,7 +226,11 @@ namespace BabySharkBot.Managers
                 var label = _workerLabelService.GetLabel(worker.Tag);
                 if (string.IsNullOrWhiteSpace(label) || IsLegacyWorkerLabelForDebugBreak(label)) label = ResolveWorkerFinalLabelByTag(worker.Tag, finalLabelByTag);
                 if (string.IsNullOrWhiteSpace(label) && worker.Pos != null) label = ResolveWorkerLabelByPosition(worker.Pos.X, worker.Pos.Y, fallbackByPosition);
-                if (!string.IsNullOrWhiteSpace(label)) ManagerDebugService.DrawText(label, new Point { X = worker.Pos.X, Y = worker.Pos.Y, Z = worker.Pos.Z + 0.5f }, new Color { R = 255, G = 255, B = 255 }, 12);
+                if (!string.IsNullOrWhiteSpace(label))
+                {
+                    var color = ProcessVisableUnits.GetFinalLabelColor(label);
+                    ManagerDebugService.DrawText(label, new Point { X = worker.Pos.X, Y = worker.Pos.Y, Z = worker.Pos.Z + 0.5f }, color, 12);
+                }
             }
         }
 
@@ -295,9 +299,19 @@ namespace BabySharkBot.Managers
             PrintMineralReturnRateSummary(observation);
             PrintTwelveDroneMilestone(observation);
             
-            if (ManagerDebugService.IsDebugEnabled)
+            // Debug drawing is now handled by DrawOnlyManager (NeverSkip = true)
+            // so labels persist even when this manager is skipped.
+
+            return actions;
+        }
+
+        public void DrawDebugVisuals(ResponseObservation observation)
+        {
+            try
             {
+                if (!ManagerDebugService.IsDebugEnabled) return;
                 DrawWorkerLabels(observation);
+
                 DrawCenterOfMassLocations();
                 DrawExpansionCOMCrosshairs();
                 DrawCenterOfMass();
@@ -309,27 +323,6 @@ namespace BabySharkBot.Managers
                 DrawSpawningPoolPlacement();
                 DrawWorkerInstructions(observation);
                 BreakWhenSpawnLabelsShouldBeVisible(observation);
-            }
-
-            return actions;
-        }
-
-        public void DrawDebugVisuals(ResponseObservation observation)
-        {
-            try
-            {
-                if (!ManagerDebugService.IsDebugEnabled) return;
-                DrawWorkerLabels(observation);
-                DrawCenterOfMassLocations();
-                DrawExpansionCOMCrosshairs();
-                DrawCenterOfMass();
-                DrawMineralLabels();
-                DrawMineralTargetPoints();
-                DrawExpansionMineralLabels();
-                DrawVespeneLabels();
-                DrawExpansionPoints();
-                DrawSpawningPoolPlacement();
-                DrawWorkerInstructions(observation);
             }
             catch (Exception ex)
             {
@@ -403,9 +396,10 @@ namespace BabySharkBot.Managers
             {
                 if (assignment?.Workers == null || assignment.Minerals?.Count < 2) continue;
                 
-                // Minerals[0] = Near (A), Minerals[1] = Far (B) based on TeamLabelRegistrationHelper ordering
-                var mineralA = assignment.Minerals[0];
-                var mineralB = assignment.Minerals[1];
+                // FIX: Resolve mineralA as the NEAR mineral (IsNear=true) and mineralB as FAR.
+                // The list order Minerals[0]/Minerals[1] does NOT reliably indicate near/far.
+                var mineralA = assignment.Minerals.FirstOrDefault(m => m.IsNear) ?? assignment.Minerals[0];
+                var mineralB = assignment.Minerals.FirstOrDefault(m => !m.IsNear && m != mineralA) ?? assignment.Minerals.Skip(1).FirstOrDefault() ?? mineralA;
                 
                 foreach (var worker in assignment.Workers)
                 {

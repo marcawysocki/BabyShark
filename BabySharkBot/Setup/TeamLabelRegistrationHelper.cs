@@ -153,7 +153,12 @@ namespace BabySharkBot.Setup
                 }
 
                 ApplyMineralFinalLabels(mapData, startIndex, mineralPair, teamNum, workers.Count);
-                ApplyWorkerFinalLabels(mapData, startIndex, GetTeamPrefix(teamNum, workers.Count), teamWorkers, mineralPair[0], mineralPair[1], workerLabelService);
+                // FIX: ApplyMineralFinalLabels sets IsNear/IsFar on the pair, but does NOT reorder the list.
+                // We must pass the ACTUAL near and far minerals to ApplyWorkerFinalLabels so distance
+                // calculations for Y1/Y3 (and T1/T3, etc.) use the correct target.
+                var actualNearMineral = mineralPair[0].IsNear ? mineralPair[0] : mineralPair[1];
+                var actualFarMineral = mineralPair[0].IsNear ? mineralPair[1] : mineralPair[0];
+                ApplyWorkerFinalLabels(mapData, startIndex, GetTeamPrefix(teamNum, workers.Count), teamWorkers, actualNearMineral, actualFarMineral, workerLabelService);
 
                 var hatcheryPos = mapData.StartingTownHall[startIndex];
                 var jitPoints = CalculateJitPoints(mineralPair[0], mineralPair[1], hatcheryPos);
@@ -385,7 +390,8 @@ namespace BabySharkBot.Setup
                 }
                 else
                 {
-                    nearMineral = first.DistanceToTownhall >= second.DistanceToTownhall
+                    // FIX: Changed >= to <= so the closer mineral is correctly labeled "near" (A)
+                    nearMineral = first.DistanceToTownhall <= second.DistanceToTownhall
                         ? first
                         : second;
                 }

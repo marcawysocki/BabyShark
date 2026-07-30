@@ -131,6 +131,12 @@ namespace BabySharkBot
             Console.WriteLine("BabySharkAI: Created BabySharkMiningManager with shared CCA service instance");
             Managers.Add(_miningManager);
 
+            // FIX: DrawOnlyManager ensures debug labels are sent every frame,
+            // even when BabySharkMiningManager is skipped for performance.
+            var drawOnlyManager = new DrawOnlyManager(_miningManager);
+            Managers.Add(drawOnlyManager);
+            Console.WriteLine("BabySharkAI: Registered DrawOnlyManager for persistent debug drawing");
+
             // Create and register CCA manager to run bump/order logic in the manager lifecycle.
             try
             {
@@ -408,6 +414,13 @@ namespace BabySharkBot
 
             public IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
             {
+                // Break every 5th frame BEFORE any processing, so the previous frame's
+                // debug labels are still visible on screen.
+                if (observation.Observation.GameLoop % 5 == 0)
+                {
+                    System.Diagnostics.Debugger.Break();
+                }
+
                 if (observation.Observation.GameLoop % 100 == 0)
                 {
                     Console.WriteLine($"StartupAwareSharkyBot.OnFrame: frame={observation.Observation.GameLoop} managers={_owner.Managers.Count}");

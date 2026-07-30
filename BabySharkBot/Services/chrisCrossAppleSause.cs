@@ -22,7 +22,8 @@ namespace BabySharkBot.Services
         public const int AlignThreshold = 35;
         public const int EndThreshold = 65;
 
-        private static volatile TestPhase _phase = TestPhase.Idle;
+        // FIX: Removed 'static' so phase is per-instance and doesn't leak across spawns/games
+        private TestPhase _phase = TestPhase.Idle;
         private readonly Dictionary<string, CcaSpawnLearningState> _states = new Dictionary<string, CcaSpawnLearningState>(StringComparer.OrdinalIgnoreCase);
         private bool _harvestCommandsIssued = false;
 
@@ -201,15 +202,16 @@ namespace BabySharkBot.Services
             // Handle Crossover Bumping Pairs (Higher priority)
             if (workerCount == 12)
             {
-                if (state.TealM1IsFar && workerByLabel.TryGetValue("S3", out var s3) && workerByLabel.TryGetValue("T2", out var t2))
+                // FIX: S3 now bumps T1 (not T2); B3 now bumps Y1 (not Y2)
+                if (state.TealM1IsFar && workerByLabel.TryGetValue("S3", out var s3) && workerByLabel.TryGetValue("T1", out var t1))
                 {
                     var mineralTA = GetMineralOrdered(state, 1, "TA");
-                    if (mineralTA != null) commands.AddRange(ProcessBumpingPair(frame, state, 5, t2, s3, mineralTA));
+                    if (mineralTA != null) commands.AddRange(ProcessBumpingPair(frame, state, 5, t1, s3, mineralTA));
                 }
-                if (state.YellowM8IsFar && workerByLabel.TryGetValue("B3", out var b3) && workerByLabel.TryGetValue("Y2", out var y2))
+                if (state.YellowM8IsFar && workerByLabel.TryGetValue("B3", out var b3) && workerByLabel.TryGetValue("Y1", out var y1))
                 {
                     var mineralYA = GetMineralOrdered(state, 4, "YA");
-                    if (mineralYA != null) commands.AddRange(ProcessBumpingPair(frame, state, 6, y2, b3, mineralYA));
+                    if (mineralYA != null) commands.AddRange(ProcessBumpingPair(frame, state, 6, y1, b3, mineralYA));
                 }
             }
 
@@ -242,9 +244,10 @@ namespace BabySharkBot.Services
                         continue;
                     }
 
+                    // FIX: All teams now use w3 as the bumper (toward A) and w2 goes to mineral B
                     WorkerEntryDto? lead = w1;
-                    WorkerEntryDto? partner = (team.TeamNumber == 1 || team.TeamNumber == 4) ? w3 : w2;
-                    WorkerEntryDto? side = (partner == w3) ? w2 : w3;
+                    WorkerEntryDto? partner = w3;
+                    WorkerEntryDto? side = w2;
 
                     if (state.TeamBumping.GetValueOrDefault(team.TeamNumber, true) && lead != null && partner != null)
                     {
@@ -253,9 +256,9 @@ namespace BabySharkBot.Services
                     else
                     {
                         if (lead != null) commands.AddRange(ProcessWorkerMovement(lead, mineralA, frame));
-                        if (partner != null) commands.AddRange(ProcessWorkerMovement(partner, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame));
+                        if (partner != null) commands.AddRange(ProcessWorkerMovement(partner, mineralA, frame));
                     }
-                    if (side != null) commands.AddRange(ProcessWorkerMovement(side, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralB : mineralA, frame));
+                    if (side != null) commands.AddRange(ProcessWorkerMovement(side, mineralB, frame));
                 }
             }
             return commands;
@@ -266,36 +269,8 @@ namespace BabySharkBot.Services
             var commands = new List<SC2APIProtocol.Action>();
             if (frame > EndThreshold) { SetPhase(TestPhase.CancelAndReturnHome); return commands; }
 
-            foreach (var team in state.TeamAssignments)
-            {
-                var logicalWorkers = team.Workers;
-                var minerals = team.Minerals;
-                if (logicalWorkers.Count == 0 || minerals.Count == 0) continue;
-
-                var mineralA = minerals.FirstOrDefault(m => m.IsNear) ?? minerals[0];
-                var mineralB = minerals.FirstOrDefault(m => !m.IsNear && m != mineralA) ?? minerals.Skip(1).FirstOrDefault() ?? mineralA;
-                var hatcheryPos = mapData.StartingTownHall[state.StartIndex];
-
-                var w1 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "1");
-                var w2 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "2");
-                var w3 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "3");
-
-                if (mineralA == null || hatcheryPos == null) continue;
-
-                var dirX = mineralA.Position.X - hatcheryPos.X;
-                var dirY = mineralA.Position.Y - hatcheryPos.Y;
-                var mag = MathF.Sqrt(dirX * dirX + dirY * dirY);
-                dirX /= mag; dirY /= mag;
-
-                if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame));
-                if (w3 != null)
-                {
-                    var w3Target = new Point2D { X = mineralA.Position.X - dirX * 1.0f, Y = mineralA.Position.Y - dirY * 1.0f };
-                    // For W3 micro-positioning, we use MOVE. Once it's close enough, ProcessWorkerMovement triggers Harvest.
-                    commands.AddRange(ProcessWorkerMovement(w3, mineralA, frame));
-                }
-                if (w2 != null && mineralB != null) commands.AddRange(ProcessWorkerMovement(w2, mineralB, frame));
-            }
+            // FIX: Removed move logic from alignment phase. 
+            // Harvest commands are issued once (in the state machine above) and never overridden by SMART moves here.
             return commands;
         }
 
