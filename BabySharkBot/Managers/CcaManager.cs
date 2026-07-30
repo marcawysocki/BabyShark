@@ -21,7 +21,6 @@ namespace BabySharkBot.Managers
         private readonly BabySharkMiningManager _miningManager;
 
         public chrisCrossAppleSause CcaMiningService => _ccaService;
-        private readonly DrawOnlyManager _drawOnlyWrapper;
         private bool _unregistered;
         private int _allMiningConsecutiveFrames = 0;
         private const int AllMiningConfirmationFrames = 2;
@@ -32,27 +31,7 @@ namespace BabySharkBot.Managers
             _miningManager = miningManager ?? throw new ArgumentNullException(nameof(miningManager));
             // subscribe to mining started event so we can unregister ourselves
             _miningManager.OnMiningStarted += HandleMiningStarted;
-            _drawOnlyWrapper = new DrawOnlyManager(miningManager);
             _unregistered = false;
-
-            // Ensure debug visualizations are rendered while this manager is active
-            var ai = BabySharkBot.BabySharkAI.Instance;
-            if (ai != null)
-            {
-                if (!ai.Managers.Contains(_drawOnlyWrapper))
-                {
-                    ai.Managers.Add(_drawOnlyWrapper);
-                    Console.WriteLine("CcaManager: added DrawOnlyManager to BabySharkAI.Managers");
-                }
-                else
-                {
-                    Console.WriteLine("CcaManager: DrawOnlyManager already present in Managers");
-                }
-            }
-            else
-            {
-                Console.WriteLine("CcaManager: BabySharkAI.Instance is null - cannot add DrawOnlyManager");
-            }
         }
 
         private void HandleMiningStarted()
@@ -64,8 +43,6 @@ namespace BabySharkBot.Managers
                 var ai = BabySharkBot.BabySharkAI.Instance;
                 if (ai != null)
                 {
-                    // Remove DrawOnly wrapper if present
-                    ai.Managers.RemoveAll(m => m == _drawOnlyWrapper);
                     // Remove this manager
                     ai.Managers.RemoveAll(m => m == this);
                     Console.WriteLine("CcaManager: unregistered from BabySharkAI.Managers");
@@ -131,23 +108,10 @@ namespace BabySharkBot.Managers
                     // Capture final actions from CCA service at the handoff frame
                     var actionsAtHandoff = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, null)?.ToList() ?? new List<SC2Action>();
 
-                    // Signal mining started to unregister this manager and DrawOnlyManager
+                    // Signal mining started to unregister this manager
                     _miningManager.SignalMiningStarted();
                     
-                    // Ensure BabySharkMiningManager is registered in BabySharkAI.Managers
-                    var ai = BabySharkBot.BabySharkAI.Instance;
-                    if (ai != null)
-                    {
-                        ai.EnsureManagersRegistered();
-                    }
-                    
-                    // System break after takeover to verify BabySharkMiningManager is running as requested
-                    try
-                    {
-                        Console.WriteLine("CcaManager: Takeover successful, triggering system break.");
-                        System.Diagnostics.Debugger.Break();
-                    }
-                    catch { }
+                    Console.WriteLine("CcaManager: Takeover successful.");
                     
                     return actionsAtHandoff;
                 }

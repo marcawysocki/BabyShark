@@ -17,8 +17,14 @@ namespace BabySharkBot.Services
     {
         public enum TestPhase { Idle, AssigningWorkers, AcceleratingWorkerOne, AlignAtMineralA, CancelAndReturnHome }
         
+        public const int StartFrame = 0;
+        public const int AccelerateThreshold = 15;
+        public const int AlignThreshold = 35;
+        public const int EndThreshold = 65;
+
         private static volatile TestPhase _phase = TestPhase.Idle;
         private readonly Dictionary<string, CcaSpawnLearningState> _states = new Dictionary<string, CcaSpawnLearningState>(StringComparer.OrdinalIgnoreCase);
+        private bool _harvestCommandsIssued = false;
 
         public TestPhase CurrentPhase => _phase;
 
@@ -99,14 +105,14 @@ namespace BabySharkBot.Services
             }
 
             // On frame 0, issue STOP
-            if (frame == 0)
+            if (frame == StartFrame)
             {
                 foreach (var w in workerEntries)
                 {
-                    var stopCmd = new ActionRawUnitCommand { AbilityId = 4, UnitTags = { w.UnitTag } };
+                    var stopCmd = new ActionRawUnitCommand { AbilityId = (int)Abilities.STOP, UnitTags = { w.UnitTag } };
                     commands.Add(new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = stopCmd } });
                 }
-                Console.WriteLine($"chrisCrossAppleSause: Issued STOP to {workerEntries.Count} workers on Frame 0.");
+                Console.WriteLine($"chrisCrossAppleSause: Issued STOP to {workerEntries.Count} workers on Frame {StartFrame}.");
             }
 
             if (state.TeamAssignments.Count == 0) return commands;
@@ -148,31 +154,35 @@ namespace BabySharkBot.Services
                         return commands;
                     case TestPhase.AlignAtMineralA:
                         // After frame 35, once we transition to alignment, immediately issue harvest commands to all workers
-                        foreach (var team in state.TeamAssignments)
+                        if (!_harvestCommandsIssued)
                         {
-                            var minerals = team.Minerals;
-                            if (minerals.Count == 0) continue;
-                            var mineralA = minerals.FirstOrDefault(m => m.IsNear) ?? minerals[0];
-                            var mineralB = minerals.FirstOrDefault(m => !m.IsNear && m != mineralA) ?? minerals.Skip(1).FirstOrDefault() ?? mineralA;
-
-                            var w1 = ResolveLiveWorkerBySuffix(team.Workers, workerEntries, "1");
-                            var w2 = ResolveLiveWorkerBySuffix(team.Workers, workerEntries, "2");
-                            var w3 = ResolveLiveWorkerBySuffix(team.Workers, workerEntries, "3");
-
-                            if (commanders != null)
+                            foreach (var team in state.TeamAssignments)
                             {
-                                if (w1 != null) { var c1 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w1.UnitTag); if (c1 != null) commands.AddRange(c1.Order(frame, Abilities.HARVEST_GATHER, null, mineralA.UnitTag)); }
-                                if (w2 != null) { var c2 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w2.UnitTag); if (c2 != null) commands.AddRange(c2.Order(frame, Abilities.HARVEST_GATHER, null, mineralB.UnitTag)); }
-                                if (w3 != null) { var c3 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w3.UnitTag); if (c3 != null) commands.AddRange(c3.Order(frame, Abilities.HARVEST_GATHER, null, mineralA.UnitTag)); }
+                                var minerals = team.Minerals;
+                                if (minerals.Count == 0) continue;
+                                var mineralA = minerals.FirstOrDefault(m => m.IsNear) ?? minerals[0];
+                                var mineralB = minerals.FirstOrDefault(m => !m.IsNear && m != mineralA) ?? minerals.Skip(1).FirstOrDefault() ?? mineralA;
+
+                                var w1 = ResolveLiveWorkerBySuffix(team.Workers, workerEntries, "1");
+                                var w2 = ResolveLiveWorkerBySuffix(team.Workers, workerEntries, "2");
+                                var w3 = ResolveLiveWorkerBySuffix(team.Workers, workerEntries, "3");
+
+                                if (commanders != null)
+                                {
+                                    if (w1 != null) { var c1 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w1.UnitTag); if (c1 != null) commands.AddRange(c1.Order(frame, Abilities.HARVEST_GATHER, null, mineralA.UnitTag)); }
+                                    if (w2 != null) { var c2 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w2.UnitTag); if (c2 != null) commands.AddRange(c2.Order(frame, Abilities.HARVEST_GATHER, null, mineralB.UnitTag)); }
+                                    if (w3 != null) { var c3 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w3.UnitTag); if (c3 != null) commands.AddRange(c3.Order(frame, Abilities.HARVEST_GATHER, null, mineralA.UnitTag)); }
+                                }
+                                else
+                                {
+                                    if (w1 != null) commands.AddRange(Harvest(w1.UnitTag, mineralA.Position, mineralA.UnitTag));
+                                    if (w2 != null) commands.AddRange(Harvest(w2.UnitTag, mineralB.Position, mineralB.UnitTag));
+                                    if (w3 != null) commands.AddRange(Harvest(w3.UnitTag, mineralA.Position, mineralA.UnitTag));
+                                }
                             }
-                            else
-                            {
-                                if (w1 != null) commands.AddRange(Harvest(w1.UnitTag, mineralA.Position, mineralA.UnitTag));
-                                if (w2 != null) commands.AddRange(Harvest(w2.UnitTag, mineralB.Position, mineralB.UnitTag));
-                                if (w3 != null) commands.AddRange(Harvest(w3.UnitTag, mineralA.Position, mineralA.UnitTag));
-                            }
+                            _harvestCommandsIssued = true;
+                            Console.WriteLine($"chrisCrossAppleSause: Frame {frame} - Transition to AlignAtMineralA: Issued global Harvest (HARVEST_GATHER) commands.");
                         }
-                        Console.WriteLine($"chrisCrossAppleSause: Frame {frame} - Transition to AlignAtMineralA: Issued global Harvest (HARVEST_GATHER) commands.");
                         
                         commands.AddRange(HandleAlignAtMineralA(frame, mapData, state, workerEntries));
                         return commands;
@@ -186,7 +196,7 @@ namespace BabySharkBot.Services
         private IEnumerable<SC2APIProtocol.Action> HandleAcceleratingWorkerOne(int frame, MawBaseLocationData mapData, CcaSpawnLearningState state, IReadOnlyList<WorkerEntryDto> workerEntries, int workerCount, Dictionary<string, WorkerEntryDto> workerByLabel)
         {
             var commands = new List<SC2APIProtocol.Action>();
-            if (frame >= 35) { SetPhase(TestPhase.AlignAtMineralA); return commands; }
+            if (frame >= AlignThreshold) { SetPhase(TestPhase.AlignAtMineralA); return commands; }
 
             // Handle Crossover Bumping Pairs (Higher priority)
             if (workerCount == 12)
@@ -254,7 +264,7 @@ namespace BabySharkBot.Services
         private IEnumerable<SC2APIProtocol.Action> HandleAlignAtMineralA(int frame, MawBaseLocationData mapData, CcaSpawnLearningState state, IReadOnlyList<WorkerEntryDto> workerEntries)
         {
             var commands = new List<SC2APIProtocol.Action>();
-            if (frame > 65) { SetPhase(TestPhase.CancelAndReturnHome); return commands; }
+            if (frame > EndThreshold) { SetPhase(TestPhase.CancelAndReturnHome); return commands; }
 
             foreach (var team in state.TeamAssignments)
             {

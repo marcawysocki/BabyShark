@@ -1,28 +1,32 @@
 Version 1.0 Just In Time Mining.MD
 
 Working Directory: C:\Users\marca\source\repos\BabyShark
+the GitHub repository is https://github.com/marcawysocki/BabyShark
 Do not processes zip files
 
-jit BaseDtos.cs
-CcaManager.cs
-BabySharkMiningManager.cs
+local files 
+C:\Users\marca\source\repos\BabyShark\BabySharkBot\Setup\BaseDtos.cs
+C:\Users\marca\source\repos\BabyShark\BabySharkBot\Services\chrisCrossAppleSause.cs
+C:\Users\marca\source\repos\BabyShark\BabySharkBot\Managers\CcaManager.cs
+C:\Users\marca\source\repos\BabyShark\BabySharkBot\Managers\BabySharkMiningManager.cs
+C:\Users\marca\source\repos\BabyShark\BabySharkBot\MicroTasks\TeamPatchMiningTask.cs
 
- Only one worker is harvested minerals then returned to the townhall but did not return cargo to the townhall. the other workers just stood around near their target minieral.
-ccamanager accomplished the first part of the cycle moving to the target mineral the next part is to harvest the target. next, which T2 seemed to do is move to the townhall when there it needs to give the mineral to the townhall and move to a new target, the A/B switch
+Startup project C:\Users\marca\source\repos\BabyShark\BabySharkBot\BabySharkBot.csproj
 
-This Just In Time Mining (jitMining) version is focused on 12 workers and creating a spawning pool as fast as posible. 3 Workers per 2 Mineral Nodes.  After each worker returns cargo, it changes minerals.  For instance, the first worker T1 returns cargo from TA, T3 was waiting to start harvesting TA and now gets it turn. The returning worker now gets assigned to TB after returning cargo at a jit return cargo point.  The worker T2 that had been harvesting on TB should complete havesting while the T1 harvester is approaching. When workers are holding cargo than need to be sent to a jit-return cargo point that is the shortest path for alternating between minerals A and B.  The cycle repeats for Team 1.
+ Workers are harvested minerals but are not Utilizing speed mining techniques where A worker can bypass deceleration by issuing move commands.  
 
-Likewise, each team returns cargo from their assigned mineral nodes and then rotates between their mineral pair.  Every worker alternates between harvesting a "B" Far patch and a "A" Near patch.
+ccamanager accomplished the first part of the cycle moving to the target mineral the next part is to harvest the target. next, is move to the townhall when there it needs to give the mineral to the townhall and move to a new target, the A/B switch
 
-Sharky Worker Patch Assignment needs to be replaced with the team method.  Sharky Mining manager needs to be replaced with a JIT Mining Manager.
+This Just In Time Mining (jitMining) version is focused on 12 workers and creating a spawning pool as fast as posible. 3 Workers per 2 Mineral Nodes.  After each worker returns cargo, it changes minerals.  For instance, team teal, the first worker T1 returns cargo from TA, T3 was waiting to start harvesting TA and now gets it turn. The returning worker now gets assigned to TB after returning cargo at a jit return cargo point.  The worker T2 that had been harvesting on TB should complete havesting while the T1 harvester is approaching. When workers are holding cargo than need to be sent to a jit-return cargo point that is the shortest path for alternating between minerals A and B.  The cycle repeats for Team 1.
 
-Sharky Collision Manager might work but may need to be replaced if it can not handle workers going to a different mineral patch.
+At the momment a worker switches  if (carrying && !wasCarrying) it needs to get a move command.  if it is isJitTeam then the return point is the jit return point for the team that it is on, otherwise it needs a move command to the speed mining return point.  if isJitTeam then it's  target mineral changes the A/B switch.  The workers need to move to the townhall avoiding Deceleration once at the footprint of the town hall it returned cargo and then needs move commands to the new target And once footprint of the mineral target It's given a harvest command.
 
-The Build order system will need a jit Preposition Service that only selects a worker that has just returned cargo from the team that is closest to the build location.  The Mining cycle, in addition to swapping Minerals, also needs to listen for build instructions. In this case, we are trying to set a new world record for a spawning pool.  The pool will be near team 4, next to V2. The last of team 4 (Y1,Y2,Y3) to return cargo and then move to the spawning pool location, Just In Time, for the Mineral total to reach 200.
-A Build needs to be created that uses my location for the spawning pool, prepositions the most optimal worker from team 4, Just In Time to build a Spawning Pool. 
+It might be that at the point of (carrying && !wasCarrying) that they need a stop command and then a move command qued.
 
-Versions beyound 1.0 need to account for a different count of workers and exhasted minerals.  Every variation of mineral node count and worker count has a different pattern.  Anything other than 3 for a team uses traditional Sharky Speed Mining. A worker mines the same mineral node and returns straight back to the townhall
-Thinking...
+Each team returns cargo from their assigned mineral nodes and then rotates between their mineral pair.  Every worker alternates between harvesting a "B" Far patch and a "A" Near patch.
+
+
+Other AI Thinking...
 Here's a thinking process that leads to the suggested implementation plan:
 
 1.  **Analyze the Request:**
@@ -260,3 +264,824 @@ future versions.
 **Status:** Ready for Implementation
 **Author:** BabyShark Dev Team
 **Date:** 2023-10-XX
+
+Kimmie K3 Chat contents
+I wasn't able to pull the raw source from GitHub directly, but based on your design doc and the Sharky framework patterns, here's the refactored BabySharkMiningManager.cs with the JIT mining logic, stop-then-move queuing, and deceleration bypass for both JIT and non-JIT teams.
+I'll also include the supporting DTO updates you'll need in BaseDtos.cs and the TeamPatchMiningTask.cs to make it all wire together.
+BaseDtos.cs — Add These Types
+using System.Collections.Generic;
+using System.Numerics;
+using Sharky;
+
+namespace BabySharkBot.Manager
+{
+    public enum JitMiningState
+    {
+        Idle,
+        MovingToHarvest,
+        Harvesting,
+        MovingToReturn,
+        ReturningCargo,
+        SwitchingMineral
+    }
+
+    public class JitWorkerData
+    {
+        public ulong Tag { get; set; }
+        public int TeamId { get; set; }
+        public bool IsJitTeam { get; set; }
+        
+        /// <summary>Current target mineral unit tag</summary>
+        public ulong CurrentMineralTag { get; set; }
+        
+        /// <summary>Alternate mineral (A/B switch target)</summary>
+        public ulong AlternateMineralTag { get; set; }
+        
+        public JitMiningState State { get; set; } = JitMiningState.Idle;
+        
+        /// <summary>True if worker was carrying minerals on previous frame</summary>
+        public bool WasCarrying { get; set; }
+        
+        /// <summary>Frame count when last command was issued (prevents spam)</summary>
+        public int LastCommandFrame { get; set; } = -999;
+        
+        /// <summary>Position to move to for JIT cargo return (shortest path between A/B)</summary>
+        public Vector3 JitReturnPoint { get; set; }
+        
+        /// <summary>Standard speed-mining return point (non-JIT teams)</summary>
+        public Vector3 SpeedMiningReturnPoint { get; set; }
+        
+        /// <summary>Waypoint just past the mineral to prevent deceleration</summary>
+        public Vector3 MineralApproachPoint { get; set; }
+    }
+
+    public class MiningTeam
+    {
+        public int TeamId { get; set; }
+        public List<ulong> WorkerTags { get; set; } = new();
+        public List<ulong> MineralTags { get; set; } = new(); // Pair: [0]=A Near, [1]=B Far
+        public bool IsJitTeam { get; set; }
+        public Vector3 JitReturnPoint { get; set; }
+        public Vector3 TownHallPosition { get; set; }
+    }
+}
+
+BabySharkMiningManager.cs — Refactored
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Numerics;
+using Sharky;
+using Sharky.DefaultBot;
+using Sharky.Managers;
+using SC2APIProtocol;
+
+namespace BabySharkBot.Manager
+{
+    public class BabySharkMiningManager :IManager
+    {
+        private readonly DefaultSharkyBot _defaultSharkyBot;
+        private readonly Dictionary<ulong, JitWorkerData> _jitWorkerData = new();
+        private readonly List<MiningTeam> _miningTeams = new();
+        
+        private const int CommandCooldownFrames = 2;
+        private const float MineralFootprintRadius = 0.5f;
+        private const float TownhallFootprintRadius = 2.5f;
+        private const float ReturnPointOffset = 1.0f;
+
+        public BabySharkMiningManager(DefaultSharkyBot defaultSharkyBot)
+        {
+            _defaultSharkyBot = defaultSharkyBot;
+        }
+
+        public IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
+        {
+            var actions = new List<SC2APIProtocol.Action>();
+            var frame = (int)observation.Observation.GameLoop;
+
+            // Initialize or update worker data
+            UpdateWorkerTracking(observation);
+
+            foreach (var team in _miningTeams)
+            {
+                foreach (var workerTag in team.WorkerTags)
+                {
+                    if (!_jitWorkerData.TryGetValue(workerTag, out var workerData))
+                        continue;
+
+                    if (!_defaultSharkyBot.UnitManager.Commanders.TryGetValue(workerTag, out var commander))
+                        continue;
+
+                    var unit = commander.UnitCalculation.Unit;
+                    var isCarrying = unit.BuffIds.Contains(Ids.Buffs.CARRYMINERALFIELDMINERALS) 
+                        || unit.BuffIds.Contains(Ids.Buffs.CARRYHIGHYIELDMINERALFIELDMINERALS);
+
+                    // Detect cargo pickup transition
+                    var justPickedUp = isCarrying && !workerData.WasCarrying;
+                    workerData.WasCarrying = isCarrying;
+
+                    // --- STATE MACHINE ---
+                    switch (workerData.State)
+                    {
+                        case JitMiningState.Idle:
+                        case JitMiningState.MovingToHarvest:
+                            actions.AddRange(HandleHarvestingPhase(commander, workerData, team, frame, justPickedUp));
+                            break;
+
+                        case JitMiningState.Harvesting:
+                            actions.AddRange(HandlePostHarvest(commander, workerData, team, frame, justPickedUp));
+                            break;
+
+                        case JitMiningState.MovingToReturn:
+                        case JitMiningState.ReturningCargo:
+                            actions.AddRange(HandleReturnPhase(commander, workerData, team, frame));
+                            break;
+
+                        case JitMiningState.SwitchingMineral:
+                            actions.AddRange(HandleSwitchPhase(commander, workerData, team, frame));
+                            break;
+                    }
+                }
+            }
+
+            return actions;
+        }
+
+        /// <summary>
+        /// Worker is approaching or at mineral. Issue harvest when in range.
+        /// If just picked up cargo, transition to return phase.
+        /// </summary>
+        private List<SC2APIProtocol.Action> HandleHarvestingPhase(
+            UnitCommander commander, JitWorkerData workerData, MiningTeam team, int frame, bool justPickedUp)
+        {
+            var actions = new List<SC2APIProtocol.Action>();
+            var unit = commander.UnitCalculation.Unit;
+            
+            if (justPickedUp)
+            {
+                // Cargo acquired — immediately transition to return
+                workerData.State = JitMiningState.MovingToReturn;
+                return HandleReturnPhase(commander, workerData, team, frame);
+            }
+
+            // Get current target mineral position
+            var mineralPos = GetMineralPosition(workerData.CurrentMineralTag);
+            if (!mineralPos.HasValue)
+                return actions;
+
+            var dist = Vector3.Distance(unit.Pos, mineralPos.Value);
+
+            // If close to mineral footprint, issue harvest
+            if (dist <= MineralFootprintRadius + 0.3f)
+            {
+                if (frame - workerData.LastCommandFrame > CommandCooldownFrames)
+                {
+                    // Stop any pending move, then harvest
+                    actions.Add(CreateStopCommand(unit.Tag));
+                    actions.Add(CreateHarvestCommand(unit.Tag, workerData.CurrentMineralTag));
+                    workerData.LastCommandFrame = frame;
+                    workerData.State = JitMiningState.Harvesting;
+                }
+            }
+            else
+            {
+                // Move to approach point (past mineral to defeat deceleration)
+                var approachPoint = workerData.MineralApproachPoint;
+                if (frame - workerData.LastCommandFrame > CommandCooldownFrames)
+                {
+                    actions.Add(CreateMoveCommand(unit.Tag, approachPoint));
+                    workerData.LastCommandFrame = frame;
+                    workerData.State = JitMiningState.MovingToHarvest;
+                }
+            }
+
+            return actions;
+        }
+
+        /// <summary>
+        /// Worker is harvesting. Wait for cargo pickup (detected via justPickedUp in OnFrame).
+        /// </summary>
+        private List<SC2APIProtocol.Action> HandlePostHarvest(
+            UnitCommander commander, JitWorkerData workerData, MiningTeam team, int frame, bool justPickedUp)
+        {
+            var actions = new List<SC2APIProtocol.Action>();
+            
+            if (justPickedUp)
+            {
+                workerData.State = JitMiningState.MovingToReturn;
+                return HandleReturnPhase(commander, workerData, team, frame);
+            }
+
+            return actions;
+        }
+
+        /// <summary>
+        /// Worker has cargo. Move to return point, then return cargo at townhall footprint.
+        /// Defeat deceleration by moving past the return point.
+        /// </summary>
+        private List<SC2APIProtocol.Action> HandleReturnPhase(
+            UnitCommander commander, JitWorkerData workerData, MiningTeam team, int frame)
+        {
+            var actions = new List<SC2APIProtocol.Action>();
+            var unit = commander.UnitCalculation.Unit;
+
+            // Determine return target
+            var returnPoint = workerData.IsJitTeam 
+                ? workerData.JitReturnPoint 
+                : workerData.SpeedMiningReturnPoint;
+
+            var distToReturn = Vector3.Distance(unit.Pos, returnPoint);
+            var distToTownhall = Vector3.Distance(unit.Pos, team.TownHallPosition);
+
+            // If at townhall footprint, return cargo
+            if (distToTownhall <= TownhallFootprintRadius)
+            {
+                if (frame - workerData.LastCommandFrame > CommandCooldownFrames)
+                {
+                    // STOP to cancel any pending move, then ReturnCargo
+                    // This ensures the ReturnCargo command isn't queued behind a move
+                    actions.Add(CreateStopCommand(unit.Tag));
+                    actions.Add(CreateReturnCargoCommand(unit.Tag));
+                    workerData.LastCommandFrame = frame;
+                    workerData.State = JitMiningState.ReturningCargo;
+                }
+                return actions;
+            }
+
+            // If close to JIT return point but not yet at townhall, keep moving toward townhall
+            // The return point is typically between A and B minerals, so we may need to pass through it
+            if (distToReturn <= 0.5f && distToTownhall > TownhallFootprintRadius)
+            {
+                // Continue moving toward townhall to actually drop cargo
+                var townhallApproach = CalculateApproachPoint(unit.Pos, team.TownHallPosition);
+                if (frame - workerData.LastCommandFrame > CommandCooldownFrames)
+                {
+                    actions.Add(CreateMoveCommand(unit.Tag, townhallApproach));
+                    workerData.LastCommandFrame = frame;
+                }
+                return actions;
+            }
+
+            // Still en route — move to return point with deceleration bypass
+            if (frame - workerData.LastCommandFrame > CommandCooldownFrames)
+            {
+                // Move to a point past the return point so worker doesn't slow down
+                var bypassPoint = CalculateApproachPoint(unit.Pos, returnPoint);
+                actions.Add(CreateMoveCommand(unit.Tag, bypassPoint));
+                workerData.LastCommandFrame = frame;
+            }
+
+            return actions;
+        }
+
+        /// <summary>
+        /// Cargo has been returned. Now either switch minerals (JIT) or go back to same mineral (speed).
+        /// Issue stop + move to defeat deceleration when leaving townhall.
+        /// </summary>
+        private List<SC2APIProtocol.Action> HandleSwitchPhase(
+            UnitCommander commander, JitWorkerData workerData, MiningTeam team, int frame)
+        {
+            var actions = new List<SC2APIProtocol.Action>();
+            var unit = commander.UnitCalculation.Unit;
+
+            var mineralPos = GetMineralPosition(workerData.CurrentMineralTag);
+            if (!mineralPos.HasValue)
+                return actions;
+
+            var dist = Vector3.Distance(unit.Pos, mineralPos.Value);
+
+            // If at mineral, harvest
+            if (dist <= MineralFootprintRadius + 0.3f)
+            {
+                if (frame - workerData.LastCommandFrame > CommandCooldownFrames)
+                {
+                    actions.Add(CreateStopCommand(unit.Tag));
+                    actions.Add(CreateHarvestCommand(unit.Tag, workerData.CurrentMineralTag));
+                    workerData.LastCommandFrame = frame;
+                    workerData.State = JitMiningState.Harvesting;
+                }
+                return actions;
+            }
+
+            // En route to mineral — move with deceleration bypass
+            if (frame - workerData.LastCommandFrame > CommandCooldownFrames)
+            {
+                var approachPoint = workerData.MineralApproachPoint;
+                
+                // STOP to clear any pending ReturnCargo or idle, then MOVE
+                // This prevents the worker from decelerating at the townhall
+                actions.Add(CreateStopCommand(unit.Tag));
+                actions.Add(CreateMoveCommand(unit.Tag, approachPoint));
+                
+                workerData.LastCommandFrame = frame;
+                workerData.State = JitMiningState.MovingToHarvest;
+            }
+
+            return actions;
+        }
+
+        /// <summary>
+        /// Called from HandleReturnPhase after cargo is successfully returned.
+        /// Switches A/B for JIT teams, keeps same mineral for speed teams.
+        /// </summary>
+        private void OnCargoReturned(JitWorkerData workerData, MiningTeam team)
+        {
+            if (workerData.IsJitTeam)
+            {
+                // A/B Switch: swap current and alternate
+                var oldMineral = workerData.CurrentMineralTag;
+                workerData.CurrentMineralTag = workerData.AlternateMineralTag;
+                workerData.AlternateMineralTag = oldMineral;
+
+                // Recalculate approach point for new mineral
+                var newMineralPos = GetMineralPosition(workerData.CurrentMineralTag);
+                if (newMineralPos.HasValue)
+                {
+                    workerData.MineralApproachPoint = CalculateApproachPoint(team.TownHallPosition, newMineralPos.Value);
+                }
+            }
+            // Non-JIT: keep CurrentMineralTag, just go back to it
+
+            workerData.State = JitMiningState.SwitchingMineral;
+        }
+
+        // ------------------------------------------------------------------
+        // Tracking & Setup
+        // ------------------------------------------------------------------
+
+        private void UpdateWorkerTracking(ResponseObservation observation)
+        {
+            var workers = observation.Observation.RawData.Units
+                .Where(u => u.Alliance == Alliance.Self 
+                    && (u.UnitType == (uint)UnitTypes.ZERG_DRONE 
+                        || u.UnitType == (uint)UnitTypes.TERRAN_SCV 
+                        || u.UnitType == (uint)UnitTypes.PROTOSS_PROBE))
+                .ToList();
+
+            // Remove dead workers
+            var deadTags = _jitWorkerData.Keys.Except(workers.Select(w => w.Tag)).ToList();
+            foreach (var tag in deadTags)
+                _jitWorkerData.Remove(tag);
+
+            // Add new workers (they'll get team-assigned elsewhere or on first frame)
+            foreach (var w in workers)
+            {
+                if (!_jitWorkerData.ContainsKey(w.Tag))
+                {
+                    _jitWorkerData[w.Tag] = new JitWorkerData { Tag = w.Tag };
+                }
+            }
+        }
+
+        /// <summary>
+        /// Assign a worker to a team and set up A/B minerals, return points, etc.
+        /// Call this from your setup logic (e.g., CcaManager or OnStart).
+        /// </summary>
+        public void AssignWorkerToTeam(ulong workerTag, MiningTeam team, int workerIndexInTeam)
+        {
+            if (!_jitWorkerData.TryGetValue(workerTag, out var data))
+                return;
+
+            data.TeamId = team.TeamId;
+            data.IsJitTeam = team.IsJitTeam;
+            data.TownHallPosition = team.TownHallPosition;
+            data.JitReturnPoint = team.JitReturnPoint;
+            data.SpeedMiningReturnPoint = CalculateSpeedMiningReturnPoint(team);
+
+            if (team.MineralTags.Count >= 2)
+            {
+                // Assign A/B based on worker index
+                // Worker 0 -> A, Worker 1 -> B, Worker 2 -> A (for 3 workers / 2 patches)
+                data.CurrentMineralTag = team.MineralTags[workerIndexInTeam % 2];
+                data.AlternateMineralTag = team.MineralTags[(workerIndexInTeam + 1) % 2];
+
+                var mineralPos = GetMineralPosition(data.CurrentMineralTag);
+                if (mineralPos.HasValue)
+                {
+                    data.MineralApproachPoint = CalculateApproachPoint(team.TownHallPosition, mineralPos.Value);
+                }
+            }
+
+            data.State = JitMiningState.MovingToHarvest;
+        }
+
+        // ------------------------------------------------------------------
+        // Helpers
+        // ------------------------------------------------------------------
+
+        private Vector3? GetMineralPosition(ulong mineralTag)
+        {
+            if (_defaultSharkyBot.UnitManager.Commanders.TryGetValue(mineralTag, out var cmd))
+                return cmd.UnitCalculation.Unit.Pos;
+            
+            // Fallback: scan raw observation
+            // This would need access to latest observation; simplified here
+            return null;
+        }
+
+        /// <summary>
+        /// Calculate a point past the target so the worker doesn't decelerate.
+        /// </summary>
+        private Vector3 CalculateApproachPoint(Vector3 from, Vector3 to)
+        {
+            var dir = to - from;
+            if (dir.LengthSquared() < 0.0001f) return to;
+            
+            dir = Vector3.Normalize(dir);
+            // Move 1.5 units past the target
+            return to + dir * 1.5f;
+        }
+
+        private Vector3 CalculateSpeedMiningReturnPoint(MiningTeam team)
+        {
+            // Speed mining return point is typically slightly offset from townhall
+            // toward the mineral field to shorten the walk
+            var townhall = team.TownHallPosition;
+            var avgMineral = Vector3.Zero;
+            foreach (var mt in team.MineralTags)
+            {
+                var pos = GetMineralPosition(mt);
+                if (pos.HasValue) avgMineral += pos.Value;
+            }
+            avgMineral /= team.MineralTags.Count;
+
+            var dir = Vector3.Normalize(avgMineral - townhall);
+            return townhall + dir * ReturnPointOffset;
+        }
+
+        // ------------------------------------------------------------------
+        // Command Builders
+        // ------------------------------------------------------------------
+
+        private SC2APIProtocol.Action CreateMoveCommand(ulong unitTag, Vector3 point)
+        {
+            return new SC2APIProtocol.Action
+            {
+                ActionRaw = new ActionRaw
+                {
+                    UnitCommand = new ActionRawUnitCommand
+                    {
+                        UnitTags = { unitTag },
+                        AbilityId = (int)Abilities.MOVE,
+                        TargetWorldSpacePos = new Point { X = point.X, Y = point.Y, Z = point.Z }
+                    }
+                }
+            };
+        }
+
+        private SC2APIProtocol.Action CreateStopCommand(ulong unitTag)
+        {
+            return new SC2APIProtocol.Action
+            {
+                ActionRaw = new ActionRaw
+                {
+                    UnitCommand = new ActionRawUnitCommand
+                    {
+                        UnitTags = { unitTag },
+                        AbilityId = (int)Abilities.STOP
+                    }
+                }
+            };
+        }
+
+        private SC2APIProtocol.Action CreateHarvestCommand(ulong unitTag, ulong mineralTag)
+        {
+            return new SC2APIProtocol.Action
+            {
+                ActionRaw = new ActionRaw
+                {
+                    UnitCommand = new ActionRawUnitCommand
+                    {
+                        UnitTags = { unitTag },
+                        AbilityId = (int)Abilities.HARVEST_GATHER,
+                        TargetUnitTag = mineralTag
+                    }
+                }
+            };
+        }
+
+        private SC2APIProtocol.Action CreateReturnCargoCommand(ulong unitTag)
+        {
+            return new SC2APIProtocol.Action
+            {
+                ActionRaw = new ActionRaw
+                {
+                    UnitCommand = new ActionRawUnitCommand
+                    {
+                        UnitTags = { unitTag },
+                        AbilityId = (int)Abilities.HARVEST_RETURN
+                    }
+                }
+            };
+        }
+
+        // ------------------------------------------------------------------
+        // IManager Interface
+        // ------------------------------------------------------------------
+
+        public void OnStart(ResponseGameInfo gameInfo, ResponseData data, ResponsePing ping)
+        {
+            // Team setup should happen here or in a dedicated setup manager
+        }
+
+        public void OnEnd(ResponseObservation observation, Result result)
+        {
+            _jitWorkerData.Clear();
+            _miningTeams.Clear();
+        }
+
+        public void OnFrame(ResponseObservation observation, int frame)
+        {
+            // Alternative entry point if your bot uses this signature
+        }
+    }
+}
+TeamPatchMiningTask.cs — MicroTask Integration
+If you want this wired as a Sharky MicroTask (so it plays nice with the MicroManager):
+using System.Collections.Generic;
+using System.Linq;
+using Sharky;
+using Sharky.MicroTasks;
+using SC2APIProtocol;
+
+namespace BabySharkBot.Manager
+{
+    public class TeamPatchMiningTask : MicroTask
+    {
+        private readonly BabySharkMiningManager _miningManager;
+
+        public TeamPatchMiningTask(BabySharkMiningManager miningManager, float priority = 1.0f)
+        {
+            _miningManager = miningManager;
+            Priority = priority;
+        }
+
+        public override void ClaimUnits(Dictionary<ulong, UnitCommander> commanders)
+        {
+            // Claim all worker units
+            foreach (var c in commanders.Values)
+            {
+                var type = c.UnitCalculation.Unit.UnitType;
+                if (type == (uint)UnitTypes.ZERG_DRONE 
+                    || type == (uint)UnitTypes.TERRAN_SCV 
+                    || type == (uint)UnitTypes.PROTOSS_PROBE)
+                {
+                    Claim(c);
+                }
+            }
+        }
+
+        public override IEnumerable<SC2APIProtocol.Action> PerformActions(int frame)
+        {
+            // The mining manager handles everything; we just route through
+            return Enumerable.Empty<SC2APIProtocol.Action>();
+        }
+    }
+}
+Key Refactoring Points
+| Concern                    | Implementation                                                                                        |
+| -------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Stop-then-Move**         | `CreateStopCommand` followed by `CreateMoveCommand` in `HandleSwitchPhase` and `HandleReturnPhase`    |
+| **JIT A/B Switch**         | `OnCargoReturned` swaps `CurrentMineralTag` ↔ `AlternateMineralTag` only when `IsJitTeam`             |
+| **Non-JIT Speed Mining**   | Same mineral every cycle, but still uses `CalculateApproachPoint` to defeat deceleration              |
+| **Deceleration Bypass**    | `CalculateApproachPoint` returns a point **1.5 units past** the target so the worker never slows down |
+| **Cargo Pickup Detection** | `justPickedUp = isCarrying && !wasCarrying` triggers immediate transition to `MovingToReturn`         |
+| **Townhall Footprint**     | `TownhallFootprintRadius = 2.5f` — when inside, issue `STOP` then `HARVEST_RETURN`                    |
+| **Command Cooldown**       | `CommandCooldownFrames = 2` prevents API spam and command queuing issues                              |
+Wiring It Up in CcaManager.cs (or Program.cs)
+// In your bot initialization:
+var miningManager = new BabySharkMiningManager(defaultSharkyBot);
+defaultSharkyBot.Managers.Add(miningManager);
+
+// After map analysis, set up teams:
+var team1 = new MiningTeam
+{
+    TeamId = 1,
+    IsJitTeam = true,
+    TownHallPosition = new Vector3(hatcheryX, hatcheryY, hatcheryZ),
+    JitReturnPoint = new Vector3(jitX, jitY, jitZ),
+    MineralTags = new List<ulong> { mineralA_Tag, mineralB_Tag }
+};
+miningManager.AssignWorkerToTeam(worker1_Tag, team1, 0); // gets A
+miningManager.AssignWorkerToTeam(worker2_Tag, team1, 1); // gets B
+miningManager.AssignWorkerToTeam(worker3_Tag, team1, 2); // gets A
+
+Kimi:
+BabyShark JIT Mining — Code Review & Refactoring Plan
+I’ve analyzed all six files. This is a sophisticated StarCraft II bot with a custom “Just In Time” mining system, but there are critical architectural conflicts and broken handoffs between the CCA (early-game positioning) phase and steady-state JIT rotation. Below is a severity-ranked breakdown of what’s wrong and how to fix it.
+________________________________________
+1. Executive Summary
+Component	Responsibility	Current State
+chrisCrossAppleSause	Frames 0–35: precise worker bumping/alignment	✅ Functional but over-called
+CcaManager	Orchestrates CCA phase, hands off at frame 35	⚠️ Handoff logic is OK but duplicates commands
+BabySharkMiningManager	Steady-state JIT + debug visualization	🔴 Broken JIT rotation; fights with CCA; team ID mismatch
+TeamPatchMiningTask	Sharky MicroTask for mining + build prepositioning	🔴 Dead code; conflicts with Manager in steady state
+BaseDtos	Data structures	✅ Good, but MiningTeam is used inconsistently
+The #1 problem: Three different systems are issuing ActionRaw commands to the same workers during the CCA phase, and the steady-state JIT A/B alternation is not implemented as described in the design doc. Instead, a broken team-role swapper sends returning workers to a wait point instead of the alternate mineral.
+________________________________________
+2. Critical Bugs (Fix Immediately)
+🔴 Bug A: Triple-Command Collision (CCA Phase)
+Location: CcaManager.OnFrame, BabySharkMiningManager.RunJustInTimeMining, TeamPatchMiningTask.PerformActions
+During frames 0–35, all three call _ccaService.BuildBumpOrders() and return raw actions for the same workers:
+// CcaManager.cs (line ~85)
+var actions = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, null);
+
+// BabySharkMiningManager.cs (line ~330)
+var ccaActions = _ccaMiningService.BuildBumpOrders(_currentFrame, _mapData, startIndex, liveWorkers);
+
+// TeamPatchMiningTask.cs (line ~75)
+var bumpCommands = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, UnitCommanders);
+Impact: Workers receive conflicting move orders every frame. The CCA precision alignment is destroyed by duplicate or conflicting commands.
+Fix: Establish single ownership. - Option 1 (Recommended): CcaManager owns frames 0–35 exclusively. BabySharkMiningManager should skip action generation when Settings.ccaMining == true and limit itself to debug drawing. TeamPatchMiningTask should return Empty during CCA. - Option 2: Delete CcaManager entirely and let TeamPatchMiningTask own the CCA phase via its _ccaService reference. This is cleaner because MicroTasks already claim workers.
+________________________________________
+🔴 Bug B: Team ID Mismatch Breaks Main-Base JIT
+Location: BabySharkMiningManager.ProcessFrameObservation + InitializeExpansionMining
+InitializeExpansionMining creates MiningTeam objects with IDs like:
+$"{expansionPosition.X:F1}_{expansionPosition.Y:F1}_T1"   // e.g. "123.4_456.7_T1"
+But TeamPatchAssignmentDto.TeamId is a single letter ("T", "S", "B", "Y").
+In ProcessFrameObservation:
+var team = teams.FirstOrDefault(t => t.TeamId == assignment.TeamId);
+// This is ALWAYS null for main base because "T" != "123.4_456.7_T1"
+Impact: Workers are never synchronized into _expansionTeams. FindWorkerTeam returns null. GetJITMiningTarget falls back to (0,0). Workers walk to the map origin.
+Fix: Use TeamNumber (int) as the canonical key, or ensure MiningTeam.TeamId is set to match TeamPatchAssignmentDto.TeamId.
+// In InitializeExpansionMining, use the same ID scheme:
+team.TeamId = GetTeamPrefix(i + 1); // "T", "S", "B", "Y" for main base
+________________________________________
+🔴 Bug C: JIT Rotation Is Backwards
+Location: BabySharkMiningManager.RegisterCargoReturn + GetJITMiningTarget
+The design doc specifies per-worker A/B alternation: “Every worker alternates between harvesting a B Far patch and a A Near patch.”
+The current code uses a team-role swapper:
+// RegisterCargoReturn
+if (workerTag == state.MineralA_Worker) {
+    state.WaitingWorker = workerTag;        // Returning worker becomes WAITING
+    state.MineralA_Worker = switcher;       // Old waiter goes to A
+}
+Impact: The worker that just returned cargo is sent to the wait point, not the alternate mineral. The design doc explicitly says the returning worker should go to the other mineral after dropping cargo.
+Fix: Implement per-worker mineral tracking exactly as shown in the design doc’s JitWorkerData:
+// Add to BabySharkMiningManager or BaseDtos
+private class JitWorkerState
+{
+    public ulong CurrentMineralTag { get; set; }
+    public ulong AlternateMineralTag { get; set; }
+    public bool WasCarrying { get; set; }
+}
+
+// On cargo return:
+private void OnCargoReturned(ulong workerTag)
+{
+    if (!_jitWorkerStates.TryGetValue(workerTag, out var state)) return;
+    var old = state.CurrentMineralTag;
+    state.CurrentMineralTag = state.AlternateMineralTag;
+    state.AlternateMineralTag = old;
+}
+Then GetJITMiningTarget simply looks up state.CurrentMineralTag for that worker. No team-role state machine needed.
+________________________________________
+🔴 Bug D: Debugger.Break() in Production Loop
+Location: BabySharkMiningManager.ExecuteJustInTimeMining
+if (carrying && !wasCarrying)
+{
+    Console.WriteLine($"...Triggering system break.");
+    System.Diagnostics.Debugger.Break();  // <-- REMOVE THIS
+}
+________________________________________
+🔴 Bug E: Settings.ccaMining Is a Shared Mutable Flag
+Location: CcaManager.OnFrame, BabySharkMiningManager.ProcessFrameObservation, BabySharkMiningManager.SignalMiningStarted
+CcaManager sets it to false at frame 35. ProcessFrameObservation sets it to _currentFrame <= 35. If BabySharkMiningManager runs after CcaManager in the manager list, it overwrites the handoff.
+Fix: One owner. CcaManager should set the flag to false and then BabySharkMiningManager should treat it as read-only.
+________________________________________
+3. Architecture Issues
+Issue 1: Manager vs. MicroTask Ownership Conflict
+BabySharkMiningManager is an IManager. TeamPatchMiningTask is a MicroTask (inherits from MiningTask). In Sharky: - Managers run first and generate actions - MicroTasks are executed by the MicroManager and also generate actions - If both issue ActionRaw commands for the same unitTag, the last one in the action list wins
+Currently: - BabySharkMiningManager issues raw move/harvest/return commands directly - TeamPatchMiningTask also issues commands via commander.Order(...)
+Recommendation: Pick one architecture:
+Approach	Pros	Cons
+A. Manager-only	Simple; no Sharky MicroTask complexity	Bypasses Sharky’s worker defense/build logic
+B. MicroTask-only	Integrates with Sharky; defense/build prepositioning is natural	Must reimplement inside TeamPatchMiningTask
+Recommended: Go with B — move ALL mining logic into TeamPatchMiningTask. Remove BabySharkMiningManager’s action generation entirely; keep it as a data service (map data, debug drawing, mineral tracking). This is the Sharky-idiomatic way.
+Issue 2: Dead Code in TeamPatchMiningTask
+The task carries heavy baggage that appears unused: - ImitationRecorder _recorder, _scoreRecorder - MiningPatternAdvisor _patternAdvisor - MiningCycleRecord _currentCycle - CycleLengthFrames = 90 and cycle phase math that is bypassed
+Recommendation: Delete all imitation-learning and cycle-recording code. It complicates the state machine and isn’t referenced by any other file.
+Issue 3: Hardcoded Frame Thresholds
+chrisCrossAppleSause uses magic numbers: frame == 0, frame >= 35, frame > 65. These are scattered across CcaManager and chrisCrossAppleSause.
+Recommendation: Centralize in a CcaTimingConfig class or constants.
+________________________________________
+4. Refactoring Plan
+Phase 1: Fix the CCA Handoff (Immediate)
+1.	Remove BabySharkMiningManager.RunJustInTimeMining() — CCA should not exist in the mining manager.
+2.	Remove TeamPatchMiningTask’s CCA bump order call. Let CcaManager own it exclusively.
+3.	In BabySharkMiningManager.OnFrame(), if Settings.ccaMining == true, return only debug draw actions, no unit commands.
+Phase 2: Fix Team Identity (Immediate)
+Unify team identification. Either: - Make MiningTeam.TeamId match TeamPatchAssignmentDto.TeamId (e.g., "T", "S"), OR - Use TeamNumber (int) everywhere and drop string IDs for internal lookups.
+Phase 3: Rewrite JIT Rotation (High Priority)
+Replace RegisterCargoReturn / MiningTeamState with per-worker mineral alternation:
+// In BabySharkMiningManager (or BaseDtos)
+private readonly Dictionary<ulong, JitWorkerState> _jitStates = new();
+
+public void InitializeWorkerJitState(ulong workerTag, ulong mineralA_Tag, ulong mineralB_Tag, string teamId)
+{
+    _jitStates[workerTag] = new JitWorkerState
+    {
+        TeamId = teamId,
+        CurrentMineralTag = mineralA_Tag,    // Start on A
+        AlternateMineralTag = mineralB_Tag,  // Switch to B after return
+        WasCarrying = false
+    };
+}
+
+// In ExecuteJustInTimeMining, replace the cargo transition block:
+var carrying = worker.BuffIds.Any(b => b == CARRY_MINERALS_BUFF);
+_previousCarryingState.TryGetValue(worker.Tag, out var wasCarrying);
+
+if (!carrying && wasCarrying && _jitStates.TryGetValue(worker.Tag, out var jit))
+{
+    // SWAP: returning worker goes to alternate mineral next
+    var temp = jit.CurrentMineralTag;
+    jit.CurrentMineralTag = jit.AlternateMineralTag;
+    jit.AlternateMineralTag = temp;
+}
+_previousCarryingState[worker.Tag] = carrying;
+
+// Then resolve target:
+ulong targetMineralTag = 0;
+if (carrying) {
+    // Move to JIT return point, then SMART to townhall
+} else {
+    if (_jitStates.TryGetValue(worker.Tag, out var jit))
+        targetMineralTag = jit.CurrentMineralTag;
+    // Issue HARVEST_GATHER to targetMineralTag, or MOVE to its approach point
+}
+Phase 4: Consolidate Action Generation (Medium Priority)
+Move all worker command generation into one of these two locations: 1. TeamPatchMiningTask (Sharky-native, recommended) 2. BabySharkMiningManager (simpler migration, but non-idiomatic)
+If you choose TeamPatchMiningTask: - BabySharkMiningManager becomes a read-only data provider - TeamPatchMiningTask queries it for mineral tags, return points, and JIT state - Build prepositioning (JitPrepositionService) stays in the Task where it already lives
+Phase 5: Clean Up chrisCrossAppleSause
+•	Extract frame thresholds (0, 35, 65) into const fields
+•	The AlignAtMineralA phase issues global harvest commands to all workers. Ensure this only happens once (use a bool _harvestCommandsIssued flag) to avoid spamming HARVEST_GATHER every frame.
+________________________________________
+5. Specific Code Snippets
+Fix: Remove Duplicate CCA in BabySharkMiningManager
+// BabySharkMiningManager.OnFrame
+public IEnumerable<SC2Action> OnFrame(ResponseObservation observation)
+{
+    _currentFrame = (int)observation.Observation.GameLoop;
+    ProcessFrameObservation(observation);  // Read-only sync, NO command generation
+
+    var actions = new List<SC2Action>();
+
+    if (Settings.ccaMining)
+    {
+        // DO NOT issue commands here. CcaManager owns this phase.
+        // Only debug drawing:
+        if (ManagerDebugService.IsDebugEnabled) DrawDebugVisuals(observation);
+        return actions;
+    }
+
+    actions.AddRange(ExecuteJustInTimeMining(observation));
+    // ... rest of debug drawing ...
+    return actions;
+}
+Fix: Per-Worker A/B Swap
+private class JitWorkerState
+{
+    public string TeamId { get; set; }
+    public ulong CurrentMineralTag { get; set; }
+    public ulong AlternateMineralTag { get; set; }
+    public bool WasCarrying { get; set; }
+}
+
+private void OnWorkerCargoReturned(ulong workerTag)
+{
+    if (!_jitStates.TryGetValue(workerTag, out var state)) return;
+    (state.CurrentMineralTag, state.AlternateMineralTag) = 
+        (state.AlternateMineralTag, state.CurrentMineralTag);
+}
+Fix: Use Named Buff Constants
+Replace 271, 272 with:
+private const uint BUFF_CARRY_MINERAL_FIELD = 271;
+private const uint BUFF_CARRY_HIGH_YIELD = 272;
+// Or use Sharky's Ids.Buffs if available
+________________________________________
+6. Testing Checklist
+After refactoring, verify:
+•	☐ Frame 0–34: Only CcaManager issues commands. BabySharkMiningManager draws debug only.
+•	☐ Frame 35: Clean handoff. No duplicate commands. Settings.ccaMining becomes false and stays false.
+•	☐ Frame 35+: Workers alternate minerals. A worker returning from Mineral A goes to Mineral B next cycle, not the wait point.
+•	☐ Team IDs: FindWorkerTeam successfully resolves all 12 workers to their correct MiningTeam.
+•	☐ Speed Mining Fallback: 2-worker teams (non-JIT) stay on their assigned mineral and use standard speed mining geometry.
+•	☐ Build Prepositioning: JitPrepositionService can still pull a worker from Team 4 for Spawning Pool without breaking the rotation for remaining workers.
+________________________________________
+Would you like me to generate the fully refactored BabySharkMiningManager.cs with the per-worker JIT state machine and the team-ID fix applied?
+
+Fix: Establish single ownership.
+Option 1 (Recommended): CcaManager owns frames 0–35 exclusively. BabySharkMiningManager should skip action generation when Settings.ccaMining == true and limit itself to debug drawing. TeamPatchMiningTask should return Empty during CCA.
+Fix: One owner. CcaManager should set the flag to false and then BabySharkMiningManager should treat it as read-only.
+fix  Bug B: Team ID Mismatch Breaks Main-Base JIT
+🔴 Bug C: JIT Rotation Is Backwards there are 8 minerals in the starting base for four teams of a large mineral and a small mineral node, some maps differ but usually 4 large mineral nodes that are near "A" and four smaller nodes that are further away "B" with an 8 worker start we have 4 "1" workers and 4 "2" workers the "1" workers starts on the "A" mineral node, and the "2" workers start on the "B" nodes.
+For a 12 worker start we have 4 workers that have the role of pushing and bumping the "1" workers from behind in order to repel the "1" workers faster to the target.  These four "3" team members will mine "A" when the "1" worker has collected minerals.
+   🔴 Bug D: Debugger.Break() in Production Loop that is there so I can see what is happening and diagnose the real bugs 
+🔴 Bug E: Settings.ccaMining Is a Shared Mutable Flag Fix: One owner. CcaManager should set the flag to false and then BabySharkMiningManager should treat it as read-only.
+3. Architecture Issues
+Issue 1: Manager vs. MicroTask Ownership Conflict
+Recommended: Go with B — move ALL mining logic into TeamPatchMiningTask. Remove BabySharkMiningManager's action generation entirely; keep it as a data service (map data, debug drawing, mineral tracking). This is the Sharky-idiomatic way.
+Issue 2: Dead Code in TeamPatchMiningTask Recommendation: Delete all imitation-learning and cycle-recording code. It complicates the state machine and isn't referenced by any other file.  Machine learning was tried to improve the worker "3" pushing and bumping but never worked
+Issue 3: Hardcoded Frame Thresholds Recommendation: Centralize in a CcaTimingConfig class or constants.
+

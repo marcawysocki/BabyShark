@@ -1,0 +1,2 @@
+ProcessVisualUnits Streamline.MD
+This need to be made ligher weight past the initiation phase.  Much of what it does is Acquire new data on the first frame but it does that every single frame that this is called  After frame zero all I really need to do is observation and pass that to all the managers and Tasks

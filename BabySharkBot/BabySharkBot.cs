@@ -129,6 +129,7 @@ namespace BabySharkBot
             // Create BabySharkMiningManager with shared CCA service instance
             _miningManager = new BabySharkMiningManager(workerLabelService, crosshairService, mineralLabelService, vespeneLabelService, expansionCOMService, expansionPointService, expansionPointDrawService, provisionalExpansionService, MineralReturnRateTrackerService, FrameToTimeConverter, mapDataService, SpawningPoolPlacementService, ccaService);
             Console.WriteLine("BabySharkAI: Created BabySharkMiningManager with shared CCA service instance");
+            Managers.Add(_miningManager);
 
             // Create and register CCA manager to run bump/order logic in the manager lifecycle.
             try
