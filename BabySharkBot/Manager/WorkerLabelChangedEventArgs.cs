@@ -4,6 +4,8 @@ namespace BabySharkBot.Manager
 {
     /// <summary>
     /// Event arguments for worker label changes.
+    /// Used by WorkerLabelService to notify other components (like BabySharkMiningManager) 
+    /// when a worker's role or identifier has been updated.
     /// </summary>
     public class WorkerLabelChangedEventArgs : EventArgs
     {

@@ -16,6 +16,7 @@ namespace BabySharkBot.Managers
 {
     /// <summary>
     /// Custom mining manager for BabyShark that replaces Sharky's default mining manager.
+    /// Orchestrates mineral patch assignment and JIT prepositioning.
     /// Handles map data initialization, worker mining coordination, and custom debug drawing.
     /// Provides visualization for:
     /// - Worker labels with names, roles, and targets

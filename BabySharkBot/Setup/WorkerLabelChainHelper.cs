@@ -7,6 +7,10 @@ using SC2APIProtocol;
 
 namespace BabySharkBot.Setup
 {
+    /// <summary>
+    /// Helper for labeling workers in a greedy chain order (W1-W12).
+    /// Used during initialization to establish the start-state mapping between units and roles.
+    /// </summary>
     public static class WorkerLabelChainHelper
     {
         public static List<WorkerEntryDto> BuildWorkersInAW12ThroughW1Order(

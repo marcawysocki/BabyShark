@@ -8,11 +8,17 @@ using BabySharkBot.MicroTasks;
 using BabySharkBot.Managers;
 using BabySharkBot.Manager;
 using System.Diagnostics;
+using System.Numerics;
 
 #nullable enable
 
 namespace BabySharkBot.Services
 {
+    /// <summary>
+    /// Domain Metaphor: "chrisCrossAppleSause" — Criss-cross applesauce (sitting cross-legged).
+    /// Purpose: Handles worker initialization and setup. Arranges units per team
+    /// and broadcasts initial briefing/orders.
+    /// </summary>
     public sealed class chrisCrossAppleSause
     {
         public enum TestPhase { Idle, AssigningWorkers, AcceleratingWorkerOne, AlignAtMineralA, CancelAndReturnHome }
@@ -22,12 +28,16 @@ namespace BabySharkBot.Services
         public const int AlignThreshold = 35;
         public const int EndThreshold = 65;
 
-        // FIX: Removed 'static' so phase is per-instance and doesn't leak across spawns/games
-        private TestPhase _phase = TestPhase.Idle;
-        private readonly Dictionary<string, CcaSpawnLearningState> _states = new Dictionary<string, CcaSpawnLearningState>(StringComparer.OrdinalIgnoreCase);
-        private bool _harvestCommandsIssued = false;
+        private readonly CollisionCalculator _collisionCalculator = new CollisionCalculator();
+        private const float WorkerCollisionRadius = 0.6f; // SC2 worker radius + safety margin
 
-        public TestPhase CurrentPhase => _phase;
+        private readonly Dictionary<string, CcaSpawnLearningState> _states = new Dictionary<string, CcaSpawnLearningState>(StringComparer.OrdinalIgnoreCase);
+
+        public TestPhase CurrentPhase(MawBaseLocationData mapData, int startIndex)
+        {
+            var state = GetOrCreateCurrentSpawnState(mapData, startIndex);
+            return state.Phase;
+        }
 
         public CcaSpawnLearningState GetOrCreateCurrentSpawnState(MawBaseLocationData mapData, int startIndex)
         {
@@ -39,7 +49,9 @@ namespace BabySharkBot.Services
                     SpawnKey = key,
                     StartIndex = startIndex,
                     TealM1IsFar = startIndex >= 0 && mapData?.TealM1IsFar != null && startIndex < mapData.TealM1IsFar.Length && mapData.TealM1IsFar[startIndex],
-                    YellowM8IsFar = startIndex >= 0 && mapData?.YellowM8IsFar != null && startIndex < mapData.YellowM8IsFar.Length && mapData.YellowM8IsFar[startIndex]
+                    YellowM8IsFar = startIndex >= 0 && mapData?.YellowM8IsFar != null && startIndex < mapData.YellowM8IsFar.Length && mapData.YellowM8IsFar[startIndex],
+                    Phase = TestPhase.Idle,
+                    HarvestCommandsIssued = false
                 };
                 _states[key] = state;
             }
@@ -51,11 +63,11 @@ namespace BabySharkBot.Services
             return GetOrCreateCurrentSpawnState(mapData, startIndex);
         }
 
-        public void SetPhase(TestPhase phase)
+        public void SetPhase(CcaSpawnLearningState state, TestPhase phase)
         {
-            if (_phase == phase) return;
-            _phase = phase;
-            Console.WriteLine($"chrisCrossAppleSause: Phase changed to {_phase}");
+            if (state.Phase == phase) return;
+            state.Phase = phase;
+            Console.WriteLine($"chrisCrossAppleSause [{state.SpawnKey}]: Phase changed to {state.Phase}");
         }
 
         public void EnableCcaMiningForCurrentSpawn(MawBaseLocationData mapData, int startIndex)
@@ -63,7 +75,7 @@ namespace BabySharkBot.Services
             var state = GetOrCreateCurrentSpawnState(mapData, startIndex);
             state.CcaMining = true;
             Settings.ccaMining = true;
-            if (_phase == TestPhase.Idle) SetPhase(TestPhase.AssigningWorkers);
+            if (state.Phase == TestPhase.Idle) SetPhase(state, TestPhase.AssigningWorkers);
         }
 
         public IEnumerable<SC2APIProtocol.Action> BuildBumpOrders(int frame, MawBaseLocationData mapData, int startIndex, IReadOnlyList<WorkerEntryDto> workerEntries, IEnumerable<UnitCommander>? commanders = null)
@@ -71,14 +83,15 @@ namespace BabySharkBot.Services
             var commands = new List<SC2APIProtocol.Action>();
             if (!Settings.ccaMining || mapData == null || workerEntries == null || workerEntries.Count == 0) return commands;
 
+            var state = GetOrCreateCurrentSpawnState(mapData, startIndex);
+
             // Frequency Logic: Idle/Assigning run every 5 frames. Accelerating/Aligning run EVERY frame.
-            bool isHighFrequencyPhase = _phase == TestPhase.AcceleratingWorkerOne || _phase == TestPhase.AlignAtMineralA;
+            bool isHighFrequencyPhase = state.Phase == TestPhase.AcceleratingWorkerOne || state.Phase == TestPhase.AlignAtMineralA;
             if (frame % 5 != 0 && !isHighFrequencyPhase)
             {
                 return commands;
             }
 
-            var state = GetOrCreateCurrentSpawnState(mapData, startIndex);
             var workerCount = Settings.WorkerCount > 0 ? Settings.WorkerCount : 12;
 
             // Fallback for missing assignments
@@ -113,7 +126,7 @@ namespace BabySharkBot.Services
                     var stopCmd = new ActionRawUnitCommand { AbilityId = (int)Abilities.STOP, UnitTags = { w.UnitTag } };
                     commands.Add(new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = stopCmd } });
                 }
-                Console.WriteLine($"chrisCrossAppleSause: Issued STOP to {workerEntries.Count} workers on Frame {StartFrame}.");
+                Console.WriteLine($"chrisCrossAppleSause [{state.SpawnKey}]: Issued STOP to {workerEntries.Count} workers on Frame {StartFrame}.");
             }
 
             if (state.TeamAssignments.Count == 0) return commands;
@@ -140,23 +153,24 @@ namespace BabySharkBot.Services
             while (stateChanged)
             {
                 stateChanged = false;
-                switch (_phase)
+                switch (state.Phase)
                 {
                     case TestPhase.Idle:
-                        if (state.TeamAssignments.Any()) { SetPhase(TestPhase.AssigningWorkers); stateChanged = true; }
+                        if (state.TeamAssignments.Any()) { SetPhase(state, TestPhase.AssigningWorkers); stateChanged = true; }
                         break;
                     case TestPhase.AssigningWorkers:
-                        if (state.TeamAssignments.Any()) { SetPhase(TestPhase.AcceleratingWorkerOne); stateChanged = true; }
+                        if (state.TeamAssignments.Any()) { SetPhase(state, TestPhase.AcceleratingWorkerOne); stateChanged = true; }
                         break;
                     case TestPhase.AcceleratingWorkerOne:
                         var accCommands = HandleAcceleratingWorkerOne(frame, mapData, state, workerEntries, workerCount, workerByLabel);
-                        if (_phase == TestPhase.AlignAtMineralA && !accCommands.Any()) { stateChanged = true; continue; }
+                        if (state.Phase == TestPhase.AlignAtMineralA && !accCommands.Any()) { stateChanged = true; continue; }
                         commands.AddRange(accCommands);
                         return commands;
                     case TestPhase.AlignAtMineralA:
                         // After frame 35, once we transition to alignment, immediately issue harvest commands to all workers
-                        if (!_harvestCommandsIssued)
+                        if (!state.HarvestCommandsIssued)
                         {
+                            var harvestedTags = new HashSet<ulong>();
                             foreach (var team in state.TeamAssignments)
                             {
                                 var minerals = team.Minerals;
@@ -168,21 +182,40 @@ namespace BabySharkBot.Services
                                 var w2 = ResolveLiveWorkerBySuffix(team.Workers, workerEntries, "2");
                                 var w3 = ResolveLiveWorkerBySuffix(team.Workers, workerEntries, "3");
 
+                                if (mineralA.UnitTag == 0) Console.WriteLine($"[WARN] {state.SpawnKey} Team {team.TeamNumber} mineralA ({mineralA.Label}) has UnitTag=0");
+                                if (mineralB.UnitTag == 0) Console.WriteLine($"[WARN] {state.SpawnKey} Team {team.TeamNumber} mineralB ({mineralB.Label}) has UnitTag=0");
+
                                 if (commanders != null)
                                 {
-                                    if (w1 != null) { var c1 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w1.UnitTag); if (c1 != null) commands.AddRange(c1.Order(frame, Abilities.HARVEST_GATHER, null, mineralA.UnitTag)); }
-                                    if (w2 != null) { var c2 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w2.UnitTag); if (c2 != null) commands.AddRange(c2.Order(frame, Abilities.HARVEST_GATHER, null, mineralB.UnitTag)); }
-                                    if (w3 != null) { var c3 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w3.UnitTag); if (c3 != null) commands.AddRange(c3.Order(frame, Abilities.HARVEST_GATHER, null, mineralA.UnitTag)); }
+                                    if (w1 != null && mineralA.UnitTag != 0) { var c1 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w1.UnitTag); if (c1 != null) { commands.AddRange(c1.Order(frame, Abilities.HARVEST_GATHER, null, mineralA.UnitTag)); harvestedTags.Add(w1.UnitTag); } }
+                                    if (w2 != null && mineralB.UnitTag != 0) { var c2 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w2.UnitTag); if (c2 != null) { commands.AddRange(c2.Order(frame, Abilities.HARVEST_GATHER, null, mineralB.UnitTag)); harvestedTags.Add(w2.UnitTag); } }
+                                    if (w3 != null && mineralA.UnitTag != 0) { var c3 = commanders.FirstOrDefault(c => c.UnitCalculation.Unit.Tag == w3.UnitTag); if (c3 != null) { commands.AddRange(c3.Order(frame, Abilities.HARVEST_GATHER, null, mineralA.UnitTag)); harvestedTags.Add(w3.UnitTag); } }
                                 }
                                 else
                                 {
-                                    if (w1 != null) commands.AddRange(Harvest(w1.UnitTag, mineralA.Position, mineralA.UnitTag));
-                                    if (w2 != null) commands.AddRange(Harvest(w2.UnitTag, mineralB.Position, mineralB.UnitTag));
-                                    if (w3 != null) commands.AddRange(Harvest(w3.UnitTag, mineralA.Position, mineralA.UnitTag));
+                                    if (w1 != null && mineralA.UnitTag != 0) { commands.AddRange(Harvest(w1.UnitTag, mineralA.Position, mineralA.UnitTag)); harvestedTags.Add(w1.UnitTag); }
+                                    if (w2 != null && mineralB.UnitTag != 0) { commands.AddRange(Harvest(w2.UnitTag, mineralB.Position, mineralB.UnitTag)); harvestedTags.Add(w2.UnitTag); }
+                                    if (w3 != null && mineralA.UnitTag != 0) { commands.AddRange(Harvest(w3.UnitTag, mineralA.Position, mineralA.UnitTag)); harvestedTags.Add(w3.UnitTag); }
                                 }
                             }
-                            _harvestCommandsIssued = true;
-                            Console.WriteLine($"chrisCrossAppleSause: Frame {frame} - Transition to AlignAtMineralA: Issued global Harvest (HARVEST_GATHER) commands.");
+
+                            // Safety-net: Harvest for any worker not explicitly assigned
+                            foreach (var w in workerEntries)
+                            {
+                                if (!harvestedTags.Contains(w.UnitTag))
+                                {
+                                    var closestMineral = state.TeamAssignments.SelectMany(t => t.Minerals).Where(m => m.UnitTag != 0).OrderBy(m => Distance(w.Position, m.Position)).FirstOrDefault();
+                                    if (closestMineral != null)
+                                    {
+                                        commands.AddRange(Harvest(w.UnitTag, closestMineral.Position, closestMineral.UnitTag));
+                                        harvestedTags.Add(w.UnitTag);
+                                        Console.WriteLine($"[SAFETY] {state.SpawnKey}: Safety-net harvest for worker {w.UnitTag} ({w.FinalLabel}) to mineral {closestMineral.Label}");
+                                    }
+                                }
+                            }
+
+                            state.HarvestCommandsIssued = true;
+                            Console.WriteLine($"chrisCrossAppleSause [{state.SpawnKey}]: Frame {frame} - Transition to AlignAtMineralA: Issued global Harvest commands.");
                         }
                         
                         commands.AddRange(HandleAlignAtMineralA(frame, mapData, state, workerEntries));
@@ -197,7 +230,7 @@ namespace BabySharkBot.Services
         private IEnumerable<SC2APIProtocol.Action> HandleAcceleratingWorkerOne(int frame, MawBaseLocationData mapData, CcaSpawnLearningState state, IReadOnlyList<WorkerEntryDto> workerEntries, int workerCount, Dictionary<string, WorkerEntryDto> workerByLabel)
         {
             var commands = new List<SC2APIProtocol.Action>();
-            if (frame >= AlignThreshold) { SetPhase(TestPhase.AlignAtMineralA); return commands; }
+            if (frame >= AlignThreshold) { SetPhase(state, TestPhase.AlignAtMineralA); return commands; }
 
             // Handle Crossover Bumping Pairs (Higher priority)
             if (workerCount == 12)
@@ -228,19 +261,24 @@ namespace BabySharkBot.Services
                 var w2 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "2");
                 var w3 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "3");
 
+                var teamPeers = new List<WorkerEntryDto>();
+                if (w1 != null) teamPeers.Add(w1);
+                if (w2 != null) teamPeers.Add(w2);
+                if (w3 != null) teamPeers.Add(w3);
+
                 if (workerCount == 8)
                 {
-                    if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame));
-                    if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, mineralB, frame));
+                    if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame, teamPeers));
+                    if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, mineralB, frame, teamPeers));
                 }
                 else if (workerCount == 12)
                 {
                     bool isCrossover = (team.TeamNumber == 1 && state.TealM1IsFar) || (team.TeamNumber == 2 && state.TealM1IsFar) || (team.TeamNumber == 3 && state.YellowM8IsFar) || (team.TeamNumber == 4 && state.YellowM8IsFar);
                     if (isCrossover)
                     {
-                        if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame));
-                        if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame));
-                        if (w3 != null) commands.AddRange(ProcessWorkerMovement(w3, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame));
+                        if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame, teamPeers));
+                        if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame, teamPeers));
+                        if (w3 != null) commands.AddRange(ProcessWorkerMovement(w3, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame, teamPeers));
                         continue;
                     }
 
@@ -251,14 +289,14 @@ namespace BabySharkBot.Services
 
                     if (state.TeamBumping.GetValueOrDefault(team.TeamNumber, true) && lead != null && partner != null)
                     {
-                        commands.AddRange(ProcessBumpingPair(frame, state, team.TeamNumber, lead, partner, mineralA));
+                        commands.AddRange(ProcessBumpingPair(frame, state, team.TeamNumber, lead, partner, mineralA, teamPeers));
                     }
                     else
                     {
-                        if (lead != null) commands.AddRange(ProcessWorkerMovement(lead, mineralA, frame));
-                        if (partner != null) commands.AddRange(ProcessWorkerMovement(partner, mineralA, frame));
+                        if (lead != null) commands.AddRange(ProcessWorkerMovement(lead, mineralA, frame, teamPeers));
+                        if (partner != null) commands.AddRange(ProcessWorkerMovement(partner, mineralA, frame, teamPeers));
                     }
-                    if (side != null) commands.AddRange(ProcessWorkerMovement(side, mineralB, frame));
+                    if (side != null) commands.AddRange(ProcessWorkerMovement(side, mineralB, frame, teamPeers));
                 }
             }
             return commands;
@@ -267,14 +305,55 @@ namespace BabySharkBot.Services
         private IEnumerable<SC2APIProtocol.Action> HandleAlignAtMineralA(int frame, MawBaseLocationData mapData, CcaSpawnLearningState state, IReadOnlyList<WorkerEntryDto> workerEntries)
         {
             var commands = new List<SC2APIProtocol.Action>();
-            if (frame > EndThreshold) { SetPhase(TestPhase.CancelAndReturnHome); return commands; }
+            if (frame > EndThreshold) { SetPhase(state, TestPhase.CancelAndReturnHome); return commands; }
 
             // FIX: Removed move logic from alignment phase. 
             // Harvest commands are issued once (in the state machine above) and never overridden by SMART moves here.
             return commands;
         }
 
-        private IEnumerable<SC2APIProtocol.Action> ProcessBumpingPair(int frame, CcaSpawnLearningState state, int pairId, WorkerEntryDto lead, WorkerEntryDto partner, OrderedMineral mineral)
+        /// <summary>
+        /// Offsets a worker's target point perpendicular to its path if the straight-line
+        /// trajectory would intersect another worker's collision circle.
+        /// </summary>
+        private Point2D CalculateCollisionFreeTarget(
+            WorkerEntryDto worker,
+            Vector2Dto targetPos,
+            IEnumerable<WorkerEntryDto> peers)
+        {
+            var start = new Vector2(worker.Position.X, worker.Position.Y);
+            var end = new Vector2(targetPos.X, targetPos.Y);
+            foreach (var peer in peers)
+            {
+                if (peer?.Position == null || peer.UnitTag == worker.UnitTag)
+                    continue;
+                var peerPos = new Vector2(peer.Position.X, peer.Position.Y);
+                if (_collisionCalculator.Collides(peerPos, WorkerCollisionRadius, start, end))
+                {
+                    var dir = end - start;
+                    var lenSq = Vector2.Dot(dir, dir);
+                    if (lenSq < 0.0001f)
+                        continue;
+                    var len = MathF.Sqrt(lenSq);
+                    var perp = new Vector2(-dir.Y / len, dir.X / len) * (WorkerCollisionRadius * 2.5f);
+                    // Try positive offset
+                    var offsetEnd = end + new Vector2(perp.X, perp.Y);
+                    if (!_collisionCalculator.Collides(peerPos, WorkerCollisionRadius, start, offsetEnd))
+                    {
+                        return new Point2D { X = offsetEnd.X, Y = offsetEnd.Y };
+                    }
+                    // Try negative offset
+                    offsetEnd = end - new Vector2(perp.X, perp.Y);
+                    if (!_collisionCalculator.Collides(peerPos, WorkerCollisionRadius, start, offsetEnd))
+                    {
+                        return new Point2D { X = offsetEnd.X, Y = offsetEnd.Y };
+                    }
+                }
+            }
+            return new Point2D { X = targetPos.X, Y = targetPos.Y };
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> ProcessBumpingPair(int frame, CcaSpawnLearningState state, int pairId, WorkerEntryDto lead, WorkerEntryDto partner, OrderedMineral mineral, IEnumerable<WorkerEntryDto>? peers = null)
         {
             var commands = new List<SC2APIProtocol.Action>();
             if (lead == null || partner == null || mineral == null) return commands;
@@ -286,25 +365,45 @@ namespace BabySharkBot.Services
                 var avgY = (lead.Position.Y + partner.Position.Y) * 0.5f;
                 var targetX = (avgX + mineral.Position.X) * 0.5f;
                 var targetY = (avgY + mineral.Position.Y) * 0.5f;
-                var leadMove = new Point2D { X = (lead.Position.X + targetX) * 0.5f, Y = (lead.Position.Y + targetY) * 0.5f };
-                var partnerMove = new Point2D { X = partner.Position.X + (targetX - partner.Position.X) * 0.25f, Y = partner.Position.Y + (targetY - partner.Position.Y) * 0.25f };
+
+                // Shared convergence point — compute collision-free offsets for each worker
+                var sharedTarget = new Vector2Dto(targetX, targetY);
+                var leadTarget = CalculateCollisionFreeTarget(lead, sharedTarget, new[] { partner });
+                var partnerTarget = CalculateCollisionFreeTarget(partner, sharedTarget, new[] { lead });
+
+                var leadMove = new Point2D { X = (lead.Position.X + leadTarget.X) * 0.5f, Y = (lead.Position.Y + leadTarget.Y) * 0.5f };
+                var partnerMove = new Point2D { X = (partner.Position.X + partnerTarget.X) * 0.5f, Y = (partner.Position.Y + partnerTarget.Y) * 0.5f };
+                
                 commands.AddRange(MoveTo(lead.UnitTag, leadMove, frame));
                 commands.AddRange(MoveTo(partner.UnitTag, partnerMove, frame));
             }
             else
             {
-                commands.AddRange(ProcessWorkerMovement(lead, mineral, frame));
-                commands.AddRange(ProcessWorkerMovement(partner, mineral, frame));
+                commands.AddRange(ProcessWorkerMovement(lead, mineral, frame, peers));
+                commands.AddRange(ProcessWorkerMovement(partner, mineral, frame, peers));
             }
             return commands;
         }
 
-        private IEnumerable<SC2APIProtocol.Action> ProcessWorkerMovement(WorkerEntryDto worker, OrderedMineral mineral, int frame)
+        private IEnumerable<SC2APIProtocol.Action> ProcessWorkerMovement(WorkerEntryDto worker, OrderedMineral mineral, int frame, IEnumerable<WorkerEntryDto>? peers = null)
         {
             if (worker == null || mineral == null) return Array.Empty<SC2APIProtocol.Action>();
             if (Distance(worker.Position, mineral.Position) <= 1.5f) return Harvest(worker.UnitTag, mineral.Position, mineral.UnitTag);
-            var movePoint = new Point2D { X = (worker.Position.X + mineral.Position.X) * 0.5f, Y = (worker.Position.Y + mineral.Position.Y) * 0.5f };
-            return MoveTo(worker.UnitTag, movePoint, frame);
+            
+            // Default midpoint toward mineral
+            var rawTarget = new Point2D
+            {
+                X = (worker.Position.X + mineral.Position.X) * 0.5f,
+                Y = (worker.Position.Y + mineral.Position.Y) * 0.5f
+            };
+
+            // De-clog: offset target if path intersects peer workers
+            var safeTarget = CalculateCollisionFreeTarget(
+                worker,
+                new Vector2Dto(rawTarget.X, rawTarget.Y),
+                peers ?? Array.Empty<WorkerEntryDto>());
+
+            return MoveTo(worker.UnitTag, safeTarget, frame);
         }
 
         private IEnumerable<SC2APIProtocol.Action> Harvest(ulong tag, Vector2Dto mineralPos, ulong mineralTag = 0)
@@ -426,6 +525,11 @@ namespace BabySharkBot.Services
                     }
                 }
             }
+
+            if (mineralLabelService == null || state.TeamAssignments.Any(t => t.Minerals.Any(m => m.UnitTag == 0)))
+            {
+                Console.WriteLine($"[WARN] {state.SpawnKey} Some minerals lack UnitTag. Ensure RecordSpawnObservation receives MineralLabelService.");
+            }
         }
 
         private void SyncWorkerLabels(WorkerEntryDto logical, WorkerEntryDto live)
@@ -446,5 +550,9 @@ namespace BabySharkBot.Services
         public List<TeamPatchAssignmentDto> TeamAssignments { get; set; } = new List<TeamPatchAssignmentDto>();
         public Dictionary<int, bool> TeamBumping { get; set; } = new Dictionary<int, bool>();
         public Dictionary<ulong, Vector2Dto> InitialPositions { get; set; } = new Dictionary<ulong, Vector2Dto>();
+
+        // NEW: Per-spawn phase machine
+        public chrisCrossAppleSause.TestPhase Phase { get; set; } = chrisCrossAppleSause.TestPhase.Idle;
+        public bool HarvestCommandsIssued { get; set; } = false;
     }
 }

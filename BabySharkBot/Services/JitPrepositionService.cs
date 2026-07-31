@@ -9,6 +9,10 @@ using BabySharkBot.Managers;
 
 namespace BabySharkBot.Services
 {
+    /// <summary>
+    /// Predicts mineral depletion and moves idle workers proactively.
+    /// Handles prepositioning for structures (e.g. Spawning Pool) using free workers.
+    /// </summary>
     public class JitPrepositionService
     {
         private readonly DefaultSharkyBot _defaultBot;

@@ -12,6 +12,11 @@ using System.Linq;
 
 namespace BabySharkBot.MicroTasks
 {
+    /// <summary>
+    /// Patch-level mining task logic.
+    /// Handles coordination between JIT prepositioning and steady-state mining assignments.
+    /// Enforces Near/Far patch capacity rules and respects greedy mineral ordering.
+    /// </summary>
     public class TeamPatchMiningTask : MiningTask
     {
         private readonly DefaultSharkyBot _defaultBot;

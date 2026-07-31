@@ -8,8 +8,9 @@ using BabySharkBot.Setup;
 namespace BabySharkBot.MicroTasks
 {
     /// <summary>
-    /// Custom MiningTask that overrides debug drawing to prevent Sharky's default worker labels.
+    /// Unit-level mining behavior that overrides debug drawing to prevent Sharky's default worker labels.
     /// Worker labels are instead drawn by BabySharkMiningManager using WorkerLabelService.
+    /// Manages the actual unit commands for harvesting and returning cargo when not in CCA phase.
     /// </summary>
     public class CustomMiningTask : MiningTask
     {
