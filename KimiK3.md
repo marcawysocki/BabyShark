@@ -1,7 +1,12 @@
-Markdown
+existing architecture
 
-Let me generate this now. I'll focus on the BabySharkBot directory as it's [K
-the primary codebase, with references to relevant supporting files like `Ba[3D[K
-`BabySharkBot/Services/chrisCrossAppleSause.cs.md`, etc.
-</think>
+I'll structure this as a comprehensive analysis of what BabyShark implement[9D[K
+implements, mapping files to their functions, and identifying optimization [K
+targets. This is essentially creating a "reverse documentation" or knowledg[8D[K
+knowledge transfer layer from the existing codebase for another AI or devel[5D[K
+developer to use.
 
+Let me generate:
+1. Reasoning context - mapping out key components (Mineral classification, [K
+expansion points, JIT mining, etc.)
+2. Task decomposition -
