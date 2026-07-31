@@ -14,6 +14,8 @@ namespace BabySharkBot.Setup
 {
     /// <summary>
     /// Processes a known map when a new spawn location is encountered for the first time.
+    /// Handles worker labeling and team assignments for the new spawn.
+    /// Syncs Near/Far mineral classification from preloaded map data.
     /// </summary>
     public class SecondaryMapData
     {

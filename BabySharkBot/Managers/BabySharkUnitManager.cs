@@ -11,6 +11,11 @@ using Vector2 = System.Numerics.Vector2;
 
 namespace BabySharkBot.Managers
 {
+    /// <summary>
+    /// Custom unit manager that extends Sharky's default unit management.
+    /// Handles unit life-cycle events (deaths, resources lost) and updates unit calculations.
+    /// Manages unit target priorities and nearby ally/enemy data structures.
+    /// </summary>
     public class BabySharkUnitManager : Sharky.Managers.SharkyManager
     {
         private readonly SharkyUnitData _sharkyUnitData;

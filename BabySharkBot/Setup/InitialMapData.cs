@@ -14,6 +14,12 @@ using BabySharkBot.Services;
 
 namespace BabySharkBot.Setup
 {
+    /// <summary>
+    /// Generates initial map data when a new map is encountered.
+    /// Handles single-pass unit scanning to collect minerals, vespene, and starting units.
+    /// Performs greedy mineral ordering and calculates Near/Far classification for optimized mining.
+    /// Registers Center of Mass (COM) for visualization.
+    /// </summary>
     public class InitialMapData
     {
         private List<List<HarvestReturnCargoPointDto>> _expansionMineralCargoPoints = new List<List<HarvestReturnCargoPointDto>>();

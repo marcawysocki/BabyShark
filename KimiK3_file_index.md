@@ -6,6 +6,24 @@ Kimi AI can choose to query or open any file listed below.
 
 ## COMPLETE FILE REGISTRY
 
+| File Name | Category | Purpose |
+| :--- | :--- | :--- |
+| `chrisCrossAppleSause.cs` | Services | Worker initialization; arranges units in semicircle, broadcasts orders. |
+| `BabySharkMiningManager.cs` | Managers | Orchestrates mineral patch assignment and JIT prepositioning. |
+| `JitPrepositionService.cs` | Services | Predicts mineral depletion; moves idle workers proactively. |
+| `TeamPatchMiningTask.cs` | MicroTasks | Patch-level mining task logic; manages Near/Far capacity. |
+| `CustomMiningTask.cs` | MicroTasks | Unit-level mining behavior; overrides default labels. |
+| `WorkerLabelChainHelper.cs` | Setup | Helper for labeling workers in greedy chain order (W1-W12). |
+| `WorkerLabelChangedEventArgs.cs` | Manager | Event args for notifying when a worker label changes. |
+| `InitialMapData.cs` | Setup | Generates initial map data and greedy mineral ordering. |
+| `MapDataManager.cs` | Setup | Handles saving and loading of map data dat-files. |
+| `BaseDtos.cs` | Setup | Data transfer objects for base and unit information. |
+| `ARCHITECTURE.md` | Root | High-level system architecture and data flow. |
+| `CONVENTIONS.md` | Root | Project naming conventions and domain metaphors. |
+| `README.md` | Root | Project overview and setup instructions. |
+
+## ALL FILES (LIST)
+
 - `EXPANSION_TOWNHALL_INTEGRATION.md`
 - `CODE_CHANGES_REFERENCE.md`
 - `TOWNHALL_TECHNICAL_SUMMARY.md`

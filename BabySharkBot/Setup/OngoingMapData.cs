@@ -10,6 +10,11 @@ using BabySharkBot.Services;
 
 namespace BabySharkBot.Setup
 {
+    /// <summary>
+    /// Refreshes map data every frame or on specific events.
+    /// Updates unit IDs and labels for visible minerals and vespene geysers.
+    /// Ensures team assignments and worker labels remain synced during the game.
+    /// </summary>
     public class OngoingMapData
     {
         public MawBaseLocationData RefreshMiningData(

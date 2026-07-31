@@ -10,9 +10,9 @@ using BabySharkBot.Setup;
 namespace BabySharkBot.Setup
 {
     /// <summary>
-    /// Loads map data asynchronously before the game loop starts.
-    /// Uses canonical map name to construct file paths and loads .dat files in a background thread.
-    /// Sets MapDataLoaded flag when complete.
+    /// Loads and saves map data for the bot.
+    /// Manages the persistence of <see cref="MawBaseLocationData"/> to .dat files using MemoryPack.
+    /// Handles asynchronous loading to prevent blocking the game start.
     /// </summary>
     public class MapDataManager
     {

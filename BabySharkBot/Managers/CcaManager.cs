@@ -10,6 +10,11 @@ using SC2Action = SC2APIProtocol.Action;
 
 namespace BabySharkBot.Managers
 {
+    /// <summary>
+    /// Lifecycle manager for the "chrisCrossAppleSause" (CCA) worker initialization phase.
+    /// Monitors frame progress and signals the handoff from CCA choreography to steady-state mining.
+    /// Unregisters itself once the transition is complete.
+    /// </summary>
     public class CcaManager : IManager
     {
         public bool NeverSkip { get; set; } = false;
