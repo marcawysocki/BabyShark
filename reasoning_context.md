@@ -1,60 +1,70 @@
-    *   Need to explain the architecture based on the file list.
-    *   Clarify the RL integration (`TorchSharpPolicy`, `RLTrainer`).
-    *   Explain the Manager pattern (`BabySharkUnitManager`, etc.).
-    *   Decode quirky names: `chrisCrossAppleSause.cs` (likely a worker ini[3D[K
-initialization helper based on context clues often found in such projects),[10D[K
-projects), `ConsecrationofMyStarCraftIIBotProject.cs`.
-    *   Map file relationships: RL training loop vs. Game execution loop.
+purpose maps, naming conventions, quirks
 
-**Domain Knowledge Transfer: BabySharkBot Architecture**
-The BabyShark codebase is a Zerg-specific StarCraft II AI bot integrating R[1D[K
-Reinforcement Learning (RL) via TorchSharp with traditional Manager/Service[15D[K
-Manager/Service-based unit control. The system operates in two distinct con[3D[K
-contexts: an RL Training environment (`MultiEnvRunner.cs`, `RLTrainer.cs`) [K
-and the Live Game Execution context (`BabySharkBot.cs`).
+# BabyShark Codebase Domain Knowledge Transfer
 
-**Critical File Purpose Maps:**
-1.  **Core RL Loop:** `TorchSharpPolicy.cs` serves as the bridge between ga[2D[K
-game observations and TorchSharp tensors. `RewardShaper.cs` modifies raw ga[2D[K
-game rewards to stabilize training. `Observation.cs` and `Action.cs` define[6D[K
-define the state-action space.
-2.  **Bot Execution:** `BabySharkBot.cs` is the entry point for SC2AI logic[5D[K
-logic, orchestrating managers. `ZergBuildChoices.cs` dictates macro-strateg[13D[K
-macro-strategy (e.g., when to build Spawning Pools).
-3.  **Unit Management:** The "Manager" pattern dominates unit control. `Bab[4D[K
-`BabySharkUnitManager.cs` handles general unit state, while `BabySharkMinin[15D[K
-`BabySharkMiningManager.cs` orchestrates worker allocation. `CcaManager.cs`[15D[K
-`CcaManager.cs` likely manages Combat/Camera Control Actions.
-4.  **Micro-Tasks:** Fine-grained behaviors are encapsulated in the `MicroT[7D[K
-`MicroTasks/` directory (e.g., `CustomMiningTask.cs`, `TeamPatchMiningTask.[21D[K
-`TeamPatchMiningTask.cs`). These abstract specific unit commands from high-[5D[K
-high-level managers.
+## Repository Overview
+BabyShark is a StarCraft II AI bot built on the Sharky framework, focusing [K
+on advanced mining optimization, expansion management, and worker allocatio[9D[K
+allocation systems. The codebase is heavily documented for AI-to-AI collabo[7D[K
+collaboration.
 
-**Naming Convention Resolution & Quirks:**
-*   `chrisCrossAppleSause.cs`: Located under `/Services/`. Contextual analy[5D[K
-analysis indicates this is a **Worker Initialization Logic Service**. It ha[2D[K
-handles the labeling and registration of new workers upon creation, managin[7D[K
-managing their assignment to mining queues or defensive duties. The name is[2D[K
-is an internal developer in-joke; do not refactor without confirming team c[1D[K
-consensus.
-*   `ConsecrationofMyStarCraftIIBotProject.cs`: Located under `/Setup/`. Th[2D[K
-This is a **License/Copyright Header File**. It defines legal attribution f[1D[K
-for the project and should be included in distribution builds but ignored d[1D[K
-during logic debugging.
-*   `Program.cs` (Duplicate): There are two entries. The first likely belon[5D[K
-belongs to the RL Training Library assembly; the second belongs to the Exec[4D[K
-Executable Bot Assembly. Distinguish based on dependency graphs (RL files v[1D[K
-vs. Bot Service files).
-*   `JitPrepositionService.cs`: "JIT" refers to Just-In-Time positioning, n[1D[K
-not compilation. This service pre-calculates unit movement vectors during l[1D[K
-lulls in action processing to reduce latency spikes.
+## Critical File Purpose Map
 
-**Microtask Mappings:**
-*   **Mining:** `CustomMiningTask.cs` (Standard), `TeamPatchMiningTask.cs` [K
-(Co-op/Team specific resource gathering).
-*   **Scouting:** `BabySharkOverlordScoutTask.cs` handles air unit reconnai[8D[K
-reconnaissance logic.
-*   **Expansion:** Services like `ExpansionPointService.cs` and `Provisiona[11D[K
-`ProvisionalExpansionService.cs` manage base location validation and timing[6D[K
-timing windows.
+| Category | Key Files | Purpose |
+|----------|-----------|---------|
+| **Core Bot** | `BabySharkBot/BabySharkBot.cs`, `Program.cs` | Main bot en[2D[K
+entry point and lifecycle management |
+| **Mining System** | `BabySharkBot/Managers/BabySharkMiningManager.cs`, `C[2D[K
+`CustomMiningTask.cs` | Worker assignment, JIT mining logic |
+| **Expansion** | `Services/ExpansionPointService.cs`, `ExpansionPointDrawS[20D[K
+`ExpansionPointDrawService.cs` | Base location detection and expansion plan[4D[K
+planning |
+| **Worker Labeling** | `Setup/WorkerLabelChainHelper.cs`, `L_LABEL_IMPLEME[16D[K
+`L_LABEL_IMPLEMENTATION_COMPLETE.md` | Near/Far mineral classification syst[4D[K
+system |
+| **RL Integration** | `RLIntegration/` directory | Reinforcement learning [K
+training pipeline |
 
+## Naming Convention Quirks (Critical for AI Understanding)
+
+1. **`chrisCrossAppleSause.cs`**: This is NOT a typo - it's an intentional [K
+playful naming convention in BabyShark. Used for worker initialization logi[4D[K
+logic and mineral label registration. Do not "fix" this filename.
+2. **`PupusPistrixVectatorPestium/`**: Subdirectory containing experimental[12D[K
+experimental features, bot loading priority system, and dynamic manager con[3D[K
+configuration.
+3. **`BabySharkBot/Setup/` vs `BabySharkBot/Managers/`**: Setup files are i[1D[K
+initialization/configuration, Managers are runtime systems.
+
+## Worker Initialization Logic (chrisCrossAppleSause Pattern)
+```
+WorkerLabelRegistration → MineralClassification → MiningTaskAssignment → JI[2D[K
+JITPreposition
+```
+This chain is documented in:
+- `Setup/WorkerLabelChainHelper.cs` - Registration entry point
+- `Setup/L_LABEL_IMPLEMENTATION_COMPLETE.md` - Label system status
+- `Services/chrisCrossAppleSause.cs` - Core initialization service
+
+## Microtask System Architecture
+| Task Type | File | Responsibility |
+|-----------|------|----------------|
+| Mining | `CustomMiningTask.cs` | Worker mineral assignment |
+| Scout | `BabySharkOverlordScoutTask.cs` | Overlord scouting coordination [K
+|
+| Team Patch | `TeamPatchMiningTask.cs` | Coordinated team mining operation[9D[K
+operations |
+
+## Documentation Index (Critical for AI Context)
+- `EXPANSION_POINT_DRAWING_CHECKLIST.md` - Expansion visualization requirem[8D[K
+requirements
+- `MINERAL_LABEL_QUICK_SUMMARY.md` - Near/Far mineral classification rules
+- `TOWNHALL_TECHNICAL_SUMMARY.md` - Townhall system integration guide
+- `IMPLEMENTATION_STATUS.md` - Current development state
+
+## Git Change Tracking Files (Critical vs Ignorable)
+
+### CRITICAL: Must Review Before Any Code Changes
+| File | Why Critical |
+|------|-------------|
+|

@@ -1,49 +1,204 @@
-# KimiK3_file_index.md
+# BABYSHARK COMPLETE WORKSPACE PROFILE
 
-| File Name | Absolute GitHub Link |
-| :--- | :--- |
-| Observation.cs | https://github.comRLIntegration/Observation.cs |
-| Action.cs | https://github.comRLIntegration/Action.cs |
-| RLTrainer.cs | https://github.comRLIntegration/RLTrainer.cs |
-| MultiEnvRunner.cs | https://github.comRLIntegration/MultiEnvRunner.cs |
-| RLMatrixConfig.cs | https://github.comRLIntegration/RLMatrixConfig.cs |
-| ModelSerializer.cs | https://github.comRLIntegration/ModelSerializer.cs |
-| RewardShaper.cs | https://github.comRLIntegration/RewardShaper.cs |
-| TorchSharpPolicy.cs | https://github.comRLIntegration/TorchSharpPolicy.cs |
-| ImitationRecorder.cs | https://github.comRLIntegration/ImitationRecorder.cs |
-| Program.cs | https://github.comRLIntegration/Program.cs |
-| ZergBuildChoices.cs | https://github.comBabySharkBot/ZergBuildChoices.cs |
-| BabySharkBot.cs | https://github.comBabySharkBot/BabySharkBot.cs |
-| Program.cs | https://github.comBabySharkBot/Program.cs |
-| CustomMiningTask.cs | https://github.comBabySharkBot/MicroTasks/CustomMiningTask.cs |
-| BabySharkOverlordScoutTask.cs | https://github.comBabySharkBot/MicroTasks/BabySharkOverlordScoutTask.cs |
-| TeamPatchMiningTask.cs | https://github.comBabySharkBot/MicroTasks/TeamPatchMiningTask.cs |
-| CcaManager.cs | https://github.comBabySharkBot/Managers/CcaManager.cs |
-| BabySharkUnitManager.cs | https://github.comBabySharkBot/Managers/BabySharkUnitManager.cs |
-| ManagerDebugService.cs | https://github.comBabySharkBot/Managers/ManagerDebugService.cs |
-| BabySharkMiningManager.cs | https://github.comBabySharkBot/Managers/BabySharkMiningManager.cs |
-| DrawOnlyManager.cs | https://github.comBabySharkBot/Managers/DrawOnlyManager.cs |
-| WorkerLabelChangedEventArgs.cs | https://github.comBabySharkBot/Manager/WorkerLabelChangedEventArgs.cs |
-| MutaliskRush.cs | https://github.comBabySharkBot/Builds/MutaliskRush.cs |
-| SpawningPoolPlacementService.cs | https://github.comBabySharkBot/Services/SpawningPoolPlacementService.cs |
-| ExpansionCOMService.cs | https://github.comBabySharkBot/Services/ExpansionCOMService.cs |
-| chrisCrossAppleSause.cs | https://github.comBabySharkBot/Services/chrisCrossAppleSause.cs |
-| MineralReturnRateTrackerService.cs | https://github.comBabySharkBot/Services/MineralReturnRateTrackerService.cs |
-| ExpansionPointDrawService.cs | https://github.comBabySharkBot/Services/ExpansionPointDrawService.cs |
-| JitPrepositionService.cs | https://github.comBabySharkBot/Services/JitPrepositionService.cs |
-| ProvisionalExpansionService.cs | https://github.comBabySharkBot/Services/ProvisionalExpansionService.cs |
-| ExpansionPointService.cs | https://github.comBabySharkBot/Services/ExpansionPointService.cs |
-| BaseLocationCalculationService.cs | https://github.comBabySharkBot/Services/BaseLocationCalculationService.cs |
-| LadderArgs.cs | https://github.comBabySharkBot/Setup/LadderArgs.cs |
-| TeamLabelRegistrationHelper.cs | https://github.comBabySharkBot/Setup/TeamLabelRegistrationHelper.cs |
-| MapDatSnapshot.cs | https://github.comBabySharkBot/Setup/MapDatSnapshot.cs |
-| Settings.cs | https://github.comBabySharkBot/Setup/Settings.cs |
-| OngoingMapData.cs | https://github.comBabySharkBot/Setup/OngoingMapData.cs |
-| BaseDtos.cs | https://github.comBabySharkBot/Setup/BaseDtos.cs |
-| WorkerLabelChainHelper.cs | https://github.comBabySharkBot/Setup/WorkerLabelChainHelper.cs |
-| GetApiLocAndCOM.cs | https://github.comBabySharkBot/Setup/GetApiLocAndCOM.cs |
-| ConsecrationofMyStarCraftIIBotProject.cs | https://github.comBabySharkBot/Setup/ConsecrationofMyStarCraftIIBotProject.cs |
-| ProcessVisableUnits.cs | https://github.comBabySharkBot/Setup/ProcessVisableUnits.cs |
-| MapDataManager.cs | https://github.comBabySharkBot/Setup/MapDataManager.cs |
-| InitialMapData.cs | https://github.comBabySharkBot/Setup/InitialMapData.cs |
-| ExpansionPointModel.cs | https://github.comBabySharkBot/Setup/ExpansionPointModel.cs |
+This file maps the entire repository structure.
+Kimi AI can choose to query or open any file listed below.
+
+
+## COMPLETE FILE REGISTRY
+
+- `EXPANSION_TOWNHALL_INTEGRATION.md`
+- `CODE_CHANGES_REFERENCE.md`
+- `TOWNHALL_TECHNICAL_SUMMARY.md`
+- `TESTING_CHECKLIST.md`
+- `EXPANSION_POINT_DRAWING_CHECKLIST.md`
+- `NEAR_FAR_CORE_CONCEPT.md`
+- `README_MINERAL_DOCUMENTATION.md`
+- `GREEDY_MINERAL_ORDERING.md`
+- `COMPLETE_SUMMARY.md`
+- `MINERAL_LABEL_QUICK_SUMMARY.md`
+- `EXPANSION_POINT_QUICK_REFERENCE.md`
+- `README.md`
+- `DOCUMENTATION_UPDATE_SUMMARY.md`
+- `MINERAL_CLASSIFICATION_CONCEPT.md`
+- `STANDARDS_AND_GUIDELINES.md`
+- `GREEDY_MINERAL_ORDERING_VISUAL.md`
+- `EXPANSION_POINT_COMPLETE_SUMMARY.md`
+- `MINERAL_DOCUMENTATION_INDEX.md`
+- `BabyShark.sln`
+- `Version 1.0 chrisCrossAppleSause.cs.md`
+- `QUICK_START_TOWNHALL.md`
+- `global.json`
+- `CONTESTED_BASE_IMPLEMENTATION.md`
+- `Sharky.sln`
+- `Commander.md`
+- `DOCUMENTATION_CORRECTED_SUMMARY.md`
+- `Backup file TODO.md`
+- `BabyShark.sln.md`
+- `EXPANSION_POINT_DRAWING_FLOW.md`
+- `EXPANSION_POINT_INTEGRATION_COMPLETE.md`
+- `hatchery_wall_prompt.md`
+- `COMPILATION_FIXES.md`
+- `TODO.md`
+- `CONTRIBUTING.md`
+- `QUICK_REFERENCE.md`
+- `MemoryPack README.md`
+- `SESSION_SUMMARY.md`
+- `IMPLEMENTATION_STATUS.md`
+- `New Promt for Just In Time Mining.md`
+- `MINERAL_LABEL_COMPLETION.md`
+- `MINERAL_LABEL_DRAWING.md`
+- `MINERAL_LABEL_INTEGRATION.md`
+- `CONVENTIONS.md`
+- `ARCHITECTURE_DIAGRAM.md`
+- `INDEX.md`
+- `IMPLEMENTATION_FIX_REFERENCE.md`
+- `HowSharkyLabelsAndDoesDebugDraw.md`
+- `Just In Time Mining.md`
+- `ARCHITECTURE.md`
+- `THIRD-PARTY-LICENSES.md`
+- `EXPANSION_POINT_VISUAL_GUIDE.md`
+- `expansion_point_prompt.md`
+- `DRAWING_PATTERN_GUIDE.md`
+- `TOWNHALL_SYSTEM_STATUS.md`
+- `MINERAL_LABEL_VISUAL_GUIDE.md`
+- `ARCHITECTURE_AND_IMPLEMENTATION_PLAN.md`
+- `EXPANSION_POINT_DRAWING.md`
+- `EXPANSION_POINT_PRE_BUILD_VERIFICATION.md`
+- `DEBUG_DRAWING_FIX_LOG.md`
+- `heartbeat_context_prompt.md`
+- `NEAR_FAR_MINERALS_CORRECTED.md`
+- `PupusPistrixVectatorPestium/README.md`
+- `PupusPistrixVectatorPestium/speed_mining.md`
+- `PupusPistrixVectatorPestium/UnitLabelSystem.md`
+- `PupusPistrixVectatorPestium/Zerg Buildings.md`
+- `PupusPistrixVectatorPestium/CONTRIBUTING.md`
+- `PupusPistrixVectatorPestium/new name mawBabyShark.md`
+- `PupusPistrixVectatorPestium/Sharky Bot Dynamic Manager Loading & Priority System .md`
+- `PupusPistrixVectatorPestium/# GitHub Copilot Chat Cheat Sheet.md`
+- `PupusPistrixVectatorPestium/THIRD-PARTY-LICENSES.md`
+- `.github/copilot-instructions.md`
+- `SharkyExampleBot/ProtossCounterTransitioner.cs`
+- `SharkyExampleBot/MyBuildChoices.cs`
+- `SharkyExampleBot/ladderbots.json`
+- `SharkyExampleBot/Program.cs`
+- `SharkyExampleBot/Builds/ReaperCheese.cs`
+- `SharkyExampleBot/Builds/ProxyVoidRay.cs`
+- `SharkyExampleBot/Builds/BansheesAndMarines.cs`
+- `SharkyExampleBot/Builds/MutaliskRush.cs`
+- `SharkyExampleBot/Builds/ZealotRush.cs`
+- `SharkyExampleBot/StaticData/chat/default/default.json`
+- `SharkyExampleBot/StaticData/chat/type/greetings.json`
+- `SharkyExampleBot/StaticData/chat/type/attacks.json`
+- `SharkyExampleBot/StaticData/chat/type/strategies.json`
+- `docs/JIT-Mining-Error-Notes.md`
+- `docs/MorningSessionGamePlan.md`
+- `RLIntegration/Observation.cs`
+- `RLIntegration/Action.cs`
+- `RLIntegration/RLTrainer.cs`
+- `RLIntegration/MultiEnvRunner.cs`
+- `RLIntegration/RLMatrixConfig.cs`
+- `RLIntegration/ModelSerializer.cs`
+- `RLIntegration/RewardShaper.cs`
+- `RLIntegration/TorchSharpPolicy.cs`
+- `RLIntegration/ImitationRecorder.cs`
+- `RLIntegration/Program.cs`
+- `SharkyRandomExampleBot/ladderbots.json`
+- `SharkyRandomExampleBot/Program.cs`
+- `SharkyMicroExampleBot/Program.cs`
+- `SharkyZergExampleBot/ZergBuildChoices.cs`
+- `SharkyZergExampleBot/ladderbots.json`
+- `SharkyZergExampleBot/Program.cs`
+- `SharkyZergExampleBot/Builds/MutaliskRush.cs`
+- `SharkyExampleRandomBot/Program.cs`
+- `SharkyProtossExampleBot/ProtossCounterTransitioner.cs`
+- `SharkyProtossExampleBot/ProtossBuildChoices.cs`
+- `SharkyProtossExampleBot/ladderbots.json`
+- `SharkyProtossExampleBot/Program.cs`
+- `SharkyProtossExampleBot/Builds/ProxyVoidRay.cs`
+- `SharkyProtossExampleBot/Builds/OneBaseCarriers.cs`
+- `SharkyProtossExampleBot/Builds/ZealotRush.cs`
+- `SharkyProtossExampleBot/StaticData/opponents/MechaShark.json`
+- `SharkyProtossExampleBot/StaticData/opponents/MicroMachine.json`
+- `SharkyProtossExampleBot/StaticData/opponents/Sharkling.json`
+- `SharkyProtossExampleBot/StaticData/opponents/Eris.json`
+- `SharkyProtossExampleBot/StaticData/opponents/negativeZero.json`
+- `SharkyProtossExampleBot/StaticData/opponents/WhaleMean.json`
+- `SharkyProtossExampleBot/StaticData/opponents/sharkbot.json`
+- `SharkyProtossExampleBot/StaticData/opponents/Ketroc.json`
+- `SharkyProtossExampleBot/StaticData/chat/default/default.json`
+- `SharkyProtossExampleBot/StaticData/chat/type/greetings.json`
+- `SharkyProtossExampleBot/StaticData/chat/type/attacks.json`
+- `SharkyProtossExampleBot/StaticData/chat/type/strategies.json`
+- `BabySharkBot/BASELINE_MINERAL_ACCUMULATION.md`
+- `BabySharkBot/README.md`
+- `BabySharkBot/CLARIFICATION_YOUR_MINING_SYSTEM.md`
+- `BabySharkBot/VESPENE_LABELING_SUMMARY.md`
+- `BabySharkBot/HARVEST_AND_RETURN_CARGO_REFERENCE.md`
+- `BabySharkBot/ZergBuildChoices.cs`
+- `BabySharkBot/VESPENE_V1_V2_QUICK_REF.md`
+- `BabySharkBot/ladderbots.json`
+- `BabySharkBot/PHASE_1_PHASE_2_ROADMAP.md`
+- `BabySharkBot/TODO.md`
+- `BabySharkBot/12_POOL_BUILD_TIMING_ANALYSIS.md`
+- `BabySharkBot/BabySharkBot.cs`
+- `BabySharkBot/TODO_backup_old.md`
+- `BabySharkBot/DYNAMIC_WORKER_JUGGLING_SYSTEM.md`
+- `BabySharkBot/YOUR_MINING_INNOVATION_EXPLAINED.md`
+- `BabySharkBot/MINING_SYSTEM_EVOLUTION.md`
+- `BabySharkBot/Program.cs`
+- `BabySharkBot/MicroTasks/CustomMiningTask.cs`
+- `BabySharkBot/MicroTasks/BabySharkOverlordScoutTask.cs`
+- `BabySharkBot/MicroTasks/TeamPatchMiningTask.cs`
+- `BabySharkBot/Managers/CcaManager.cs`
+- `BabySharkBot/Managers/BabySharkUnitManager.cs`
+- `BabySharkBot/Managers/ManagerDebugService.cs`
+- `BabySharkBot/Managers/BabySharkMiningManager.cs`
+- `BabySharkBot/Managers/DrawOnlyManager.cs`
+- `BabySharkBot/Manager/WorkerLabelChangedEventArgs.cs`
+- `BabySharkBot/Builds/MutaliskRush.cs`
+- `BabySharkBot/Docs/MiningAssignmentPrompt.md`
+- `BabySharkBot/Services/SpawningPoolPlacementService.cs`
+- `BabySharkBot/Services/ExpansionCOMService.cs`
+- `BabySharkBot/Services/chrisCrossAppleSause.cs`
+- `BabySharkBot/Services/MineralReturnRateTrackerService.cs`
+- `BabySharkBot/Services/ExpansionPointDrawService.cs`
+- `BabySharkBot/Services/JitPrepositionService.cs`
+- `BabySharkBot/Services/ProvisionalExpansionService.cs`
+- `BabySharkBot/Services/chrisCrossAppleSause.cs.md`
+- `BabySharkBot/Services/ExpansionPointService.cs`
+- `BabySharkBot/Services/BaseLocationCalculationService.cs`
+- `BabySharkBot/Setup/IMPLEMENTATION_SUMMARY.md`
+- `BabySharkBot/Setup/LadderArgs.cs`
+- `BabySharkBot/Setup/TeamLabelRegistrationHelper.cs`
+- `BabySharkBot/Setup/MapDatSnapshot.cs`
+- `BabySharkBot/Setup/MINERAL_CLASSIFICATION_IMPROVEMENTS.md`
+- `BabySharkBot/Setup/MINERAL_CLASSIFICATION_COUNTS_GUIDE.md`
+- `BabySharkBot/Setup/L_LABEL_IMPLEMENTATION_COMPLETE.md`
+- `BabySharkBot/Setup/Settings.cs`
+- `BabySharkBot/Setup/OngoingMapData.cs`
+- `BabySharkBot/Setup/BaseDtos.cs`
+- `BabySharkBot/Setup/WorkerLabelChainHelper.cs`
+- `BabySharkBot/Setup/GetApiLocAndCOM.cs`
+- `BabySharkBot/Setup/L_LABEL_LARGE_MINERAL_SYSTEM.md`
+- `BabySharkBot/Setup/CODE_FLOW_DETAILED.md`
+- `BabySharkBot/Setup/ConsecrationofMyStarCraftIIBotProject.cs`
+- `BabySharkBot/Setup/QUICK_REFERENCE_NLF.md`
+- `BabySharkBot/Setup/ProcessVisableUnits.cs`
+- `BabySharkBot/Setup/MapDataManager.cs`
+- `BabySharkBot/Setup/FINAL_SUMMARY_NLF_SYSTEM.md`
+- `BabySharkBot/Setup/InitialMapData.cs`
+- `BabySharkBot/Setup/ProcessVisableUnits.cs.md`
+- `BabySharkBot/Setup/ExpansionPointModel.cs`
+- `BabySharkBot/Setup/MapLabelRegistrationHelper.cs`
+- `BabySharkBot/Setup/SecondaryMapData.cs`
+- `SharkyTerranExampleBot/ladderbots.json`
+- `SharkyTerranExampleBot/TerranBuildChoices.cs`
+- `SharkyTerranExampleBot/Program.cs`
+- `SharkyTerranExampleBot/MicroTasks/VikingDropTask.cs`
+- `SharkyTerranExampleBot/Builds/ReaperCheese.cs`
+- `SharkyTerranExampleBot/Builds/AdaptiveOpening.cs`
+- `SharkyTerranExampleBot/Builds/BansheesAndMarines.cs`
+- `SharkyTerranExampleBot/Builds/VikingDrops.cs`
+- `SharkyTerranExampleBot/Builds/MassVikings.cs`
+- `SharkyTerranExampleBot/Builds/HellionRush.cs`
+- `SharkyTerranExampleBot/Builds/BuildServices/ExpandForever.cs`
