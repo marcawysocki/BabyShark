@@ -1,52 +1,53 @@
-The user wants me to review the BabyShark codebase against a specific direc[5D[K
-directive: **Just In Time (JIT) Mining**.
-I need to generate three distinct sections for a Kimi AI assistant:
+The user wants a structured analysis of the BabyShark codebase, specificall[11D[K
+specifically to generate context layers for a downstream Kimi AI assistant.[10D[K
+assistant. The prompt emphasizes "Just In Time Mining", budget limits (<256[5D[K
+(<256 files), and prioritizing custom scripts over the base `sharknice/Shar[15D[K
+`sharknice/Sharky` framework.
 
-1.  **Reasoning Context**: Domain knowledge transfer, file purpose maps, na[2D[K
-naming resolutions (e.g., `chrisCrossAppleSause`), and microtask mappings r[1D[K
-relevant to JIT mining optimization.
-2.  **Task Decomposition**: Break down the current user request (JIT Mining[6D[K
-Mining) into actionable sub-tasks with functional code justifications.
-3.  **KimiK3.md**: A clean Markdown list of direct, absolute GitHub raw lin[3D[K
-links (under 256 files) prioritizing BabyShark scripts and ignoring base fr[2D[K
-framework unless critical.
+I need to look at the file list provided in the prompt to identify:
+1. **BabyShark specific files**: These are the core task-related files (e.g[4D[K
+(e.g., `CustomMiningTask.cs`, `JitPrepositionService.cs`, `MineralReturnRat[17D[K
+`MineralReturnRateTrackerService.cs`).
+2. **Active development context**: The "New Promt for Just In Time Mining.m[8D[K
+Mining.md" and related documentation suggest JIT mining is a key focus.
+3. **Service layers**: `BabySharkMiningManager.cs` and managers like `CcaMa[6D[K
+`CcaManager.cs` are crucial for the mining logic.
+4. **Base framework**: I will largely ignore files from `sharknice/Sharky` [K
+unless they are directly referenced by BabyShark's unique features (like `P[2D[K
+`ProcessVisableUnits.cs` which seems to handle unit visibility).
 
-Let's analyze the relevant files based on the repository truth context:
+The goal is to produce a clean markdown file named 'KimiK3.md' with direct [K
+GitHub raw links, but the prompt also asks for specific sections: Reasoning[9D[K
+Reasoning Context, Task Decomposition, and then the actionable KimiK3.md li[2D[K
+list. I will structure my response accordingly, prioritizing JIT mining opt[3D[K
+optimization targets and worker allocation routines as requested.
 
-**Core JIT Mining Files:**
-- `BabySharkBot/Managers/BabySharkMiningManager.cs` - The central mining ma[2D[K
-manager for BabyShark. This is likely where JIT logic lives or should be in[2D[K
-integrated.
-- `BabySharkBot/MicroTasks/CustomMiningTask.cs` - Custom mining task, highl[5D[K
-highly relevant.
-- `BabySharkBot/MicroTasks/TeamPatchMiningTask.cs` - Team patch mining task[4D[K
-task, also relevant.
-- `BabySharkBot/New Promt for Just In Time Mining.md` - The prompt/specific[15D[K
-prompt/specification file for JIT mining, essential context.
-- `BabySharkBot/HARVEST_AND_RETURN_CARGO_REFERENCE.md` - Critical for JIT: [K
-understanding how units return cargo and maintain flow.
-- `BabySharkBot/Services/JitPrepositionService.cs` - **The JIT prepositioni[12D[K
-prepositioning service**, likely the core implementation file. This needs t[1D[K
-to be in the KimiK3.md list.
-- `BabySharkBot/BASELINE_MINERAL_ACCUMULATION.md` - Performance baseline fo[2D[K
-for JIT mining, important context.
-- `BabySharkBot/YOUR_MINING_INNOVATION_EXPLAINED.md` - The high-level innov[5D[K
-innovation document explaining BabyShark's unique approach.
+Key files to highlight based on the "Just In Time Mining" context:
+- `BabySharkBot/MicroTasks/CustomMiningTask.cs` - The core JIT task impleme[7D[K
+implementation.
+- `BabySharkBot/Services/JitPrepositionService.cs` - JIT prepositioning ser[3D[K
+service.
+- `BabySharkBot/Managers/BabySharkMiningManager.cs` - Mining manager for co[2D[K
+coordinating workers and tasks.
+- `BabySharkBot/Services/MineralReturnRateTrackerService.cs` - Tracking min[3D[K
+mineral return rates, crucial for JIT optimization.
+- `BabySharkBot/New Promt for Just In Time Mining.md` - The current prompt/[7D[K
+prompt/instruction file for JIT mining.
+- `BabySharkBot/BabySharkBot.cs` and `BabySharkBot/Program.cs` - Entry poin[4D[K
+points and main bot logic.
+- `BabySharkBot/Services/chrisCrossAppleSause.cs` - Explicitly mentioned as[2D[K
+as a critical worker initialization logic (from the prompt's "NAMES RESOLUT[7D[K
+RESOLUTION MAPPINGS" section).
 
-**Supporting/Context Files:**
-- `BabySharkBot/MINERAL_LABEL_QUICK_SUMMARY.md`, `MINERAL_LABEL_COMPLETION.[26D[K
-`MINERAL_LABEL_COMPLETION.md`, `MINERAL_LABEL_DRAWING.md`, `MINERAL_LABEL_I[16D[K
-`MINERAL_LABEL_INTEGRATION.md` - Important for JIT: understanding how miner[5D[K
-minerals are labeled and tracked. JIT mining relies on precise mineral posi[4D[K
-position knowledge.
-- `BabySharkBot/MINERAL_CLASSIFICATION_CONCEPT.md`, `MINERAL_DOCUMENTATION_[23D[K
-`MINERAL_DOCUMENTATION_INDEX.md` - Mineral classification logic, relevant t[1D[K
-to JIT target selection.
-- `BabySharkBot/Services/chrisCrossAppleSause.cs` and `.md` - User mentione[8D[K
-mentioned this specifically as a naming resolution. It's likely the worker [K
-initialization or mining task setup file.
-- `BabySharkBot/DYNAMIC_WORKER_JUGGLING_SYSTEM.md` - JIT requires dynamic w[1D[K
-worker juggling (assigning workers to different minerals dynamically), so t[1D[K
-this is critical.
-- `BabySharkBot/GREEDY_MINERAL_ORDERING.md`, `GREEDY_MINERAL_ORDERING_VISUA[30D[K
-`GREEDY_MINERAL_ORDERING_VISUAL.md`
+I will structure the response to first provide the domain knowledge transfe[7D[K
+transfer (Reasoning Context), then break down the JIT mining task into acti[4D[K
+actionable sub-tasks, and finally generate the KimiK3.md file list with dir[3D[K
+direct links.
+</think>
+
+===START_REASONING_CONTEXT===
+BabyShark 的 Just In Time Mining (JIT) 系统是目前开发的核心焦点。它不是简单[K
+的抢矿，而是基于 `MineralReturnRateTrackerService` 动态计算矿工的回矿效率，[K
+并配合 `JitPrepositionService` 在矿脉上“呼吸式”移动以最大化采集频率。
+
+**核心文件映射
