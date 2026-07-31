@@ -45,6 +45,7 @@ Kimi AI can choose to query or open any file listed below.
 - `SESSION_SUMMARY.md`
 - `IMPLEMENTATION_STATUS.md`
 - `New Promt for Just In Time Mining.md`
+- `qwen.md`
 - `MINERAL_LABEL_COMPLETION.md`
 - `MINERAL_LABEL_DRAWING.md`
 - `MINERAL_LABEL_INTEGRATION.md`
