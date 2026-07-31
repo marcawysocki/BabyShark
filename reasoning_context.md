@@ -1,72 +1,23 @@
-
-## Domain Knowledge Transfer & File Architecture Map
-
-### 🧠 Core Bot Architecture
-**BabySharkBot** is a complex, multi-system StarCraft II bot with:
-- **Race flexibility**: Multiple race variants (Protoss/Terran/Zerg) in sib[3D[K
-sibling folders
-- **Mining system**: JIT Mining + Large Mineral Classification (L-label sys[3D[K
-system) — this appears to be the primary optimization target based on the f[1D[K
-file density and naming patterns
-- **Worker management**: `BabySharkMiningManager.cs` with dynamic worker ju[2D[K
-juggling, team patch mining, and return rate tracking
-- **Expansion services**: `BaseLocationCalculationService`, `ExpansionPoint[15D[K
-`ExpansionPointService`, `ProvisionalExpansionService` — suggests a sophist[7D[K
-sophisticated expansion decision system
-
-### 🔑 Critical Naming Resolution Mappings
-1. **`chrisCrossAppleSause.cs`** (appears twice) — Worker initialization lo[2D[K
-logic that assigns labels to workers based on mineral position and proximit[8D[K
-proximity
-2. **L-label system** (`L_LABEL_IMPLEMENTATION_COMPLETE.md`, `L_LABEL_LARGE[14D[K
-`L_LABEL_LARGE_MINERAL_SYSTEM.md`) — Large mineral classification for worke[5D[K
-workers; this is the foundation of JIT Mining optimization
-3. **`JitPrepositionService.cs`** — The JIT (Just-In-Time) mining prepositi[9D[K
-prepositioning service that assigns workers to optimal positions before the[3D[K
-they mine
-4. **`MineralReturnRateTrackerService.cs`** — Tracks how efficiently worker[6D[K
-workers return minerals; key metric for JIT optimization
-
-### 📊 File Relevance Hierarchy for Active Objective
-**Tier 1 (Critical - JIT Mining & Worker Allocation):**
-- `BabySharkBot/Managers/BabySharkMiningManager.cs` — Main mining decision [K
-engine
-- `BabySharkBot/MicroTasks/CustomMiningTask.cs` — Core mining microtask imp[3D[K
-implementation
-- `BabySharkBot/MicroTasks/TeamPatchMiningTask.cs` — Team patch mining logi[4D[K
-logic (multi-bot coordination)
-- `BabySharkBot/Services/JitPrepositionService.cs` — JIT prepositioning dec[3D[K
-decisions
-- `BabySharkBot/Services/MineralReturnRateTrackerService.cs` — Mining effic[5D[K
-efficiency metrics
-- `BabySharkBot/Managers/BabySharkUnitManager.cs` — Worker unit management
-
-**Tier 2 (Supporting - Expansion & Map Analysis):**
-- `BabySharkBot/Setup/BaseLocationCalculationService.cs`
-- `BabySharkBot/Services/ExpansionPointService.cs`
-- `BabySharkBot/Services/JitPrepositionService.cs`
-- `BabySharkBot/MicroTasks/BabySharkOverlordScoutTask.cs`
-
-**Tier 3 (Low Priority / Can Be Safely Ignored for JIT Mining):**
-- All RL Integration files (`RLIntegration/`) — separate training pipeline
-- `SharkyProtossExampleBot/`, `SharkyTerranExampleBot/`, etc. — race-specif[11D[K
-race-specific variants, not BabySharkBot's mining system
-- `BabySharkBot/MicroTasks/BabySharkOverlordScoutTask.cs` — scouting, not m[1D[K
-mining
-- All documentation files (`*.md`) except those explicitly about JIT Mining[6D[K
-Mining:
-  - `L_LABEL_IMPLEMENTATION_COMPLETE.md`
-  - `JIT_MINING_OPTIMIZATION_PLAN.md` (if exists)
-  - `HARVEST_AND_RETURN_CARGO_REFERENCE.md`
-
-### 🎯 JIT Mining Optimization Target Analysis
-The current system appears to have these optimization opportunities:
-1. **Worker label precision** — The L-label system needs refinement for bet[3D[K
-better mineral proximity detection
-2. **JIT prepositioning** — Workers should be assigned to positions before [K
-mining, not during
-3. **Return rate tracking** — Minimize walking back and forth; optimize wor[3D[K
-worker rotation
-4. **Team patch coordination** — Multi-bot harmony in shared mineral patche[6D[K
-patches
-
+The BabySharkBot JIT mining system is built around a sophisticated **worker[8D[K
+**worker labeling chain** (L_LABEL_IMPLEMENTATION_COMPLETE.md) that tracks [K
+worker state across three levels: initial label → working label → final min[3D[K
+mining target. The key files forming this pipeline are `BabySharkBot.cs` (e[2D[K
+(entry point), `Managers/BabySharkMiningManager.cs` (central coordinator), [K
+`MicroTasks/CustomMiningTask.cs` (mining task executor), and `Services/JitP[14D[K
+`Services/JitPrepositionService.cs` (worker pre-positioning logic). The sys[3D[K
+system also includes dynamic juggling (`DYNAMIC_WORKER_JUGGLING_SYSTEM.md`)[37D[K
+(`DYNAMIC_WORKER_JUGGLING_SYSTEM.md`) for handling mineral depletion and a [K
+`MineralReturnRateTrackerService.cs` that tracks mining efficiency. Common [K
+JIT mining errors in StarCraft II bots include: (1) workers getting stuck o[1D[K
+on depleted mines after depletion detection fails to update labels fast eno[3D[K
+enough, (2) label conflicts where the same worker is simultaneously assigne[7D[K
+assigned by multiple task types competing for priority, (3) prepositioning [K
+race conditions where workers arrive at a mine before it's properly flagged[7D[K
+flagged as mineable, and (4) resource contention with expansion placement l[1D[K
+logic that may try to assign workers for PDS/Provisional expansion tasks si[2D[K
+simultaneously. The JIT optimization targets should focus on: implementing [K
+mineral depletion rate tracking per patch (not just binary depleted/not-dep[16D[K
+depleted/not-depleted), adding worker state machine transitions (idle → pre[3D[K
+prepositioning → mining → idle) to prevent stale assignments, and decouplin[9D[K
+decoupling the mining label chain from other bot subsystems that might try [K
+to override labels mid-task.
