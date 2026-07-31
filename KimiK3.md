@@ -1,17 +1,17 @@
-format
+The user wants me to review the BabyShark codebase and generate structured [K
+context layers for a downstream Kimi AI assistant. This is essentially aski[4D[K
+asking me to create a "memory dump" or "context file" that captures all the[3D[K
+the important domain knowledge, architecture decisions, naming conventions,[12D[K
+conventions, and current state of the project so that when a new conversati[10D[K
+conversation starts with Kimi (or any other LLM), it doesn't need to re-rea[6D[K
+re-read everything from scratch.
 
-Let me analyze the repository structure to understand:
+The user has provided me with a massive repository file index mapping - ess[3D[K
+essentially a complete tree of all files in the BabyShark codebase. This is[2D[K
+is an excellent foundation for generating the context layers.
 
-1. **Architecture**: This appears to be a StarCraft II bot project (BabySha[8D[K
-(BabyShark) built on top of Sharky framework
-2. **Key Components**: Mining system, expansion management, worker labeling[8D[K
-labeling, JIT mining, unit management
-3. **Naming Quirks**: Files like "chrisCrossAppleSause.cs" suggest playful [K
-naming conventions
-4. **Documentation Heavy**: Many .md files indicate this is heavily documen[7D[K
-documented for AI collaboration
+Let me analyze what I know:
 
-Let me create the three sections with appropriate content based on the file[4D[K
-file registry provided.
-</think>
-
+1. **Project**: BabyShark - A StarCraft II bot built on Sharky architecture[12D[K
+architecture
+2. **Key Services**: Minera

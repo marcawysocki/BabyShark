@@ -28,9 +28,6 @@ namespace BabySharkBot.Services
         public const int AlignThreshold = 35;
         public const int EndThreshold = 65;
 
-        private readonly CollisionCalculator _collisionCalculator = new CollisionCalculator();
-        private const float WorkerCollisionRadius = 0.6f; // SC2 worker radius + safety margin
-
         private readonly Dictionary<string, CcaSpawnLearningState> _states = new Dictionary<string, CcaSpawnLearningState>(StringComparer.OrdinalIgnoreCase);
 
         public TestPhase CurrentPhase(MawBaseLocationData mapData, int startIndex)
@@ -261,24 +258,19 @@ namespace BabySharkBot.Services
                 var w2 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "2");
                 var w3 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "3");
 
-                var teamPeers = new List<WorkerEntryDto>();
-                if (w1 != null) teamPeers.Add(w1);
-                if (w2 != null) teamPeers.Add(w2);
-                if (w3 != null) teamPeers.Add(w3);
-
                 if (workerCount == 8)
                 {
-                    if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame, teamPeers));
-                    if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, mineralB, frame, teamPeers));
+                    if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame));
+                    if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, mineralB, frame));
                 }
                 else if (workerCount == 12)
                 {
                     bool isCrossover = (team.TeamNumber == 1 && state.TealM1IsFar) || (team.TeamNumber == 2 && state.TealM1IsFar) || (team.TeamNumber == 3 && state.YellowM8IsFar) || (team.TeamNumber == 4 && state.YellowM8IsFar);
                     if (isCrossover)
                     {
-                        if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame, teamPeers));
-                        if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame, teamPeers));
-                        if (w3 != null) commands.AddRange(ProcessWorkerMovement(w3, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame, teamPeers));
+                        if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame));
+                        if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame));
+                        if (w3 != null) commands.AddRange(ProcessWorkerMovement(w3, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame));
                         continue;
                     }
 
@@ -289,14 +281,14 @@ namespace BabySharkBot.Services
 
                     if (state.TeamBumping.GetValueOrDefault(team.TeamNumber, true) && lead != null && partner != null)
                     {
-                        commands.AddRange(ProcessBumpingPair(frame, state, team.TeamNumber, lead, partner, mineralA, teamPeers));
+                        commands.AddRange(ProcessBumpingPair(frame, state, team.TeamNumber, lead, partner, mineralA));
                     }
                     else
                     {
-                        if (lead != null) commands.AddRange(ProcessWorkerMovement(lead, mineralA, frame, teamPeers));
-                        if (partner != null) commands.AddRange(ProcessWorkerMovement(partner, mineralA, frame, teamPeers));
+                        if (lead != null) commands.AddRange(ProcessWorkerMovement(lead, mineralA, frame));
+                        if (partner != null) commands.AddRange(ProcessWorkerMovement(partner, mineralA, frame));
                     }
-                    if (side != null) commands.AddRange(ProcessWorkerMovement(side, mineralB, frame, teamPeers));
+                    if (side != null) commands.AddRange(ProcessWorkerMovement(side, mineralB, frame));
                 }
             }
             return commands;
@@ -313,47 +305,58 @@ namespace BabySharkBot.Services
         }
 
         /// <summary>
-        /// Offsets a worker's target point perpendicular to its path if the straight-line
-        /// trajectory would intersect another worker's collision circle.
+        /// Mineral-walk aware movement. 
+        /// If far: MOVE toward mineral. 
+        /// If close (<= 2.5f): SMART on mineral tag (collision-free phase-through).
+        /// If at mineral (<= 1.5f): HARVEST_GATHER.
         /// </summary>
-        private Point2D CalculateCollisionFreeTarget(
+        private IEnumerable<SC2APIProtocol.Action> ProcessWorkerMovement(
             WorkerEntryDto worker,
-            Vector2Dto targetPos,
-            IEnumerable<WorkerEntryDto> peers)
+            OrderedMineral mineral,
+            int frame)
         {
-            var start = new Vector2(worker.Position.X, worker.Position.Y);
-            var end = new Vector2(targetPos.X, targetPos.Y);
-            foreach (var peer in peers)
+            if (worker == null || mineral == null || mineral.UnitTag == 0)
+                return Array.Empty<SC2APIProtocol.Action>();
+
+            float dist = Distance(worker.Position, mineral.Position);
+
+            // Already there — lock into mining
+            if (dist <= 1.5f)
+                return Harvest(worker.UnitTag, mineral.Position, mineral.UnitTag);
+
+            // Close enough to mineral-walk through other workers
+            if (dist <= 2.5f)
+                return SmartToMineral(worker.UnitTag, mineral.UnitTag);
+
+            // Still approaching — normal move toward mineral
+            var movePoint = new Point2D
             {
-                if (peer?.Position == null || peer.UnitTag == worker.UnitTag)
-                    continue;
-                var peerPos = new Vector2(peer.Position.X, peer.Position.Y);
-                if (_collisionCalculator.Collides(peerPos, WorkerCollisionRadius, start, end))
-                {
-                    var dir = end - start;
-                    var lenSq = Vector2.Dot(dir, dir);
-                    if (lenSq < 0.0001f)
-                        continue;
-                    var len = MathF.Sqrt(lenSq);
-                    var perp = new Vector2(-dir.Y / len, dir.X / len) * (WorkerCollisionRadius * 2.5f);
-                    // Try positive offset
-                    var offsetEnd = end + new Vector2(perp.X, perp.Y);
-                    if (!_collisionCalculator.Collides(peerPos, WorkerCollisionRadius, start, offsetEnd))
-                    {
-                        return new Point2D { X = offsetEnd.X, Y = offsetEnd.Y };
-                    }
-                    // Try negative offset
-                    offsetEnd = end - new Vector2(perp.X, perp.Y);
-                    if (!_collisionCalculator.Collides(peerPos, WorkerCollisionRadius, start, offsetEnd))
-                    {
-                        return new Point2D { X = offsetEnd.X, Y = offsetEnd.Y };
-                    }
-                }
-            }
-            return new Point2D { X = targetPos.X, Y = targetPos.Y };
+                X = (worker.Position.X + mineral.Position.X) * 0.5f,
+                Y = (worker.Position.Y + mineral.Position.Y) * 0.5f
+            };
+
+            return MoveTo(worker.UnitTag, movePoint, frame);
         }
 
-        private IEnumerable<SC2APIProtocol.Action> ProcessBumpingPair(int frame, CcaSpawnLearningState state, int pairId, WorkerEntryDto lead, WorkerEntryDto partner, OrderedMineral mineral, IEnumerable<WorkerEntryDto>? peers = null)
+        /// <summary>
+        /// The mineral-walk command. SMART on mineral tag = collision disabled.
+        /// </summary>
+        private IEnumerable<SC2APIProtocol.Action> SmartToMineral(ulong workerTag, ulong mineralTag)
+        {
+            if (workerTag == 0 || mineralTag == 0) return Array.Empty<SC2APIProtocol.Action>();
+            var cmd = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.SMART,
+                TargetUnitTag = mineralTag
+            };
+            cmd.UnitTags.Add(workerTag);
+            return new List<SC2APIProtocol.Action>
+            {
+                new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = cmd } }
+            };
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> ProcessBumpingPair(int frame, CcaSpawnLearningState state, int pairId, WorkerEntryDto lead, WorkerEntryDto partner, OrderedMineral mineral)
         {
             var commands = new List<SC2APIProtocol.Action>();
             if (lead == null || partner == null || mineral == null) return commands;
@@ -366,44 +369,18 @@ namespace BabySharkBot.Services
                 var targetX = (avgX + mineral.Position.X) * 0.5f;
                 var targetY = (avgY + mineral.Position.Y) * 0.5f;
 
-                // Shared convergence point — compute collision-free offsets for each worker
-                var sharedTarget = new Vector2Dto(targetX, targetY);
-                var leadTarget = CalculateCollisionFreeTarget(lead, sharedTarget, new[] { partner });
-                var partnerTarget = CalculateCollisionFreeTarget(partner, sharedTarget, new[] { lead });
-
-                var leadMove = new Point2D { X = (lead.Position.X + leadTarget.X) * 0.5f, Y = (lead.Position.Y + leadTarget.Y) * 0.5f };
-                var partnerMove = new Point2D { X = (partner.Position.X + partnerTarget.X) * 0.5f, Y = (partner.Position.Y + partnerTarget.Y) * 0.5f };
+                var leadMove = new Point2D { X = (lead.Position.X + targetX) * 0.5f, Y = (lead.Position.Y + targetY) * 0.5f };
+                var partnerMove = new Point2D { X = (partner.Position.X + targetX) * 0.5f, Y = (partner.Position.Y + targetY) * 0.5f };
                 
                 commands.AddRange(MoveTo(lead.UnitTag, leadMove, frame));
                 commands.AddRange(MoveTo(partner.UnitTag, partnerMove, frame));
             }
             else
             {
-                commands.AddRange(ProcessWorkerMovement(lead, mineral, frame, peers));
-                commands.AddRange(ProcessWorkerMovement(partner, mineral, frame, peers));
+                commands.AddRange(ProcessWorkerMovement(lead, mineral, frame));
+                commands.AddRange(ProcessWorkerMovement(partner, mineral, frame));
             }
             return commands;
-        }
-
-        private IEnumerable<SC2APIProtocol.Action> ProcessWorkerMovement(WorkerEntryDto worker, OrderedMineral mineral, int frame, IEnumerable<WorkerEntryDto>? peers = null)
-        {
-            if (worker == null || mineral == null) return Array.Empty<SC2APIProtocol.Action>();
-            if (Distance(worker.Position, mineral.Position) <= 1.5f) return Harvest(worker.UnitTag, mineral.Position, mineral.UnitTag);
-            
-            // Default midpoint toward mineral
-            var rawTarget = new Point2D
-            {
-                X = (worker.Position.X + mineral.Position.X) * 0.5f,
-                Y = (worker.Position.Y + mineral.Position.Y) * 0.5f
-            };
-
-            // De-clog: offset target if path intersects peer workers
-            var safeTarget = CalculateCollisionFreeTarget(
-                worker,
-                new Vector2Dto(rawTarget.X, rawTarget.Y),
-                peers ?? Array.Empty<WorkerEntryDto>());
-
-            return MoveTo(worker.UnitTag, safeTarget, frame);
         }
 
         private IEnumerable<SC2APIProtocol.Action> Harvest(ulong tag, Vector2Dto mineralPos, ulong mineralTag = 0)
