@@ -58,6 +58,7 @@ Kimi AI can choose to query or open any file listed below.
 - `ARCHITECTURE.md`
 - `THIRD-PARTY-LICENSES.md`
 - `EXPANSION_POINT_VISUAL_GUIDE.md`
+- `MineralWalking.md`
 - `expansion_point_prompt.md`
 - `DRAWING_PATTERN_GUIDE.md`
 - `TOWNHALL_SYSTEM_STATUS.md`

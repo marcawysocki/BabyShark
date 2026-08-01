@@ -418,7 +418,7 @@ namespace BabySharkBot
                 // debug labels are still visible on screen.
                 if (observation.Observation.GameLoop % 5 == 0)
                 {
-                    System.Diagnostics.Debugger.Break();
+                    //System.Diagnostics.Debugger.Break();
                 }
 
                 if (observation.Observation.GameLoop % 100 == 0)

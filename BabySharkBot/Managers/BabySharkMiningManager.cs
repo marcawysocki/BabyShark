@@ -25,7 +25,7 @@ namespace BabySharkBot.Managers
     /// </summary>
     public class BabySharkMiningManager : IManager
     {
-        public bool NeverSkip { get; set; } = false;
+        public bool NeverSkip { get; set; } = true;
         public bool SkipFrame { get; set; } = false;
         public double LongestFrame { get; set; } = 0;
         public double TotalFrameTime { get; set; } = 0;
@@ -275,6 +275,8 @@ namespace BabySharkBot.Managers
             }
         }
 
+        private Dictionary<ulong, int> _workerIdleFrames = new Dictionary<ulong, int>();
+
         public IEnumerable<SC2Action> OnFrame(ResponseObservation observation)
         {
             _currentFrame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
@@ -293,6 +295,9 @@ namespace BabySharkBot.Managers
             if (!Settings.ccaMining)
             {
                 actions.AddRange(ExecuteJustInTimeMining(observation));
+                
+                // Phase 4: Add Idle-Fallback in Manager
+                actions.AddRange(HandleIdleWorkerFallback(observation));
             }
 
             UpdateScoutedMinerals(observation);
@@ -300,8 +305,43 @@ namespace BabySharkBot.Managers
             PrintMineralReturnRateSummary(observation);
             PrintTwelveDroneMilestone(observation);
             
-            // Debug drawing is now handled by DrawOnlyManager (NeverSkip = true)
-            // so labels persist even when this manager is skipped.
+            return actions;
+        }
+
+        private IEnumerable<SC2Action> HandleIdleWorkerFallback(ResponseObservation observation)
+        {
+            var actions = new List<SC2Action>();
+            if (observation?.Observation?.RawData?.Units == null) return actions;
+
+            var workers = observation.Observation.RawData.Units.Where(u => u != null && u.Alliance == Alliance.Self && (u.UnitType == (uint)UnitTypes.ZERG_DRONE || u.UnitType == (uint)UnitTypes.TERRAN_SCV || u.UnitType == (uint)UnitTypes.PROTOSS_PROBE)).ToList();
+
+            foreach (var worker in workers)
+            {
+                if (worker.Orders.Count == 0)
+                {
+                    _workerIdleFrames.TryGetValue(worker.Tag, out var idleCount);
+                    _workerIdleFrames[worker.Tag] = idleCount + 1;
+
+                    if (_workerIdleFrames[worker.Tag] > 30)
+                    {
+                        // Emergency reassign to nearest unmined mineral
+                        if (_jitWorkerStates.TryGetValue(worker.Tag, out var state))
+                        {
+                            var mineral = ResolveMineralTag(observation, state.CurrentMineralPos);
+                            if (mineral != 0)
+                            {
+                                actions.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { worker.Tag }, TargetUnitTag = mineral } } });
+                                Console.WriteLine($"[IDLE FALLBACK] Worker {worker.Tag} idle for {_workerIdleFrames[worker.Tag]} frames, forcing SMART to mineral {mineral}");
+                            }
+                        }
+                        _workerIdleFrames[worker.Tag] = 0; // Reset counter after action
+                    }
+                }
+                else
+                {
+                    _workerIdleFrames[worker.Tag] = 0;
+                }
+            }
 
             return actions;
         }
@@ -338,7 +378,7 @@ namespace BabySharkBot.Managers
             if (_mapData == null) return;
             var currentStartIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
             var currentAssignments = OngoingMapData.ResolveTeamAssignments(_mapData, currentStartIndex);
-            _ccaMiningService.RecordSpawnObservation(_mapData, currentStartIndex, currentAssignments, _workerLabelService, workerEntries: workerEntries);
+            _ccaMiningService.RecordSpawnObservation(_mapData, currentStartIndex, currentAssignments, _workerLabelService, workerEntries: workerEntries, mineralLabelService: _mineralLabelService);
 
             var townhall = _mapData.StartingTownHall[currentStartIndex];
             if (townhall == null) return;
@@ -398,28 +438,39 @@ namespace BabySharkBot.Managers
                 if (assignment?.Workers == null || assignment.Minerals?.Count < 2) continue;
                 
                 // FIX: Resolve mineralA as the NEAR mineral (IsNear=true) and mineralB as FAR.
-                // The list order Minerals[0]/Minerals[1] does NOT reliably indicate near/far.
                 var mineralA = assignment.Minerals.FirstOrDefault(m => m.IsNear) ?? assignment.Minerals[0];
                 var mineralB = assignment.Minerals.FirstOrDefault(m => !m.IsNear && m != mineralA) ?? assignment.Minerals.Skip(1).FirstOrDefault() ?? mineralA;
                 
                 foreach (var worker in assignment.Workers)
                 {
-                    if (worker.UnitTag == 0 || _jitWorkerStates.ContainsKey(worker.UnitTag)) continue;
-                    
+                    if (worker.UnitTag == 0) continue;
+
                     var label = worker.FinalLabel ?? worker.Label ?? string.Empty;
-                    // 1 & 3 start on A, 2 starts on B
                     var startsOnA = label.EndsWith("1") || label.EndsWith("3");
-                    
-                    _jitWorkerStates[worker.UnitTag] = new JitWorkerState
+
+                    if (!_jitWorkerStates.TryGetValue(worker.UnitTag, out var state))
                     {
-                        TeamNumber = assignment.TeamNumber,
-                        TeamId = assignment.TeamId,
-                        CurrentMineralTag = startsOnA ? mineralA.UnitTag : mineralB.UnitTag,
-                        AlternateMineralTag = startsOnA ? mineralB.UnitTag : mineralA.UnitTag,
-                        CurrentMineralPos = startsOnA ? mineralA.Position : mineralB.Position,
-                        AlternateMineralPos = startsOnA ? mineralB.Position : mineralA.Position,
-                        WasCarrying = false
-                    };
+                        state = new JitWorkerState
+                        {
+                            TeamNumber = assignment.TeamNumber,
+                            TeamId = assignment.TeamId,
+                            WasCarrying = false
+                        };
+                        _jitWorkerStates[worker.UnitTag] = state;
+                    }
+
+                    // Only assign initial targets if this worker has never received them.
+                    // Once assigned (including after a cargo-return swap), leave them alone.
+                    if (state.CurrentMineralTag == 0 && mineralA.UnitTag != 0)
+                    {
+                        state.CurrentMineralTag = startsOnA ? mineralA.UnitTag : mineralB.UnitTag;
+                        state.CurrentMineralPos = startsOnA ? mineralA.Position : mineralB.Position;
+                    }
+                    if (state.AlternateMineralTag == 0 && mineralB.UnitTag != 0)
+                    {
+                        state.AlternateMineralTag = startsOnA ? mineralB.UnitTag : mineralA.UnitTag;
+                        state.AlternateMineralPos = startsOnA ? mineralB.Position : mineralA.Position;
+                    }
                 }
             }
         }
@@ -464,7 +515,9 @@ namespace BabySharkBot.Managers
                     _previousCarryingState.TryGetValue(worker.Tag, out var wasCarrying);
 
                     // Per-worker A/B swap on cargo return transition
-                    if (!carrying && wasCarrying)
+                    // CRITICAL FIX: Only swap A/B for JIT teams (3+ workers). 
+                    // Speed-mining teams (2 workers) stay on their mineral.
+                    if (!carrying && wasCarrying && isJitTeam)
                     {
                         OnWorkerCargoReturned(worker.Tag);
                     }
@@ -486,8 +539,7 @@ namespace BabySharkBot.Managers
                         }
                         else if (!carrying && _jitWorkerStates.TryGetValue(worker.Tag, out var state))
                         {
-                            var nextTargetTag = state.CurrentMineralTag;
-                            var mineral = assignment.Minerals.FirstOrDefault(m => m.UnitTag == nextTargetTag);
+                            var mineral = ResolveMineralForWorker(assignment, state);
                             if (mineral != null)
                             {
                                 var harvestPos = new Point2D { X = mineral.HarvestPoint.X, Y = mineral.HarvestPoint.Y };
@@ -497,6 +549,22 @@ namespace BabySharkBot.Managers
                                 }
                                 else
                                 {
+                                    // FIX: Add Mineral-Walking (SMART) to Steady-State
+                                    if (Distance(worker.Pos.ToPoint2D(), harvestPos) < 2.5f && mineral.UnitTag != 0)
+                                    {
+                                        AddAction(actions, new SC2Action 
+                                        { 
+                                            ActionRaw = new ActionRaw 
+                                            { 
+                                                UnitCommand = new ActionRawUnitCommand 
+                                                { 
+                                                    AbilityId = (int)Abilities.SMART, 
+                                                    UnitTags = { worker.Tag }, 
+                                                    TargetUnitTag = mineral.UnitTag 
+                                                } 
+                                            } 
+                                        });
+                                    }
                                     AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = harvestPos } } });
                                 }
                             }
@@ -511,7 +579,7 @@ namespace BabySharkBot.Managers
                     {
                         if (_jitWorkerStates.TryGetValue(worker.Tag, out var state))
                         {
-                            var mineral = assignment.Minerals.FirstOrDefault(m => m.UnitTag == state.CurrentMineralTag);
+                            var mineral = ResolveMineralForWorker(assignment, state);
                             if (mineral == null) continue;
 
                             if (carrying && townhallUnit != null)
@@ -535,6 +603,22 @@ namespace BabySharkBot.Managers
                                 }
                                 else
                                 {
+                                    // FIX: Add Mineral-Walking (SMART) to Steady-State
+                                    if (Distance(worker.Pos.ToPoint2D(), harvestPos) < 2.5f && mineral.UnitTag != 0)
+                                    {
+                                        AddAction(actions, new SC2Action 
+                                        { 
+                                            ActionRaw = new ActionRaw 
+                                            { 
+                                                UnitCommand = new ActionRawUnitCommand 
+                                                { 
+                                                    AbilityId = (int)Abilities.SMART, 
+                                                    UnitTags = { worker.Tag }, 
+                                                    TargetUnitTag = mineral.UnitTag 
+                                                } 
+                                            } 
+                                        });
+                                    }
                                     AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = harvestPos } } });
                                 }
                             }
@@ -543,6 +627,37 @@ namespace BabySharkBot.Managers
                 }
             }
             return actions;
+        }
+
+        private OrderedMineral? ResolveMineralForWorker(TeamPatchAssignmentDto assignment, JitWorkerState state)
+        {
+            if (assignment == null || state == null) return null;
+
+            // Primary: match by UnitTag
+            var mineral = assignment.Minerals.FirstOrDefault(m => m.UnitTag == state.CurrentMineralTag);
+            if (mineral != null) return mineral;
+
+            // Fallback 1: match by position proximity
+            mineral = assignment.Minerals.FirstOrDefault(m =>
+                m.Position != null &&
+                Math.Abs(m.Position.X - state.CurrentMineralPos.X) < 0.5f &&
+                Math.Abs(m.Position.Y - state.CurrentMineralPos.Y) < 0.5f);
+            if (mineral != null) return mineral;
+
+            // Fallback 2: match by label
+            var targetLabel = state.CurrentMineralPos == (assignment.Minerals.FirstOrDefault(m => m.IsNear)?.Position ?? state.CurrentMineralPos)
+                 ? assignment.NearLabel
+                 : assignment.FarLabel;
+            mineral = assignment.Minerals.FirstOrDefault(m =>
+                string.Equals(m.Label, targetLabel, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(m.FinalLabel, targetLabel, StringComparison.OrdinalIgnoreCase));
+            if (mineral != null) return mineral;
+
+            // Fallback 3: nearest mineral to last known position
+            return assignment.Minerals
+                .Where(m => m.Position != null)
+                .OrderBy(m => Math.Pow(m.Position.X - state.CurrentMineralPos.X, 2) + Math.Pow(m.Position.Y - state.CurrentMineralPos.Y, 2))
+                .FirstOrDefault();
         }
 
         private void OnWorkerCargoReturned(ulong workerTag)
@@ -580,7 +695,26 @@ namespace BabySharkBot.Managers
 
                 // Second attempt: match by label strings
                 var worker = allWorkers.FirstOrDefault(u => u != null && (string.Equals(_workerLabelService?.GetLabel(u.Tag), assignment.FinalLabel, StringComparison.OrdinalIgnoreCase) || string.Equals(_workerLabelService?.GetLabel(u.Tag), assignment.StartLabel, StringComparison.OrdinalIgnoreCase) || string.Equals(_workerLabelService?.GetLabel(u.Tag), assignment.Label, StringComparison.OrdinalIgnoreCase)));
-                if (worker != null) result.Add(worker);
+                if (worker != null)
+                {
+                    result.Add(worker);
+                    continue;
+                }
+
+                // Fallback: nearest unassigned worker
+                var assignedTags = new HashSet<ulong>(result.Select(u => u.Tag));
+                var unassigned = allWorkers.Where(u => !assignedTags.Contains(u.Tag)).ToList();
+                if (unassigned.Count > 0 && assignment.Position != null)
+                {
+                    var nearest = unassigned.OrderBy(u =>
+                        Math.Pow(u.Pos.X - assignment.Position.X, 2) +
+                        Math.Pow(u.Pos.Y - assignment.Position.Y, 2)).FirstOrDefault();
+                    if (nearest != null)
+                    {
+                        result.Add(nearest);
+                        Console.WriteLine($"[FALLBACK] Assigned worker {nearest.Tag} to team by proximity (label {assignment.Label} had no match)");
+                    }
+                }
             }
             return result;
         }
@@ -651,18 +785,36 @@ namespace BabySharkBot.Managers
 
         private void UpdateMineralReturnRate(ResponseObservation observation)
         {
-            if (_mineralReturnRateTrackerService == null || observation?.Observation?.Score?.ScoreDetails == null || observation?.Observation?.RawData?.Units == null) return;
+            if (_mineralReturnRateTrackerService == null) return;
+
+            if (observation?.Observation?.Score?.ScoreDetails == null)
+            {
+                // Diagnostic log
+                if (_currentFrame % 100 == 0) Console.WriteLine($"DEBUG: ScoreDetails null at frame {_currentFrame}");
+                return;
+            }
+
+            if (observation?.Observation?.RawData?.Units == null) return;
+
             var droneCount = observation.Observation.RawData.Units.Count(u => u != null && u.Alliance == Alliance.Self && u.UnitType == (uint)UnitTypes.ZERG_DRONE);
             if (droneCount >= 12 && droneCount <= 16)
             {
                 var COLLECTION_RATE = observation.Observation.Score.ScoreDetails.CollectionRateMinerals;
+                // Diagnostic log
+                if (_currentFrame % 100 == 0) Console.WriteLine($"DEBUG: frame={_currentFrame} drones={droneCount} rate={COLLECTION_RATE}");
                 if (COLLECTION_RATE > 0) _mineralReturnRateTrackerService.Record(droneCount, COLLECTION_RATE);
             }
         }
 
         private void PrintMineralReturnRateSummary(ResponseObservation observation)
         {
-            if (_mineralReturnRateTrackerService != null && _currentFrame - _lastMineralReturnRateConsoleFrame >= 500)
+            // Diagnostic heartbeat - every 100 frames to avoid spamming too much
+            if (_currentFrame % 100 == 0)
+            {
+                Console.WriteLine($"DEBUG: frame={_currentFrame} tracker={_mineralReturnRateTrackerService != null} lastPrint={_lastMineralReturnRateConsoleFrame}");
+            }
+
+            if (_mineralReturnRateTrackerService != null && _currentFrame - _lastMineralReturnRateConsoleFrame >= 50) // Reduced from 500
             {
                 _lastMineralReturnRateConsoleFrame = _currentFrame;
                 Console.WriteLine($"Mineral Return Rate Summary: {_mineralReturnRateTrackerService.GetSummary()}");

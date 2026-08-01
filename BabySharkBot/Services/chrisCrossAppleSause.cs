@@ -315,17 +315,22 @@ namespace BabySharkBot.Services
             OrderedMineral mineral,
             int frame)
         {
-            if (worker == null || mineral == null || mineral.UnitTag == 0)
+            if (worker == null || mineral == null)
                 return Array.Empty<SC2APIProtocol.Action>();
 
             float dist = Distance(worker.Position, mineral.Position);
 
             // Already there — lock into mining
             if (dist <= 1.5f)
-                return Harvest(worker.UnitTag, mineral.Position, mineral.UnitTag);
+            {
+                if (mineral.UnitTag != 0)
+                    return Harvest(worker.UnitTag, mineral.Position, mineral.UnitTag);
+                else
+                    return Harvest(worker.UnitTag, mineral.Position, 0);  // position-only gather
+            }
 
             // Close enough to mineral-walk through other workers
-            if (dist <= 2.5f)
+            if (dist <= 2.5f && mineral.UnitTag != 0)
                 return SmartToMineral(worker.UnitTag, mineral.UnitTag);
 
             // Still approaching — normal move toward mineral

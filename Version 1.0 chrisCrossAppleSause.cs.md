@@ -1,8 +1,6 @@
 Source files https://github.com/marcawysocki/BabyShark 
 
-Version 1.0 chrisCrossAppleSause.cs, teamPatchAssignment.cs currently not working correctly.  Workers are not going to the correct targets.  The yellow and teal teams seem to be bunching up. 
-At frame 35 a smart command is issued, but when they are pointed at the incorrect mineral the bunch find an Unoccupied mineral node 
-
+Version 1.0 chrisCrossAppleSause.cs, teamPatchAssignment.cs 
 The working directory is C:\Users\marca\source\repos\BabyShark 
 
  C:\Users\marca\source\repos\BabyShark\Version 1.0 chrisCrossAppleSause.cs.md, C:\Users\marca\source\repos\BabyShark\BabySharkBot\Services\chrisCrossAppleSause.cs C:\Users\marca\source\repos\BabyShark\BabySharkBot\MicroTasks\TeamPatchMiningTask.cs
@@ -34,7 +32,7 @@ jitMining = False ccaMining = True M1Bump = TealM1IsFar M8Bump = YellowM8IsFar T
 
 Service chrisCrossAppleSause.cs Starting base mining Assignment. From Start[0 to 3] Initial worker formation: This will be for either a 8 or 12 worker test on 8 mineral nodes. The first 4 workers will be the "1" workers. They are assigned as the most optimal worker to go to the "A" mineral. The next 4 workers will be the "2" workers. Their job is to move to the "B" minerals as fast as posibile. The last 4 workers will be the "3" workers. The "1" workers are the primary workers that we are trying to accelerate to the "A" mineral. The "3" workers are the secondary workers that are trying to accelerate their teammate to the "A" mineral.
 
-If our starting worker count is 8 then all Bumping pairs are false. The "1" workers will be T1, S1, B1, Y1. The "2" workers will be T2, S2, B2, Y2. There are no starting "3" workers In an 8 worker start. The "1" workers will be assigned to the "A" minerals and the "2" workers will be assigned to the "B" minerals.
+If our starting worker count is 8 then all Bumping pairs are false. The "1" workers will be T1, S1, B1, Y1. The "2" workers will be T2, S2, B2, Y2. There are no starting "3" workers In an 8 worker start. 
 
 The 8 worker Starting worker Count is a much much simpler process where each worker just goes to a mineral and starts mining.
 
