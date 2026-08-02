@@ -11,7 +11,23 @@ First Task.  BuildIne.cs Should create drones until DesiredUnitCount ZERG_DRONE 
 commands.Add(new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = morphCmd } });
 Console.WriteLine($"chrisCrossAppleSause [{state.SpawnKey}]: Morphing larva {larva.Tag} into drone on frame 0");
 
-Second Task. When a larva morphs into a drone it can join the teams. It will need a worker label. This needs to be reusable code that New build orders can run.
+Second Task. When a larva morphs into a drone it can join the teams. It will need a worker label. This needs to be reusable code that New build orders can run. 
+
+see TeamPatchMiningTask.cs and TeamLabelRegistrationHelper.cs 
+
+StarCraft II Maps Have multiple starting locations And map configuration for mineral nodes and that's vespine gas '
+
+Include in your reasoning Both the 8 worker starting Teams Green, Orange, Purple, and Red and The 12 worker starting Teams Teal, Salmon, Blue, Yellow
+chrisCrossAppleSause should Morph 1 Larva into a Drone for both 12 and 8 worker start, currently it is only 8 worker start.
+
+I Need a table of the teams for instance M[1] and M[2] are Teal Team [T1,T2,T3,T4, TA, TB] With A&B in any order depending on the map. What color does that correspond to in and 8 worker start
+Break down all teams and their corresponding colors for both 8 worker start and 12 worker start.
+
+For an 8 worker start The teams will eventually reach the same worker count and functionas a 12 worker start. The new workers 9 thru 12 will join the teams that would have been created in a 12 worker start.
+
+In an 12 worker start the third worker eventually Mines it's teams "A" Mineral. In an 8 worker start those Third workers Morph into a Drone one at a time.
+
+Past 12, we start to create 4 worker teams.
 
 If the current worker count is 8 then the new worker will be will join the team that would have been Teal on a 12 worker start.
 The "1","2" existing workers and "A", "B" Mineral will become a three worker team, the workers and Minerals all change to Teal T1,T2, The new Larva that just Morphed into a drone will be T3 and the Minerals will be TA and TB.
