@@ -52,6 +52,7 @@ Kimi AI can choose to query or open any file listed below.
 - `CONVENTIONS.md`
 - `ARCHITECTURE_DIAGRAM.md`
 - `INDEX.md`
+- `SharkyBuildOrderSystem.md`
 - `IMPLEMENTATION_FIX_REFERENCE.md`
 - `HowSharkyLabelsAndDoesDebugDraw.md`
 - `Just In Time Mining.md`
@@ -157,7 +158,10 @@ Kimi AI can choose to query or open any file listed below.
 - `BabySharkBot/Managers/BabySharkMiningManager.cs`
 - `BabySharkBot/Managers/DrawOnlyManager.cs`
 - `BabySharkBot/Manager/WorkerLabelChangedEventArgs.cs`
+- `BabySharkBot/Builds/DroneProductionSnippet.cs`
+- `BabySharkBot/Builds/Step5.cs`
 - `BabySharkBot/Builds/MutaliskRush.cs`
+- `BabySharkBot/Builds/BuildTest.cs`
 - `BabySharkBot/Docs/MiningAssignmentPrompt.md`
 - `BabySharkBot/Services/SpawningPoolPlacementService.cs`
 - `BabySharkBot/Services/ExpansionCOMService.cs`

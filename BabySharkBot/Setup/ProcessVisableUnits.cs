@@ -32,12 +32,13 @@ namespace BabySharkBot.Setup
         ///   No neutral-unit scanning, no re-labeling, no team setup.
         /// </summary>
         public static List<WorkerEntryDto> ProcessVisibleUnits(
-            ResponseObservation observation,
+            ResponseObservation? observation,
             WorkerLabelService? workerLabelService,
             MineralLabelService? mineralLabelService = null,
             VespeneLabelService? vespeneLabelService = null,
             SpawningPoolPlacementService? spawningPoolPlacementService = null)
         {
+            if (observation == null) return new List<WorkerEntryDto>();
             var frame = observation?.Observation?.GameLoop ?? 0;
 
             // Heavy path: only during the very first frames or when the base setup hasn't finished yet.
@@ -51,7 +52,7 @@ namespace BabySharkBot.Setup
         }
 
         public static List<WorkerEntryDto> ProcessVisibleUnits(
-            ResponseObservation observation,
+            ResponseObservation? observation,
             WorkerLabelService? workerLabelService)
         {
             return ProcessVisibleUnits(observation, workerLabelService, null, null, null);

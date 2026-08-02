@@ -24,16 +24,18 @@ namespace BabySharkBot.Managers
 
         private readonly chrisCrossAppleSause _ccaService;
         private readonly BabySharkMiningManager _miningManager;
+        private readonly BabySharkBuildManager _buildManager;
 
         public chrisCrossAppleSause CcaMiningService => _ccaService;
         private bool _unregistered;
         private int _allMiningConsecutiveFrames = 0;
         private const int AllMiningConfirmationFrames = 2;
 
-        public CcaManager(chrisCrossAppleSause ccaService, BabySharkMiningManager miningManager)
+        public CcaManager(chrisCrossAppleSause ccaService, BabySharkMiningManager miningManager, BabySharkBuildManager buildManager)
         {
             _ccaService = ccaService ?? throw new ArgumentNullException(nameof(ccaService));
             _miningManager = miningManager ?? throw new ArgumentNullException(nameof(miningManager));
+            _buildManager = buildManager;
             // subscribe to mining started event so we can unregister ourselves
             _miningManager.OnMiningStarted += HandleMiningStarted;
             _unregistered = false;
@@ -51,6 +53,12 @@ namespace BabySharkBot.Managers
                     // Remove this manager
                     ai.Managers.RemoveAll(m => m == this);
                     Console.WriteLine("CcaManager: unregistered from BabySharkAI.Managers");
+
+                    if (_buildManager != null && !ai.Managers.Contains(_buildManager))
+                    {
+                        ai.Managers.Add(_buildManager);
+                        Console.WriteLine("CcaManager: Added BabySharkBuildManager to BabySharkAI.Managers at frame 35 handoff");
+                    }
                 }
             }
             catch (Exception ex)
@@ -111,7 +119,8 @@ namespace BabySharkBot.Managers
                     Console.WriteLine($"CcaManager: frame {frame} reached, initiating handoff to BabySharkMiningManager.");
                     
                     // Capture final actions from CCA service at the handoff frame
-                    var actionsAtHandoff = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, null)?.ToList() ?? new List<SC2Action>();
+                    var selfUnitsForHandoff = observation?.Observation?.RawData?.Units?.Where(u => u.Alliance == Alliance.Self);
+                    var actionsAtHandoff = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, null, selfUnitsForHandoff)?.ToList() ?? new List<SC2Action>();
 
                     // Signal mining started to unregister this manager
                     _miningManager.SignalMiningStarted();
@@ -121,7 +130,8 @@ namespace BabySharkBot.Managers
                     return actionsAtHandoff;
                 }
 
-                var actions = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, null);
+                var selfUnits = observation?.Observation?.RawData?.Units?.Where(u => u.Alliance == Alliance.Self);
+                var actions = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, null, selfUnits);
                 return actions != null ? actions.ToList() : Array.Empty<SC2APIProtocol.Action>();
             }
             catch (Exception ex)

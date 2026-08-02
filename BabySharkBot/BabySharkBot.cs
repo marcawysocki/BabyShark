@@ -73,6 +73,13 @@ namespace BabySharkBot
             DebugManager = _defaultBot.DebugManager;
             Managers.Add(DebugManager);
 
+            // Essential Sharky managers for data and state tracking
+            Managers.Add(_defaultBot.UnitDataManager);
+            Managers.Add(_defaultBot.MapManager);
+            Managers.Add(_defaultBot.EnemyRaceManager);
+            Managers.Add(_defaultBot.BaseManager);
+            Managers.Add(_defaultBot.TargetingManager);
+
             // Essential services
             DebugService = _defaultBot.DebugService;
 
@@ -118,6 +125,11 @@ namespace BabySharkBot
             // Initialize CCA service early to share across managers
             var ccaService = new BabySharkBot.Services.chrisCrossAppleSause();
 
+            // Create build manager
+            var buildManager = new BabySharkBuildManager(_defaultBot);
+            // Optionally set an initial build:
+            buildManager.SetBuild(new BabySharkBot.Builds.BuildIne(_defaultBot));
+
             // Register only the necessary microtasks
             RegisterRequiredMicroTasks();
             InstallRlMicroControllerWrappers();
@@ -140,7 +152,7 @@ namespace BabySharkBot
             // Create and register CCA manager to run bump/order logic in the manager lifecycle.
             try
             {
-                var ccaManager = new CcaManager(ccaService, _miningManager);
+                var ccaManager = new CcaManager(ccaService, _miningManager, buildManager);
                 Managers.Add(ccaManager);
                 Console.WriteLine($"BabySharkAI: Registered CcaManager. Total managers: {Managers.Count}");
             }
@@ -337,6 +349,20 @@ namespace BabySharkBot
             }
 
             _miningManager.ProcessFrameObservation(observation);
+
+            foreach (var playerInfo in gameInfo.PlayerInfo)
+            {
+                if (playerInfo.PlayerId == playerId)
+                {
+                    _defaultBot.MacroData.Race = playerInfo.RaceActual;
+                }
+            }
+            _defaultBot.MacroSetup.SetupMacro(_defaultBot.MacroData);
+
+            foreach (var manager in Managers)
+            {
+                manager.OnStart(gameInfo, data, pingResponse, observation, playerId, opponentId);
+            }
         }
 
         /// <summary>
@@ -414,6 +440,9 @@ namespace BabySharkBot
 
             public IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
             {
+                // Hydrate MacroData so builds can read Minerals/Supply/Frame
+                MacroDataUpdater.UpdateFromObservation(observation, _owner._defaultBot.MacroData);
+
                 // Break every 5th frame BEFORE any processing, so the previous frame's
                 // debug labels are still visible on screen.
                 if (observation.Observation.GameLoop % 5 == 0)

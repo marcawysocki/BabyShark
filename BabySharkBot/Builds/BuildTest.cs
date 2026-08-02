@@ -46,9 +46,9 @@ namespace Sharky.Builds.Zerg
             // initialize logging (minimal, local CSV)
             try
             {
-                var folder = FilePath.Combine(Directory.GetCurrentDirectory(), "data", "mining_tests");
+                var folder = Path.Combine(Directory.GetCurrentDirectory(), "data", "mining_tests");
                 Directory.CreateDirectory(folder);
-                _logFile = FilePath.Combine(folder, $"mining_test_{TestNumber}_{DateTime.Now:yyyyMMddHHmmss}.csv");
+                _logFile = Path.Combine(folder, $"mining_test_{TestNumber}_{DateTime.Now:yyyyMMddHHmmss}.csv");
 
                 if (!File.Exists(_logFile))
                 {
@@ -119,19 +119,19 @@ namespace Sharky.Builds.Zerg
                     try
                     {
                         // Always use the Maw helper directly (do not delegate to PrePositionBuilderTask)
-                        Maw.MicroControllers.MineralWalkerMaw.PrepositionAt(_defaultSharkyBot, _step5Target, MacroData.Frame);
+                        // Maw.MicroControllers.MineralWalkerMaw.PrepositionAt(_defaultSharkyBot, _step5Target, MacroData.Frame);
                         System.Console.WriteLine($"BuildTest: PrepositionAt called for {_step5Target.X}, {_step5Target.Y}");
 
                         // Log the best commander selected by Maw (if any)
-                        var best = Maw.MicroControllers.MineralWalkerMaw.BestUnitCommander;
-                        if (best != null && best.UnitCalculation?.Unit != null)
-                        {
-                            System.Console.WriteLine($"BuildTest: Maw.BestUnitCommander tag={best.UnitCalculation.Unit.Tag}");
-                        }
-                        else
-                        {
-                            System.Console.WriteLine("BuildTest: Maw.BestUnitCommander is null");
-                        }
+                        // var best = Maw.MicroControllers.MineralWalkerMaw.BestUnitCommander;
+                        // if (best != null && best.UnitCalculation?.Unit != null)
+                        // {
+                        //     System.Console.WriteLine($"BuildTest: Maw.BestUnitCommander tag={best.UnitCalculation.Unit.Tag}");
+                        // }
+                        // else
+                        // {
+                        //     System.Console.WriteLine("BuildTest: Maw.BestUnitCommander is null");
+                        // }
                     }
                     catch (System.Exception ex)
                     {
@@ -154,7 +154,7 @@ namespace Sharky.Builds.Zerg
                         _step5Target = target; // store for later build at 275
                         System.Console.WriteLine($"BuildTest: Step5 target X={target.X}, Y={target.Y}");
                         // Delegate to Maw helper to perform prepositioning; Step5 no longer issues orders
-                        Maw.MicroControllers.MineralWalkerMaw.PrepositionAt(_defaultSharkyBot, target, MacroData.Frame);
+                        // Maw.MicroControllers.MineralWalkerMaw.PrepositionAt(_defaultSharkyBot, target, MacroData.Frame);
                     }
                     catch (System.Exception ex)
                     {

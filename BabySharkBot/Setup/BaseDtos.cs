@@ -356,10 +356,14 @@ namespace BabySharkBot.Setup
         {
             lock (_lock)
             {
-                _labelToTag[label] = tag;
-                _tagToLabel[tag] = label;
-                Console.WriteLine($"WorkerLabelService: Label set {label} -> {tag}");
-                LabelChanged?.Invoke(this, new WorkerLabelChangedEventArgs(tag, label));
+                if (!_labelToTag.TryGetValue(label, out var existingTag) || existingTag != tag || 
+                    !_tagToLabel.TryGetValue(tag, out var existingLabel) || existingLabel != label)
+                {
+                    _labelToTag[label] = tag;
+                    _tagToLabel[tag] = label;
+                    Console.WriteLine($"WorkerLabelService: Label set {label} -> {tag}");
+                    LabelChanged?.Invoke(this, new WorkerLabelChangedEventArgs(tag, label));
+                }
             }
         }
 
@@ -516,16 +520,29 @@ namespace BabySharkBot.Setup
 
             lock (_lock)
             {
-                var mineralData = new MineralLabelData
+                bool changed = false;
+                if (!_mineralLabels.TryGetValue(label, out var existing))
                 {
-                    Position = position,
-                    Color = color,
-                    Label = label,
-                    Tag = tag
-                };
+                    changed = true;
+                }
+                else if (existing.Tag != tag || existing.Position.X != position.X || existing.Position.Y != position.Y)
+                {
+                    changed = true;
+                }
 
-                _mineralLabels[label] = mineralData;
-                Console.WriteLine($"MineralLabelService: Registered mineral label '{label}' at ({position.X:F2},{position.Y:F2}) tag={tag}.");
+                if (changed)
+                {
+                    var mineralData = new MineralLabelData
+                    {
+                        Position = position,
+                        Color = color,
+                        Label = label,
+                        Tag = tag
+                    };
+
+                    _mineralLabels[label] = mineralData;
+                    Console.WriteLine($"MineralLabelService: Registered mineral label '{label}' at ({position.X:F2},{position.Y:F2}) tag={tag}.");
+                }
             }
 
         }
@@ -577,15 +594,28 @@ namespace BabySharkBot.Setup
 
             lock (_lock)
             {
-                var vespeneData = new VespeneLabelData
+                bool changed = false;
+                if (!_vespeneLabels.TryGetValue(label, out var existing))
                 {
-                    Position = position,
-                    Label = label,
-                    Color = color
-                };
+                    changed = true;
+                }
+                else if (existing.Position.X != position.X || existing.Position.Y != position.Y)
+                {
+                    changed = true;
+                }
 
-                _vespeneLabels[label] = vespeneData;
-                Console.WriteLine($"VespeneLabelService: Registered vespene label '{label}' at ({position.X:F2},{position.Y:F2})");
+                if (changed)
+                {
+                    var vespeneData = new VespeneLabelData
+                    {
+                        Position = position,
+                        Label = label,
+                        Color = color
+                    };
+
+                    _vespeneLabels[label] = vespeneData;
+                    Console.WriteLine($"VespeneLabelService: Registered vespene label '{label}' at ({position.X:F2},{position.Y:F2})");
+                }
             }
         }
 

@@ -34,6 +34,7 @@ namespace BabySharkBot.Managers
         private float _nearbyDistance = 30;
         private float _avoidRange = 1.5f;
         private int _targetPriorityCalculationFrame;
+        private readonly HashSet<uint> _loggedUnknownUnitTypes = new HashSet<uint>();
 
         public BabySharkUnitManager(
             ActiveUnitData activeUnitData,
@@ -212,7 +213,9 @@ namespace BabySharkBot.Managers
                 if (unit.Alliance == Alliance.Enemy)
                 {
                     var repairingUnits = repairers.Where(u => u.Tag != unit.Tag && u.Alliance == Alliance.Enemy && Vector2.DistanceSquared(new Vector2(u.Pos.X, u.Pos.Y), new Vector2(unit.Pos.X, unit.Pos.Y)) < (1.0 + u.Radius + unit.Radius) * (0.1 + u.Radius + unit.Radius));
-                    var attack = new UnitCalculation(unit, repairingUnits.ToList(), _sharkyUnitData, _sharkyOptions, _unitDataService, _mapDataService.IsOnCreep(unit.Pos), frame);
+                    var attack = TryCreateUnitCalculation(unit, repairingUnits.ToList(), _mapDataService.IsOnCreep(unit.Pos), frame);
+                    if (attack == null) continue;
+
                     if (_activeUnitData.EnemyUnits.TryGetValue(unit.Tag, out UnitCalculation existing))
                     {
                         attack.SetPreviousUnit(existing, existing.FrameLastSeen);
@@ -226,7 +229,9 @@ namespace BabySharkBot.Managers
                 else if (unit.Alliance == Alliance.Self)
                 {
                     var repairingUnits = repairers.Where(u => u.Alliance == Alliance.Self && Vector2.DistanceSquared(new Vector2(u.Pos.X, u.Pos.Y), new Vector2(unit.Pos.X, unit.Pos.Y)) < (1.0 + u.Radius + unit.Radius) * (0.1 + u.Radius + unit.Radius));
-                    var attack = new UnitCalculation(unit, repairingUnits.ToList(), _sharkyUnitData, _sharkyOptions, _unitDataService, _mapDataService.IsOnCreep(unit.Pos), frame);
+                    var attack = TryCreateUnitCalculation(unit, repairingUnits.ToList(), _mapDataService.IsOnCreep(unit.Pos), frame);
+                    if (attack == null) continue;
+
                     if (_activeUnitData.SelfUnits.TryGetValue(unit.Tag, out UnitCalculation existing))
                     {
                         attack.SetPreviousUnit(existing, existing.FrameLastSeen);
@@ -235,7 +240,9 @@ namespace BabySharkBot.Managers
                 }
                 else if (unit.Alliance == Alliance.Neutral)
                 {
-                    var attack = new UnitCalculation(unit, new List<Unit>(), _sharkyUnitData, _sharkyOptions, _unitDataService, _mapDataService.IsOnCreep(unit.Pos), frame);
+                    var attack = TryCreateUnitCalculation(unit, new List<Unit>(), _mapDataService.IsOnCreep(unit.Pos), frame);
+                    if (attack == null) continue;
+
                     if (_activeUnitData.NeutralUnits.TryGetValue(unit.Tag, out UnitCalculation existing))
                     {
                         attack.SetPreviousUnit(existing, existing.FrameLastSeen);
@@ -554,6 +561,30 @@ namespace BabySharkBot.Managers
             attack.Value.EnemiesThreateningDamage.Clear();
             attack.Value.Attackers.Clear();
             attack.Value.Targeters.Clear();
+        }
+
+        private UnitCalculation? TryCreateUnitCalculation(Unit unit, List<Unit> repairers, bool isOnCreep, int frame)
+        {
+            try
+            {
+                return new UnitCalculation(unit, repairers, _sharkyUnitData, _sharkyOptions, _unitDataService, isOnCreep, frame);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                if (_loggedUnknownUnitTypes.Add(unit.UnitType))
+                {
+                    Console.WriteLine($"[BabySharkUnitManager] Unknown unit type {unit.UnitType} (tag {unit.Tag}, alliance {unit.Alliance}). Skipping. {ex.Message}");
+                }
+                return null;
+            }
+            catch (NullReferenceException ex)
+            {
+                if (_loggedUnknownUnitTypes.Add(unit.UnitType))
+                {
+                    Console.WriteLine($"[BabySharkUnitManager] NRE for unit type {unit.UnitType} (tag {unit.Tag}). Skipping. {ex.Message}");
+                }
+                return null;
+            }
         }
 
         private float GetRange(UnitCalculation allyAttack, UnitCalculation enemyAttack)

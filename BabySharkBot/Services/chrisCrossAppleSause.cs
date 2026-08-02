@@ -75,7 +75,7 @@ namespace BabySharkBot.Services
             if (state.Phase == TestPhase.Idle) SetPhase(state, TestPhase.AssigningWorkers);
         }
 
-        public IEnumerable<SC2APIProtocol.Action> BuildBumpOrders(int frame, MawBaseLocationData mapData, int startIndex, IReadOnlyList<WorkerEntryDto> workerEntries, IEnumerable<UnitCommander>? commanders = null)
+        public IEnumerable<SC2APIProtocol.Action> BuildBumpOrders(int frame, MawBaseLocationData mapData, int startIndex, IReadOnlyList<WorkerEntryDto> workerEntries, IEnumerable<UnitCommander>? commanders = null, IEnumerable<Unit>? selfUnits = null)
         {
             var commands = new List<SC2APIProtocol.Action>();
             if (!Settings.ccaMining || mapData == null || workerEntries == null || workerEntries.Count == 0) return commands;
@@ -118,6 +118,26 @@ namespace BabySharkBot.Services
             // On frame 0, issue STOP
             if (frame == StartFrame)
             {
+                // NEW: Frame 0 larva → drone morph
+                if (Settings.CreateWorkerFrameZero && selfUnits != null)
+                {
+                    var larva = selfUnits.FirstOrDefault(u => u.UnitType == (uint)UnitTypes.ZERG_LARVA && u.Orders.Count == 0);
+                    if (larva != null)
+                    {
+                        var morphCmd = new ActionRawUnitCommand
+                        {
+                            AbilityId = (int)Abilities.TRAIN_DRONE,
+                            UnitTags = { larva.Tag }
+                        };
+                        commands.Add(new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = morphCmd } });
+                        Console.WriteLine($"chrisCrossAppleSause [{state.SpawnKey}]: Morphing larva {larva.Tag} into drone on frame 0");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"chrisCrossAppleSause [{state.SpawnKey}]: No idle larva found on frame 0");
+                    }
+                }
+
                 foreach (var w in workerEntries)
                 {
                     var stopCmd = new ActionRawUnitCommand { AbilityId = (int)Abilities.STOP, UnitTags = { w.UnitTag } };

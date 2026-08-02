@@ -45,6 +45,7 @@ namespace BabySharkBot.Setup
         public static bool CurrentBaseHasBeenPlayed8 = false;
         public static bool CurrentBaseHasBeenPlayed12 = false;
         public static bool ccaMining = true;
+        public static bool CreateWorkerFrameZero = true;
         /// <summary>
         /// Set to true once the BabySharkMiningManager has been created and registered with the bot.
         /// Used as a lightweight indicator that the mining manager is (or should be) running.

@@ -13,7 +13,7 @@ namespace BabySharkBot.Services
     public class SpawningPoolPlacementService
     {
         private readonly DebugService _debugService;
-        private Point2D _lastPlacement;
+        private Point2D? _lastPlacement;
 
         public SpawningPoolPlacementService(DebugService debugService)
         {

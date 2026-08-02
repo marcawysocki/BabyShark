@@ -2,6 +2,7 @@ using SC2APIProtocol;
 using Sharky;
 using Sharky.Extensions;
 using Sharky.Managers;
+using Sharky.Pathing;
 using BabySharkBot.Setup;
 using BabySharkBot.Services;
 using System;
@@ -47,7 +48,7 @@ namespace BabySharkBot.Managers
         private FrameToTimeConverter _frameToTimeConverter;
         private SpawningPoolPlacementService _spawningPoolPlacementService;
         private Sharky.Pathing.MapDataService _mapDataService;
-        private MawBaseLocationData _mapData;  // Store loaded map data for visualization
+        private MawBaseLocationData? _mapData;  // Store loaded map data for visualization
         private readonly chrisCrossAppleSause _ccaMiningService;
         private int _lastMineralReturnRateConsoleFrame = -999999;
         private bool _printedTwelveDroneMilestone = false;
@@ -80,7 +81,7 @@ namespace BabySharkBot.Managers
         private Dictionary<ulong, string> _workerTeamAssignment = new Dictionary<ulong, string>();
 
         // Event raised when initial mining has been started (CCA handed off)
-        public event System.Action OnMiningStarted;
+        public event System.Action? OnMiningStarted;
 
         public void SignalMiningStarted()
         {
@@ -96,23 +97,23 @@ namespace BabySharkBot.Managers
             }
         }
 
-        public BabySharkMiningManager(WorkerLabelService workerLabelService = null, CrosshairService crosshairService = null, MineralLabelService mineralLabelService = null, VespeneLabelService vespeneLabelService = null, ExpansionCOMService expansionCOMService = null, ExpansionPointService expansionPointService = null, ExpansionPointDrawService expansionPointDrawService = null, ProvisionalExpansionService provisionalExpansionService = null, MineralReturnRateTrackerService mineralReturnRateTrackerService = null, FrameToTimeConverter frameToTimeConverter = null, Sharky.Pathing.MapDataService mapDataService = null, SpawningPoolPlacementService spawningPoolPlacementService = null, chrisCrossAppleSause ccaMiningService = null)
+        public BabySharkMiningManager(WorkerLabelService? workerLabelService = null, CrosshairService? crosshairService = null, MineralLabelService? mineralLabelService = null, VespeneLabelService? vespeneLabelService = null, ExpansionCOMService? expansionCOMService = null, ExpansionPointService? expansionPointService = null, ExpansionPointDrawService? expansionPointDrawService = null, ProvisionalExpansionService? provisionalExpansionService = null, MineralReturnRateTrackerService? mineralReturnRateTrackerService = null, FrameToTimeConverter? frameToTimeConverter = null, Sharky.Pathing.MapDataService? mapDataService = null, SpawningPoolPlacementService? spawningPoolPlacementService = null, chrisCrossAppleSause? ccaMiningService = null)
         {
             _initialMapData = new InitialMapData();
             _secondaryMapData = new SecondaryMapData();
             _ongoingMapData = new OngoingMapData();
-            _workerLabelService = workerLabelService;
-            _crosshairService = crosshairService;
-            _mineralLabelService = mineralLabelService;
-            _vespeneLabelService = vespeneLabelService;
-            _expansionCOMService = expansionCOMService;
-            _expansionPointService = expansionPointService;
-            _expansionPointDrawService = expansionPointDrawService;
-            _provisionalExpansionService = provisionalExpansionService;
-            _mineralReturnRateTrackerService = mineralReturnRateTrackerService;
-            _frameToTimeConverter = frameToTimeConverter;
-            _mapDataService = mapDataService;
-            _spawningPoolPlacementService = spawningPoolPlacementService;
+            _workerLabelService = workerLabelService ?? new WorkerLabelService();
+            _crosshairService = crosshairService ?? new CrosshairService();
+            _mineralLabelService = mineralLabelService ?? new MineralLabelService();
+            _vespeneLabelService = vespeneLabelService ?? new VespeneLabelService();
+            _expansionCOMService = expansionCOMService ?? new ExpansionCOMService();
+            _expansionPointService = expansionPointService ?? new ExpansionPointService();
+            _expansionPointDrawService = expansionPointDrawService ?? new ExpansionPointDrawService();
+            _provisionalExpansionService = provisionalExpansionService ?? new ProvisionalExpansionService();
+            _mineralReturnRateTrackerService = mineralReturnRateTrackerService ?? new MineralReturnRateTrackerService();
+            _frameToTimeConverter = frameToTimeConverter ?? new FrameToTimeConverter(new SharkyOptions());
+            _mapDataService = mapDataService ?? new Sharky.Pathing.MapDataService(new Sharky.Pathing.MapData());
+            _spawningPoolPlacementService = spawningPoolPlacementService ?? new SpawningPoolPlacementService(new DebugService(new SharkyOptions(), new ActiveUnitData(), new MacroData()));
             _ccaMiningService = ccaMiningService ?? new chrisCrossAppleSause();
             _mapData = null;
         }
@@ -189,7 +190,7 @@ namespace BabySharkBot.Managers
 
                     foreach (var mineral in orderedList)
                     {
-                        if (mineral?.Position == null) continue;
+                        if (mineral?.Position == null || mineral.HarvestPoint == null || mineral.ReturnPoint == null) continue;
                         var color = mineral.Index switch { 1 or 2 => new Color { R = 0, G = 255, B = 255 }, 3 or 4 => new Color { R = 255, G = 0, B = 255 }, 5 or 6 => new Color { R = 0, G = 0, B = 255 }, 7 or 8 => new Color { R = 255, G = 255, B = 0 }, _ => new Color { R = 255, G = 255, B = 255 } };
                         DrawCircle(mineral.Position, 1.0f, color, debugHeight);
                         ManagerDebugService.DrawText("h", new Point { X = mineral.HarvestPoint.X, Y = mineral.HarvestPoint.Y, Z = debugHeight }, color, 10);
@@ -256,6 +257,7 @@ namespace BabySharkBot.Managers
             foreach (var kvp in expansionCOMs)
             {
                 var comPos = kvp.Value;
+                if (comPos == null) continue;
                 var blueColor = new Color { R = 0, G = 0, B = 255 };
                 ManagerDebugService.DrawLine(new Point { X = comPos.X - 2f, Y = comPos.Y, Z = comPos.Z }, new Point { X = comPos.X + 2f, Y = comPos.Y, Z = comPos.Z }, blueColor);
                 ManagerDebugService.DrawLine(new Point { X = comPos.X, Y = comPos.Y - 2f, Z = comPos.Z }, new Point { X = comPos.X, Y = comPos.Y + 2f, Z = comPos.Z }, blueColor);
@@ -797,7 +799,7 @@ namespace BabySharkBot.Managers
             if (observation?.Observation?.RawData?.Units == null) return;
 
             var droneCount = observation.Observation.RawData.Units.Count(u => u != null && u.Alliance == Alliance.Self && u.UnitType == (uint)UnitTypes.ZERG_DRONE);
-            if (droneCount >= 12 && droneCount <= 16)
+            if (droneCount >= 8 && droneCount <= 11)
             {
                 var COLLECTION_RATE = observation.Observation.Score.ScoreDetails.CollectionRateMinerals;
                 // Diagnostic log
@@ -843,7 +845,7 @@ namespace BabySharkBot.Managers
 
         private void DrawCenterOfMass()
         {
-            if (_mapData != null) foreach (var com in _mapData.MineralCenterOfMass) DrawCircle(com, 0.5f, new Color { R = 0, G = 255, B = 0 }, 12f);
+            if (_mapData != null) foreach (var com in _mapData.MineralCenterOfMass) { if (com == null) continue; DrawCircle(com, 0.5f, new Color { R = 0, G = 255, B = 0 }, 12f); }
         }
 
         private void DrawMineralLabels()
@@ -853,7 +855,18 @@ namespace BabySharkBot.Managers
 
         private void DrawExpansionMineralLabels()
         {
-            if (_mapData?.ExpansionMineralLabels != null) foreach (var kvp in _mapData.ExpansionMineralLabels) { var pos = ParsePoint(kvp.Key); ManagerDebugService.DrawText(kvp.Value, new Point { X = pos.X, Y = pos.Y, Z = 12.5f }, new Color { R = 255, G = 255, B = 255 }, 10); }
+            if (_mapData?.ExpansionMineralLabels != null) 
+            {
+                foreach (var kvp in _mapData.ExpansionMineralLabels) 
+                { 
+                    try
+                    {
+                        var pos = ParsePoint(kvp.Key); 
+                        ManagerDebugService.DrawText(kvp.Value, new Point { X = pos.X, Y = pos.Y, Z = 12.5f }, new Color { R = 255, G = 255, B = 255 }, 10); 
+                    }
+                    catch { }
+                }
+            }
         }
 
         private void DrawVespeneLabels()
@@ -863,12 +876,12 @@ namespace BabySharkBot.Managers
 
         private void DrawExpansionPoints()
         {
-            if (_mapData?.ExpansionPoints != null) foreach (var kvp in _mapData.ExpansionPoints) { DrawCircle(kvp.Value.ExpansionPoint, 2.5f, new Color { R = 0, G = 0, B = 255 }, 12f); ManagerDebugService.DrawText($"Exp {kvp.Key}", new Point { X = kvp.Value.ExpansionPoint.X, Y = kvp.Value.ExpansionPoint.Y, Z = 13f }, new Color { R = 255, G = 255, B = 255 }, 12); }
+            if (_mapData?.ExpansionPoints != null) foreach (var kvp in _mapData.ExpansionPoints) { if (kvp.Value?.ExpansionPoint == null) continue; DrawCircle(kvp.Value.ExpansionPoint, 2.5f, new Color { R = 0, G = 0, B = 255 }, 12f); ManagerDebugService.DrawText($"Exp {kvp.Key}", new Point { X = kvp.Value.ExpansionPoint.X, Y = kvp.Value.ExpansionPoint.Y, Z = 13f }, new Color { R = 255, G = 255, B = 255 }, 12); }
         }
 
         private void DrawSpawningPoolPlacement()
         {
-            if (_mapData?.SpawningPoolPlacements != null) foreach (var pos in _mapData.SpawningPoolPlacements) { DrawCircle(pos, 1.5f, new Color { R = 255, G = 0, B = 0 }, 12f); ManagerDebugService.DrawText("Pool", new Point { X = pos.X, Y = pos.Y, Z = 12.5f }, new Color { R = 255, G = 0, B = 0 }, 10); }
+            if (_mapData?.SpawningPoolPlacements != null) foreach (var pos in _mapData.SpawningPoolPlacements) { if (pos == null) continue; DrawCircle(pos, 1.5f, new Color { R = 255, G = 0, B = 0 }, 12f); ManagerDebugService.DrawText("Pool", new Point { X = pos.X, Y = pos.Y, Z = 12.5f }, new Color { R = 255, G = 0, B = 0 }, 10); }
         }
 
         private Point2D ParsePoint(string key) { var parts = key.Split(','); return new Point2D { X = float.Parse(parts[0]), Y = float.Parse(parts[1]) }; }

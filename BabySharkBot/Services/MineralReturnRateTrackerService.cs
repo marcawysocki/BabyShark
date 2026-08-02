@@ -11,7 +11,7 @@ namespace BabySharkBot.Services
 
         public MineralReturnRateTrackerService()
         {
-            for (int droneCount = 12; droneCount <= 16; droneCount++)
+            for (int droneCount = 8; droneCount <= 11; droneCount++)
             {
                 _statsByDroneCount[droneCount] = new BucketStats();
             }
@@ -19,7 +19,7 @@ namespace BabySharkBot.Services
 
         public void Record(int droneCount, float collectionRateMinerals)
         {
-            if (droneCount < 12 || droneCount > 16)
+            if (droneCount < 8 || droneCount > 11)
             {
                 return;
             }
