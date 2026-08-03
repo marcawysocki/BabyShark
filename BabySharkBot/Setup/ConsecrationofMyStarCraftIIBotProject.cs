@@ -14,7 +14,131 @@ O Immaculate Heart of Mary, Mother of mercy, model of purity, I entrust this pro
 Sacred Heart of Jesus, I trust in You.  Immaculate Heart of Mary, pray for me.
 
 Amen.
+
+In the name of the Father, and of the Son, and of the Holy Spirit. Amen.
+Almighty and Eternal God, You who laid the foundations of the universe with perfect geometry, mathematical beauty, and infinite order, 
+I offer my code, my intellect, and this StarCraft II AI project entirely to Your greater glory. I ask for the grace of focus, clarity, 
+and patience as I build this multi-agent workflow, and I invoke the powerful intercession of the heavenly patrons You have granted 
+this project:
+
+The Intercessions for the 7 Agents
+
+Through the intercession of St. Teresa of Avila, grant this system deep tactical vision. May its high-level strategic choices, macro decisions, 
+and build orders reflect the patient, contemplative foresight of a master chess player, always moving toward the ultimate goal with humility and wisdom.
+
+Through the intercession of St. Thérèse of Lisieux, protect my codebase from the traps of intellectual pride and over-engineering. 
+Keep my loops simple, my debugging direct, and my logic clean. Teach my agents to excel in the smallest, most hidden frames of processing, 
+doing everything with quiet excellence.
+
+Through the intercession of St. Catherine of Siena, illuminate my neural networks and data analytics. 
+May the intel agent gather raw telemetry and map data with absolute truth, instantly converting patterns into sharp, 
+actionable knowledge to outmaneuver the adversary.
+
+Through the intercession of St. Padre Pio, master of bilocation, grant my bot flawless multi-front execution. 
+Let it maintain complete awareness across the entire map simultaneously. Deliver its micro-management from paralysis, 
+allowing it to defend, drop, and strike at the exact same moment without missing a single frame of action.
+
+Through the intercession of St. Vitus, I thank You for the 24.4% breakthrough in our Just In Time speed-mining choreography. 
+Continue to bless our Reinforced Learning, local pathing vectors, turn radii, and worker acceleration loops. 
+Let our units move with fluid, unbroken harmony, free from clunky collision or erratic logic.
+
+Through the intercession of Blessed Carlo Acutis, bless our repository management and internal codebase structure. 
+Keep our documentation transparent, beautiful, and accessible, ensuring that this technical journey serves as an uplifting 
+testament to digital clarity and order.
+
+Through the intercession of St. Francis de Sales, govern our system communication, logging pipelines, and patch updates. 
+Help us to write AI Prompts that are clear, concise, and aligned with our values. 
+Grant our agents the ability to write precise, truthful, and concise logs, translating complex differentials into clean and unvarnished records of truth.
+
+Litany of Patrons for the StarCraft II AI Project
+
+Lord, have mercy on us.
+Christ, have mercy on us.
+Lord, have mercy on us. 
+
+Christ, hear us.
+Christ, graciously hear us.
+God the Father of Heaven, have mercy on us.
+God the Son, Redeemer of the world, have mercy on us.
+God the Holy Ghost, have mercy on us.
+Holy Trinity, One God, have mercy on us.
+
+Holy Mary, Queen of Angels, pray for us.
+
+Saint Joseph, Protector of Holy Church, pray for us.
+
+Saint Isidore of Seville, Patron of the Internet and Data Infrastructure, pray for us.
+Saint Teresa of Avila, Master of Strategic Foresight and Defensive Chess, pray for us.
+Saint Thérèse of Lisieux, Keeper of Clean Logic and the Uncomplicated Way, pray for us.
+Saint Catherine of Siena, Seeker of Deep Knowledge and System Telemetry, pray for us.
+Saint Padre Pio, Mirror of Bilocation and Multi-Front Map Execution, pray for us.
+Saint Vitus, Protector of Fluid Motion and Speed-Mining Vectors, pray for us.
+Blessed Carlo Acutis, Companion of Programmers and Code Documentation, pray for us.
+Saint Francis de Sales, Teacher of Gentle Communication and Perfect Patch Notes, pray for us.
+
+Lamb of God, who takest away the sins of the world, spare us, O Lord.
+Lamb of God, who takest away the sins of the world, graciously hear us, O Lord.
+Lamb of God, who takest away the sins of the world, have mercy on us.
+
+V. Pray for us, O holy Patrons of our technological labors.
+R. That we may be made worthy of the promises of Christ.
+
+Let us pray:
+O Almighty and Eternal God, who hast established the laws of geometry, physics, and reason, 
+look favorably upon our computational labors. Through the intercession of these holy saints, 
+grant our multi-agent architecture the gifts of strategy, simplicity, sharp intelligence, 
+perfect presence, and fluid synchronization. May our code remain clear and our intentions 
+humble, always directing our eyes and hands to that which is pleasing to Thee. 
+
+Through Christ our Lord.
+
+Amen.
+
+Fatima Prayers
+
+My God, I believe, I adore, I hope and I love You! 
+I beg pardon for those who do not believe, do not adore, do not hope and do not love You.
+
+Most Holy Trinity—Father, Son and Holy Spirit—I adore Thee profoundly. 
+I offer Thee the most precious Body, Blood, Soul and Divinity of Jesus Christ, 
+present in all the tabernacles of the world, 
+in reparation for the outrages, sacrileges, and indifferences whereby He is offended. 
+And through the infinite merits of His Most Sacred Heart and the Immaculate Heart of Mary, 
+I beg of Thee the conversion of poor sinners.
+
+Most Holy Trinity, I adore Thee! My God, my God, I love Thee in the Most Blessed Sacrament.
+
+O My Jesus, I offer this for love of Thee, for the conversion of sinners, 
+and in reparation for the sins committed against the Immaculate Heart of Mary.
+
+O My Jesus, forgive us our sins, save us from the fires of Hell, 
+lead all souls to Heaven, especially those in most need of Thy mercy.
+
+O my God, 
+in union with the Immaculate Heart of Mary (here kiss your scapular), 
+I offer You the Precious Blood of Jesus from all the altars throughout the world, 
+joining with it the offering of my every thought, word and action of this day.
+
+O my Jesus, 
+I desire today to gain every indulgence and merit I can, 
+and I offer them together with myself, to Mary Immaculate, 
+that she may best apply them to the interests of Your Most Sacred Heart. 
+
+Precious Blood of Jesus, save us! 
+Sorrowful and Immaculate Heart of Mary, pray for us! 
+Sacred Heart of Jesus, have mercy on us!
+
+Sweet Heart of Mary, be the salvation of Russia, Spain, Portugal, Europe and the whole world.
+
+By your pure and Immaculate Conception, O Mary, obtain for me the conversion of Russia, Spain, Portugal, Europe and the entire world.
+
+
+
+
 """;
+
+        
+
 
         public const string PrayerforDeliveranceandProtectioninMyViveCodingProject = """
 ✝️ Prayer for Deliverance and Protection in My Vive Coding Project
@@ -24,6 +148,12 @@ O Almighty God, Source of all light and truth, I come before You seeking Your mi
 St.   Patrick, great defender against evil, I invoke your powerful intercession.   Cover this project with your sacred shield, and cast out all darkness that seeks to corrupt or control. May the light of Christ shine through every line of code, and may Your truth be the foundation upon which this work stands.   Let no evil force prevail against it, and may Your peace reign in every challenge faced. I surrender this project into Your hands, and trust in Your divine providence and protection. Almighty God, through Jesus Christ our Lord, who lives and reigns with You and the Holy Spirit, one God, forever and ever.
 
 Amen.
+
+Lord Jesus Christ, [...] establish a perimeter of protection with Your Precious Blood around our communication devices and all technology used during this session [...] 
+Cleanse them with your precious blood and drive from them any satanic influence. [...] 
+I ask Father that you would block, bind, rebuke and render impotent any assault of the evil one from them in any way. 
+[...] 
+Amen
 """;
 
         public const string ReturnToSender = """

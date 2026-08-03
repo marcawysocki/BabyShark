@@ -4,7 +4,9 @@
 
 This is a three AI Work through. The local AI Analyzes my code page to create a KimiK3 files. It should Output for Kimi K3 Aware Text.  When Kimi Analyzes frpm My local AI it should output  suitable for "Coder"  Accio Work's AI assistant then "Coder"  Accio Work's AI assistant integrates The output of KimiK3 back into my system.
 
-Analyze the codebase structure. Identify the necessary files required to execute our current development tasks. 
+Analyze the codebase structure. Identify the necessary files required to execute our current development tasks.  
+
+Any Questions that need to be clarified should be listed in your reasoning, the user will read that and rewrite the promt as necessary. 
 
 
 First Task.  BuildIne.cs Should create drones until DesiredUnitCount ZERG_DRONE has been reached See chrisCrossAppleSause 
@@ -61,6 +63,70 @@ We Will need A macro hatch placement service similar to the Spawning pool placem
 The 15th Worker would join team Salmon as S4, that create a four worker team. That team now follow Speed Mining Rules.
 The 16th Worker would join team Blue as B4, that create a four worker team. That team now follow Speed Mining Rules.
 
+## Phase 1: Analysis & Team Mapping Table
+
+### Current Architecture (from BabyShark context)
+- **Team Label Service**: Tracks workers by tag with labels like H1, OV1, L1 for static units and W1-W12 for dynamic workers
+- **Worker Assignment Logic**: 
+  - Si=0: Average X,Y of all minerals = COM (Center Of Mining)
+  - Find furthest worker from COM = W1 (gets label D1 or W12)
+  - Remaining workers: greedy chain closest to previous → W2, W3...W12
+- **Multi-Location Data**: BaseDtos stores OrderedMainMinerals with M[0]-M[7] in greedy order
+
+### Team Mapping: 8 Worker Start vs 12 Worker Start
+
+| 12-Worker Mineral Pair | 12-Worker Color/Team | 8-Worker Color/Team (When 3rd worker joins) |
+|-----------------------|--------------------|-------------------------------------------|
+| M[0] + M[1]           | **Teal** T1/T2     | **Green** G1/G2                             |
+| M[2] + M[3]           | **Salmon** S1/S2   | **Orange** O1/O2                            |
+| M[4] + M[5]           | **Blue** B1/B2     | **Purple** P1/P2                            |
+| M[6] + M[7]           | **Yellow** Y1/Y2   | **Red** R1/R2                               |
+
+Pink is a Multi team transition color that is used when a worker is morphing into a drone and has not yet joined a team. It is a temporary state  Between 13 and 16 workers  
+The 13th, label S4, worker will Mine TB and SB a return to the Town Center returning minerals point will be the shortest two point path to the Town Center and then to the alternating minerals needs to be calculate and stored in BaseDtos.
+The 14th, label Y4, worker will Mine YB and BB a return to the Town Center returning minerals point will be the shortest two point path to the Town Center and then to the alternating minerals needs to be calculate and stored in BaseDtos.
+The 15th, label B4, worker will Mine SA and BA a return to the Town Center returning minerals point will be the shortest two point path to the Town Center and then to the alternating minerals needs to be calculate and stored in BaseDtos.
+
+The 16th, label T4, worker will Mine TB and will be labeled Teal T4 and will   Signify the beginning of Speed Mining Rules for All teams.
+
+The workers will contine to be switched to the alternating mineral pair for their team until they are om the correct Mineral for Speed Mining.
+
+When we have 16 workers the teams will be as follows:
+T1 and T3 will be TA, as soon either of them switches on the correct mineral for Speed Mining they will be switched to speed mining rules.
+T2 and T4 will be TB, as soon either of them switches on the correct mineral for Speed Mining they will be switched to speed mining rules.
+S1 and S3 will be SA, as soon either of them switches on the correct mineral for Speed Mining they will be switched to speed mining rules.
+S2 and S4 will be SB, as soon either of them switches on the correct mineral for Speed Mining they will be switched to speed mining rules.
+Y1 and Y3 will be YA, as soon either of them switches on the correct mineral for Speed Mining they will be switched to speed mining rules.
+Y2 and Y4 will be YB, as soon either of them switches on the correct mineral for Speed Mining they will be switched to speed mining rules.
+B1 and B3 will be BA, as soon either of them switches on the correct mineral for Speed Mining they will be switched to speed mining rules.
+B2 and B4 will be BB, as soon either of them switches on the correct mineral for Speed Mining they will be switched to speed mining rules.
+Since B4 is the last worker to be created and is mining the SA and BA mineral pair, this will need a switch BB after mining the BA mineral and 16 worker are in effect.
+
+### Team Mapping: 8 Worker → New Worker Reassignment Rules
+
+| Current Worker Count | New Worker Joins As       | 12-Worker Color Equivalent | Mineral Pair Used |
+|---------------------|--------------------------|---------------------------|-------------------|
+| 0-2                 | Teams already exist (G/S/P/R) | N/A                       | N/A               |
+| 3                   | **Teal** T1/T2 → G1/G2   | Teal                      | M[0]+M[1]         |
+| 4                   | **Salmon** S1/S2 → O1/O2 | Salmon                    | M[2]+M[3]         |
+| 5                   | **Blue** B1/B2 → P1/P2   | Blue                      | M[4]+M[5]         |
+| 6                   | **Yellow** Y1/Y2 → R1/R2 | Yellow                    | M[6]+M[7]         |
+| 7                   | (8th worker - team already full) | N/A                       | N/A               |
+| 8                   | **Teal** T1/T2/T3        | Teal                      | M[0]+M[1]         |
+| 9                   | **Salmon** S1/S2/S3      | Salmon                    | M[2]+M[3]         |
+| 10                  | **Blue** B1/B2/B3        | Blue                      | M[4]+M[5]         |
+| 11                  | **Yellow** Y1/Y2/Y3      | Yellow                    | M[6]+M[7]         |
+| 12+                 | All teams now 4 workers (T/Y/B/R) - Speed Mining Rules apply |
+
+### Key Insight: "Team Teal" in 8-Worker Context = Green Team
+The mapping is essentially a color shift. In an 8-worker start, the first mineral pair (M[0]+M[1]) which would be Teal in 12-worker becomes **Green** (G1/G2). The mapping preserves team structure but shifts colors:
+
+```
+Teal   → Green    (first pair)
+Salmon → Orange   (second pair)
+Blue   → Purple   (third pair)
+Yellow → Red      (fourth pair)
+```
 
 ## Strict Rules
 1. **Prioritize BabyShark**: List my custom scripts and implementation files first.
