@@ -288,6 +288,36 @@ namespace BabySharkBot.Setup
 
 
     [MemoryPackable]
+    public partial class ExtractorTrickData
+    {
+        public int StartIndex { get; set; }
+        public string TeamPrefix { get; set; } = ""; // Team closest to V1
+        public Vector2Dto V1Position { get; set; } = new();
+        public Vector2Dto ShortestPathPoint { get; set; } = new(); // Townhall → V1 midpoint
+        public float DistanceToV1 { get; set; }
+    }
+
+    [MemoryPackable]
+    public partial class TeamTransitionInfo
+    {
+        public int PairIndex { get; set; }
+        public string CurrentPrefix { get; set; } = "";
+        public bool HasTransitionedTo12Color { get; set; }
+        public bool Has4thWorker { get; set; }
+        public bool IsSpeedMining { get; set; }
+    }
+
+    [MemoryPackable]
+    public partial class PinkWorkerAssignment
+    {
+        public int WorkerNumber { get; set; } // 13, 14, or 15
+        public string Label { get; set; } = "";
+        public string PrimaryMineralLabel { get; set; } = "";
+        public string SecondaryMineralLabel { get; set; } = "";
+        public string FinalTeamPrefix { get; set; } = "";
+    }
+
+    [MemoryPackable]
     public partial class MapLocationData
     {
         public List<Vector2Dto> MineralPatches { get; set; } = new List<Vector2Dto>();
@@ -339,6 +369,9 @@ namespace BabySharkBot.Setup
         public List<List<MiningPairCargoPointDto>> ExpansionMineralJitCargoPoints { get; set; } = new List<List<MiningPairCargoPointDto>>();
         public List<List<HarvestReturnCargoPointDto>> ExpansionVespeneCargoPoints { get; set; } = new List<List<HarvestReturnCargoPointDto>>();
         public Dictionary<int, ExpansionPointModel> ProvisionalExpansionPoints { get; set; } = new Dictionary<int, ExpansionPointModel>();
+        public List<ExtractorTrickData> ExtractorTrickDataByStart { get; set; } = new();
+        public List<TeamTransitionInfo> TeamTransitions { get; set; } = new();
+        public List<PinkWorkerAssignment> PinkWorkerAssignments { get; set; } = new();
     }
 
     public class WorkerLabelService

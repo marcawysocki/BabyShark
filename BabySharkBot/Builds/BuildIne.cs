@@ -2,6 +2,7 @@ using SC2APIProtocol;
 using Sharky;
 using Sharky.DefaultBot;
 using Sharky.Builds.Zerg;
+using BabySharkBot.Services;
 using System.Linq;
 using System;
 using System.Collections.Generic;
@@ -15,11 +16,11 @@ namespace BabySharkBot.Builds
     /// </summary>
     public class BuildIne : BabySharkBuild
     {
+        private readonly DroneMorphService _droneMorph;
+        private readonly ExtractorTrickService _extractorTrick;
+        private const int DesiredDrones = 16;
+        
         private readonly Sharky.Builds.MacroServices.BuildingRequestCancellingService _buildingRequestCancellingService;
-
-        private bool _extractorsRequested;
-        private bool _extraDronesQueued;
-        private bool _extractorTrickCompleted;
 
         private bool _step5Called;
         private Point2D _step5Target;
@@ -34,6 +35,9 @@ namespace BabySharkBot.Builds
         public BuildIne(DefaultSharkyBot defaultBot) : base(defaultBot)
         {
             _buildingRequestCancellingService = defaultBot.BuildingRequestCancellingService;
+            _droneMorph = new DroneMorphService(defaultBot) { DesiredDroneCount = DesiredDrones };
+            _extractorTrick = new ExtractorTrickService(defaultBot);
+            
             _step5Called = false;
             _stopTriggered = false;
             _step5Target = null;
@@ -59,21 +63,22 @@ namespace BabySharkBot.Builds
         public override void OnStart(int frame)
         {
             base.OnStart(frame);
+            _extractorTrick.Reset();
 
             SetDesiredGases(0);
             SetDesiredProductionCount(UnitTypes.ZERG_HATCHERY, 1);
-            SetDesiredUnitCount(UnitTypes.ZERG_DRONE, 14);
+            SetDesiredUnitCount(UnitTypes.ZERG_DRONE, DesiredDrones);
             SetDesiredUnitCount(UnitTypes.ZERG_QUEEN, 1);
             SetDesiredUnitCount(UnitTypes.ZERG_OVERLORD, 1);
 
-            _extractorsRequested = false;
-            _extraDronesQueued = false;
-            _extractorTrickCompleted = false;
             _prevMinerals = -1;
         }
 
         public override IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
         {
+            var actions = new List<SC2APIProtocol.Action>();
+            int frame = (int)observation.Observation.GameLoop;
+
             // record mineral changes for spreadsheet:
             if (MacroData != null)
             {
@@ -92,6 +97,12 @@ namespace BabySharkBot.Builds
                 }
             }
 
+            // --- Phase 1: Continuous drone morphing until desired count ---
+            actions.AddRange(_droneMorph.Update(frame, observation));
+
+            // --- Phase 2: Extractor trick at 14 drones (for 15th worker supply) ---
+            actions.AddRange(_extractorTrick.Update(observation));
+
             // Early stop: when minerals exceed 275, trigger the build at the stored Step5 location (once)
             if (!_stopTriggered && MacroData != null && MacroData.Minerals > 275)
             {
@@ -99,73 +110,27 @@ namespace BabySharkBot.Builds
                 if (_step5Target != null)
                 {
                     Console.WriteLine($"BuildIne: Prepositioning threshold reached for {_step5Target.X}, {_step5Target.Y}");
-                    // Maw calls removed as they are missing in this environment
                 }
-                return Array.Empty<SC2APIProtocol.Action>();
+                return actions;
             }
 
-            if (_extractorTrickCompleted)
+            // Call Step5 exactly once after minerals exceed 175
+            if (!_step5Called && MacroData != null && MacroData.Minerals > 175)
             {
-                // Call Step5 exactly once after minerals exceed 175
-                if (!_step5Called && MacroData != null && MacroData.Minerals > 175)
+                try
                 {
-                    try
-                    {
-                        var target = Step5.CalculateTopOfRamp(DefaultBot, DefaultBot.BaseData, ActiveUnitData);
-                        _step5Target = target;
-                        Console.WriteLine($"BuildIne: Step5 target calculated at X={target.X}, Y={target.Y}");
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"BuildIne: Step5 call failed: {ex.Message}");
-                    }
-                    _step5Called = true;
+                    var target = Step5.CalculateTopOfRamp(DefaultBot, DefaultBot.BaseData, ActiveUnitData);
+                    _step5Target = target;
+                    Console.WriteLine($"BuildIne: Step5 target calculated at X={target.X}, Y={target.Y}");
                 }
-                return Array.Empty<SC2APIProtocol.Action>();
-            }
-
-            var supply = MacroData.FoodUsed;
-            var larvaCount = ActiveUnitData.SelfUnits.Values.Count(u => u.Unit.UnitType == (uint)UnitTypes.ZERG_LARVA);
-            var mineralsValue = MacroData.Minerals;
-
-            // Step 1: At 14 supply, 1 larva, 120 minerals, request extractor
-            if (!_extractorsRequested && supply >= 14 && larvaCount >= 1 && mineralsValue >= 120)
-            {
-                SetDesiredGases(1);
-                _extractorsRequested = true;
-            }
-
-            // Step 2: Once extractor in progress, queue extra drone
-            var inProgressExtractors = ActiveUnitData.SelfUnits.Values.Count(u =>
-                u.Unit.UnitType == (uint)UnitTypes.ZERG_EXTRACTOR &&
-                u.Unit.BuildProgress < 1.0f);
-
-            if (_extractorsRequested && !_extraDronesQueued && inProgressExtractors >= 1)
-            {
-                var currentDroneCount = CountUnits(UnitTypes.ZERG_DRONE);
-                SetDesiredUnitCount(UnitTypes.ZERG_DRONE, currentDroneCount + 1);
-                _extraDronesQueued = true;
-                _extractorsRequested = false;
-            }
-
-            // Step 3: When extra drone is queued, cancel extractor
-            if (_extraDronesQueued)
-            {
-                if (inProgressExtractors > 0)
+                catch (Exception ex)
                 {
-                    SetDesiredGases(0);
-                    _buildingRequestCancellingService.RequestCancel(UnitTypes.ZERG_EXTRACTOR, 0);
+                    Console.WriteLine($"BuildIne: Step5 call failed: {ex.Message}");
                 }
-                else
-                {
-                    _extractorTrickCompleted = true;
-                    SetDesiredGases(0);
-                    SetDesiredProductionCount(UnitTypes.ZERG_HATCHERY, 2);
-                    SetDesiredUnitCount(UnitTypes.ZERG_OVERLORD, CountUnits(UnitTypes.ZERG_OVERLORD) + 1);
-                }
+                _step5Called = true;
             }
 
-            return Array.Empty<SC2APIProtocol.Action>();
+            return actions;
         }
 
         private void AppendMineralRecord(int minerals, int frame)

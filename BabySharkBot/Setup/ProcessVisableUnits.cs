@@ -295,33 +295,47 @@ namespace BabySharkBot.Setup
 
             // Back-fill any newly-spawned workers that don't have a label yet
             var labeledCount = workerEntries.Count(w => IsValidWorkerLabel(w.Label));
-            if (labeledCount == 0 && workerEntries.Count > 0)
+            if (labeledCount < workerEntries.Count)
             {
-                var workerLabelIndex = workerEntries.Count;
-                foreach (var worker in workerEntries)
+                var mapData = Globals.CurrentMapData;
+                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+                
+                if (mapData != null && startIndex >= 0 && workerLabelService != null)
                 {
-                    var label = $"W{workerLabelIndex}";
-                    worker.Label = label;
-                    worker.StartLabel = label;
-                    worker.FinalLabel = label;
+                    // Use dynamic assignment for new workers
+                    var unassignedWorkers = workerEntries.Where(w => !IsValidWorkerLabel(w.Label)).ToList();
+                    int existingWorkerCount = labeledCount;
 
-                    if (workerLabelService != null)
-                        workerLabelService.SetLabel(label, worker.UnitTag);
-                    workerLabelIndex--;
+                    foreach (var worker in unassignedWorkers)
+                    {
+                        var entry = TeamLabelRegistrationHelper.AssignDynamicWorker(
+                            worker.UnitTag,
+                            worker.Position,
+                            existingWorkerCount,
+                            workerLabelService,
+                            mapData,
+                            startIndex);
+                        
+                        worker.Label = entry.Label;
+                        worker.StartLabel = entry.StartLabel;
+                        worker.FinalLabel = entry.FinalLabel;
+                        existingWorkerCount++;
+                    }
                 }
-            }
-            else if (labeledCount < workerEntries.Count)
-            {
-                var nextIndex = workerEntries.Count + 1;
-                foreach (var worker in workerEntries.Where(w => !IsValidWorkerLabel(w.Label)))
+                else
                 {
-                    var label = $"W{nextIndex}";
-                    worker.Label = label;
-                    worker.StartLabel = label;
-                    worker.FinalLabel = label;
-                    if (workerLabelService != null)
-                        workerLabelService.SetLabel(label, worker.UnitTag);
-                    nextIndex++;
+                    // Fallback to simple W-labeling if context is missing
+                    var nextIndex = workerEntries.Count(w => IsValidWorkerLabel(w.Label)) + 1;
+                    foreach (var worker in workerEntries.Where(w => !IsValidWorkerLabel(w.Label)))
+                    {
+                        var label = $"W{nextIndex}";
+                        worker.Label = label;
+                        worker.StartLabel = label;
+                        worker.FinalLabel = label;
+                        if (workerLabelService != null)
+                            workerLabelService.SetLabel(label, worker.UnitTag);
+                        nextIndex++;
+                    }
                 }
             }
 

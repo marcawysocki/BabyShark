@@ -1123,9 +1123,14 @@ namespace BabySharkBot.Setup
                         w4Position = savedW4Position;
                         Console.WriteLine($"InitialMapData: Start[{si}] saved W4 position found at ({w4Position.X:F2},{w4Position.Y:F2})");
                     }
+                    else if (multiStartingUnits.Count > si && multiStartingUnits[si].Any(w => w.Label == "W3"))
+                    {
+                        w4Position = multiStartingUnits[si].First(w => w.Label == "W3").Position;
+                        Console.WriteLine($"InitialMapData: Start[{si}] using W3 as vespene anchor (8-worker start)");
+                    }
                     else
                     {
-                        Console.WriteLine($"InitialMapData: Start[{si}] - saved W4 position not available");
+                        Console.WriteLine($"InitialMapData: Start[{si}] - saved W4/W3 position not available");
                     }
 
                     // Get vespenes for this start

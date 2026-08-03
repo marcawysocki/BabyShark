@@ -75,6 +75,16 @@ namespace BabySharkBot.Managers
 
         private Dictionary<ulong, bool> _previousCarryingState = new Dictionary<ulong, bool>();
         private readonly Dictionary<ulong, JitWorkerState> _jitWorkerStates = new Dictionary<ulong, JitWorkerState>();
+        private Dictionary<ulong, PinkWorkerState> _pinkWorkerStates = new();
+        private bool _speedMiningActive = false;
+
+        private class PinkWorkerState
+        {
+            public string PrimaryPrefix { get; set; } = ""; // e.g., "S", "Y", "B"
+            public string SecondaryPrefix { get; set; } = ""; // Cross-team helper prefix
+            public bool IsTransitionComplete { get; set; } = false;
+        }
+
         private Dictionary<ulong, bool> _workerLastMinedA = new Dictionary<ulong, bool>();
         private Dictionary<string, List<MineralNode>> _expansionMinerals = new Dictionary<string, List<MineralNode>>();
         private Dictionary<string, List<MiningTeam>> _expansionTeams = new Dictionary<string, List<MiningTeam>>();
@@ -432,6 +442,57 @@ namespace BabySharkBot.Managers
             }
         }
 
+        private void UpdatePhaseState(int totalWorkers)
+        {
+            bool wasSpeedMining = _speedMiningActive;
+            _speedMiningActive = TeamColorService.IsSpeedMiningPhase(totalWorkers);
+
+            if (_speedMiningActive && !wasSpeedMining)
+            {
+                Console.WriteLine($"BabySharkMiningManager: SPEED MINING ACTIVATED at {totalWorkers} workers");
+                // Transition pink workers to their final team roles
+                TransitionPinkWorkersToSpeedMining();
+            }
+        }
+
+        private void TransitionPinkWorkersToSpeedMining()
+        {
+            foreach (var kvp in _pinkWorkerStates)
+            {
+                var state = kvp.Value;
+                if (!state.IsTransitionComplete)
+                {
+                    // Worker now takes its final 4th-worker speed mining role
+                    state.IsTransitionComplete = true;
+                    Console.WriteLine($"PinkWorker {kvp.Key}: Transitioned to {state.PrimaryPrefix}4 speed mining");
+                }
+            }
+        }
+
+        private OrderedMineral? ResolvePinkMineral(
+            string workerLabel, 
+            List<TeamPatchAssignmentDto> allTeams,
+            JitWorkerState state,
+            bool carrying)
+        {
+            // Pink workers mine across team boundaries before speed mining
+            if (_speedMiningActive) return null; // Let normal team logic handle it
+
+            string primary, secondary;
+            switch (workerLabel)
+            {
+                case "S4": primary = "SB"; secondary = "TB"; break;
+                case "Y4": primary = "YB"; secondary = "BB"; break;
+                case "B4": primary = "SA"; secondary = "BA"; break;
+                default: return null;
+            }
+
+            // Standard A/B alternating JIT
+            var targetLabel = carrying ? secondary : primary;
+            return allTeams.SelectMany(t => t.Minerals)
+                .FirstOrDefault(m => m.FinalLabel == targetLabel);
+        }
+
         private void InitializeJitWorkerStates(List<TeamPatchAssignmentDto> assignments)
         {
             if (assignments == null) return;
@@ -513,8 +574,11 @@ namespace BabySharkBot.Managers
 
                 foreach (var worker in teamWorkers)
                 {
+                    var label = _workerLabelService.GetLabel(worker.Tag) ?? "";
                     var carrying = worker.BuffIds.Any(b => b == 271 || b == 272);
                     _previousCarryingState.TryGetValue(worker.Tag, out var wasCarrying);
+
+                    _jitWorkerStates.TryGetValue(worker.Tag, out var state);
 
                     // Per-worker A/B swap on cargo return transition
                     // CRITICAL FIX: Only swap A/B for JIT teams (3+ workers). 
@@ -524,6 +588,40 @@ namespace BabySharkBot.Managers
                         OnWorkerCargoReturned(worker.Tag);
                     }
                     _previousCarryingState[worker.Tag] = carrying;
+
+                    // Pink Worker Check
+                    if (!_speedMiningActive && state != null)
+                    {
+                        var pinkMineral = ResolvePinkMineral(label, teamAssignments, state, carrying);
+                        if (pinkMineral != null)
+                        {
+                            if (carrying && townhallUnit != null)
+                            {
+                                var returnPos = new Point2D { X = pinkMineral.ReturnPoint.X, Y = pinkMineral.ReturnPoint.Y };
+                                if (Distance(worker.Pos.ToPoint2D(), returnPos) < 0.15f)
+                                {
+                                    AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { worker.Tag }, TargetUnitTag = townhallUnit.Tag } } });
+                                }
+                                else
+                                {
+                                    AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = returnPos } } });
+                                }
+                            }
+                            else if (!carrying)
+                            {
+                                var harvestPos = new Point2D { X = pinkMineral.HarvestPoint.X, Y = pinkMineral.HarvestPoint.Y };
+                                if (Distance(worker.Pos.ToPoint2D(), harvestPos) < 0.15f)
+                                {
+                                    AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.HARVEST_GATHER, UnitTags = { worker.Tag }, TargetUnitTag = pinkMineral.UnitTag } } });
+                                }
+                                else
+                                {
+                                    AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = harvestPos } } });
+                                }
+                            }
+                            continue;
+                        }
+                    }
 
                     if (isJitTeam)
                     {
@@ -539,7 +637,7 @@ namespace BabySharkBot.Managers
                                 AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = returnPos } } });
                             }
                         }
-                        else if (!carrying && _jitWorkerStates.TryGetValue(worker.Tag, out var state))
+                        else if (!carrying && state != null)
                         {
                             var mineral = ResolveMineralForWorker(assignment, state);
                             if (mineral != null)
@@ -579,27 +677,13 @@ namespace BabySharkBot.Managers
                     }
                     else // Speed Mining for 2-worker teams
                     {
-                        if (_jitWorkerStates.TryGetValue(worker.Tag, out var state))
+                        if (state != null)
                         {
                             var mineral = ResolveMineralForWorker(assignment, state);
-                            if (mineral == null) continue;
-
-                            if (carrying && townhallUnit != null)
-                            {
-                                var returnPos = new Point2D { X = mineral.ReturnPoint.X, Y = mineral.ReturnPoint.Y };
-                                if (Distance(worker.Pos.ToPoint2D(), returnPos) < 0.2f)
-                                {
-                                    AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { worker.Tag }, TargetUnitTag = townhallUnit.Tag } } });
-                                }
-                                else
-                                {
-                                    AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = returnPos } } });
-                                }
-                            }
-                            else if (!carrying)
+                            if (mineral != null)
                             {
                                 var harvestPos = new Point2D { X = mineral.HarvestPoint.X, Y = mineral.HarvestPoint.Y };
-                                if (Distance(worker.Pos.ToPoint2D(), harvestPos) < 0.2f)
+                                if (Distance(worker.Pos.ToPoint2D(), harvestPos) < 0.15f)
                                 {
                                     AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.HARVEST_GATHER, UnitTags = { worker.Tag }, TargetUnitTag = mineral.UnitTag } } });
                                 }
@@ -623,6 +707,11 @@ namespace BabySharkBot.Managers
                                     }
                                     AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = harvestPos } } });
                                 }
+                            }
+                            else
+                            {
+                                var waitPos = new Point2D { X = assignment.JitWaitPoint.X, Y = assignment.JitWaitPoint.Y };
+                                AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = waitPos } } });
                             }
                         }
                     }
