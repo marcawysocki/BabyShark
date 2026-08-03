@@ -11,7 +11,7 @@ Any Questions that need to be clarified should be listed in your reasoning, the 
 New First Task The greed Chain needs to be updated for Color Team assignment. 
       { 0, (2, "Green", 0) },      // M[0]+M[1] -> Green in 8-worker, Teal in 12-worker
             { 2, (2, "Purple", 2) },     // M[2]+M[3] -> Purple in 8-worker, Salmon in 12-worker  
-            { 4, (2, "Red", 4) },     // M[4]+M[5] -> Red in 8-worker, 
+            { 4, (2, "Red", 4) },     // M[4]+M[5] -> Red in 8-worker, Blue im 12 Worker
             { 6, (2, "Orange", 6) }         // M[6]+M[7] -> Orange in 8-worker, Yellow in 12-worker
             For an 8 worker start W3 needs to be the Anchor point instead of W4 for determing M[7]
      
