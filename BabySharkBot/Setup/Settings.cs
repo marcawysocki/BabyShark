@@ -57,8 +57,8 @@ namespace BabySharkBot.Setup
         public static bool S1Bump = true;
         public static bool B1Bump = true;
         public static bool Y1Bump = true;
-        public static bool[] TealM1IsFar = new bool[0];
-        public static bool[] YellowM8IsFar = new bool[0];
+        public static bool[] M1IsFar = new bool[0];
+        public static bool[] M8IsFar = new bool[0];
 
             /// <summary>
             /// Enable debug drawing to SC2 client (labels, points, lines, etc.).

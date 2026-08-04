@@ -316,14 +316,14 @@ namespace BabySharkBot
                 {
                     GetApiLocAndCOM.LoadCurrentSettings(gameInfo, mapData);
                     Globals.CurrentStartIndex = Settings.CurrentSpawnIndex;
-                    if (mapData.TealM1IsFar != null && Settings.CurrentSpawnIndex >= 0 && Settings.CurrentSpawnIndex < mapData.TealM1IsFar.Length)
+                    if (mapData.M1IsFar != null && Settings.CurrentSpawnIndex >= 0 && Settings.CurrentSpawnIndex < mapData.M1IsFar.Length)
                     {
-                        Settings.TealM1IsFar = mapData.TealM1IsFar;
+                        Settings.M1IsFar = mapData.M1IsFar;
                     }
 
-                    if (mapData.YellowM8IsFar != null && Settings.CurrentSpawnIndex >= 0 && Settings.CurrentSpawnIndex < mapData.YellowM8IsFar.Length)
+                    if (mapData.M8IsFar != null && Settings.CurrentSpawnIndex >= 0 && Settings.CurrentSpawnIndex < mapData.M8IsFar.Length)
                     {
-                        Settings.YellowM8IsFar = mapData.YellowM8IsFar;
+                        Settings.M8IsFar = mapData.M8IsFar;
                     }
 
                     Settings.CurrentBaseHasBeenPlayed = GetApiLocAndCOM.ResolveCurrentBaseHasBeenPlayed(mapData, Settings.CurrentSpawnIndex);

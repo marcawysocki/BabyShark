@@ -56,6 +56,8 @@ namespace BabySharkBot.Managers
         private bool _didInitialLabelBreak = false;
         private int _workerInstructionDrawCount = 0;
         private bool _spawnLabelDebugBreakTriggered = false;
+        private float _lastTotalCollected = -1f;
+        private int _lastFunctionalDroneCount = -1;
         private int _currentFrame = -1;
         private int _pauseUntilFrame = -1;
         private bool _forceCcaOnce = false;
@@ -828,9 +830,9 @@ namespace BabySharkBot.Managers
         {
             if (Settings.WorkerCount == 12)
             {
-                return teamNumber switch { 1 => "T", 2 => "S", 3 => "B", 4 => "Y", _ => string.Empty };
+                return teamNumber switch { 1 => "Y", 2 => "B", 3 => "S", 4 => "T", _ => string.Empty };
             }
-            return teamNumber switch { 1 => "G", 2 => "P", 3 => "O", 4 => "R", _ => string.Empty };
+            return teamNumber switch { 1 => "O", 2 => "R", 3 => "P", 4 => "G", _ => string.Empty };
         }
 
         private SC2Action? IssueMoveToPoint(Unit worker, Vector2Dto point)
@@ -878,7 +880,8 @@ namespace BabySharkBot.Managers
         {
             if (_mineralReturnRateTrackerService == null) return;
 
-            if (observation?.Observation?.Score?.ScoreDetails == null)
+            var scoreDetails = observation?.Observation?.Score?.ScoreDetails;
+            if (scoreDetails == null)
             {
                 // Diagnostic log
                 if (_currentFrame % 100 == 0) Console.WriteLine($"DEBUG: ScoreDetails null at frame {_currentFrame}");
@@ -887,13 +890,35 @@ namespace BabySharkBot.Managers
 
             if (observation?.Observation?.RawData?.Units == null) return;
 
-            var droneCount = observation.Observation.RawData.Units.Count(u => u != null && u.Alliance == Alliance.Self && u.UnitType == (uint)UnitTypes.ZERG_DRONE);
-            if (droneCount >= 8 && droneCount <= 11)
+            var droneCount = observation.Observation.RawData.Units.Count(u => u != null && u.Alliance == Alliance.Self && u.UnitType == (uint)UnitTypes.ZERG_DRONE && u.BuildProgress >= 1.0f);
+            
+            if (_lastFunctionalDroneCount != -1 && droneCount > _lastFunctionalDroneCount)
             {
-                var COLLECTION_RATE = observation.Observation.Score.ScoreDetails.CollectionRateMinerals;
+                Console.WriteLine($"[MILESTONE] Worker morph complete. New functional drone count: {droneCount} at frame {_currentFrame}");
+                Console.WriteLine($"Mineral Return Rate Summary: {_mineralReturnRateTrackerService.GetSummary()}");
+                System.Diagnostics.Debugger.Break();
+            }
+            _lastFunctionalDroneCount = droneCount;
+
+            // Total Collected = Bank + Total Spent (summed across categories)
+            var bank = observation.Observation.PlayerCommon.Minerals;
+            var spent = scoreDetails.TotalUsedMinerals.None + scoreDetails.TotalUsedMinerals.Army + scoreDetails.TotalUsedMinerals.Economy + scoreDetails.TotalUsedMinerals.Technology + scoreDetails.TotalUsedMinerals.Upgrade;
+            var totalCollected = bank + spent;
+
+            float deltaCollected = 0;
+            if (_lastTotalCollected >= 0)
+            {
+                deltaCollected = totalCollected - _lastTotalCollected;
+            }
+            _lastTotalCollected = totalCollected;
+
+            if (droneCount >= 8 && droneCount <= 16)
+            {
+                var COLLECTION_RATE = scoreDetails.CollectionRateMinerals;
                 // Diagnostic log
-                if (_currentFrame % 100 == 0) Console.WriteLine($"DEBUG: frame={_currentFrame} drones={droneCount} rate={COLLECTION_RATE}");
-                if (COLLECTION_RATE > 0) _mineralReturnRateTrackerService.Record(droneCount, COLLECTION_RATE);
+                if (_currentFrame % 100 == 0) Console.WriteLine($"DEBUG: frame={_currentFrame} drones={droneCount} rate={COLLECTION_RATE} total={totalCollected}");
+                
+                _mineralReturnRateTrackerService.Record(droneCount, COLLECTION_RATE, deltaCollected);
             }
         }
 
@@ -925,7 +950,7 @@ namespace BabySharkBot.Managers
         private void BreakWhenSpawnLabelsShouldBeVisible(ResponseObservation observation)
         {
             if (_spawnLabelDebugBreakTriggered || observation?.Observation == null || _currentFrame <= 20) return;
-            if (_workerLabelService.GetAllLabels().Any(l => l.Key.StartsWith("T") || l.Key.StartsWith("S") || l.Key.StartsWith("B") || l.Key.StartsWith("Y")))
+            if (_workerLabelService.GetAllLabels().Any(l => l.Key.StartsWith("T") || l.Key.StartsWith("S") || l.Key.StartsWith("B") || l.Key.StartsWith("Y") || l.Key.StartsWith("G") || l.Key.StartsWith("P") || l.Key.StartsWith("O") || l.Key.StartsWith("R")))
             {
                 _spawnLabelDebugBreakTriggered = true;
                 Console.WriteLine($"BabySharkMiningManager: Spawn labels detected at frame {_currentFrame}.");

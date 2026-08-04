@@ -360,8 +360,8 @@ namespace BabySharkBot.Setup
         public bool[] BaseHasBeenPlayed12 { get; set; } = new bool[0];
         public bool[] BaseHasBeenPlayed { get; set; } = new bool[0];
         public Dictionary<int, List<List<TeamPatchAssignmentDto>>> AssignmentsByWorkerCount { get; set; } = new Dictionary<int, List<List<TeamPatchAssignmentDto>>>();
-        public bool[] TealM1IsFar { get; set; } = new bool[0];
-        public bool[] YellowM8IsFar { get; set; } = new bool[0];
+        public bool[] M1IsFar { get; set; } = new bool[0];
+        public bool[] M8IsFar { get; set; } = new bool[0];
         public Dictionary<string, bool> AssignmentFlags { get; set; } = new Dictionary<string, bool>();
         public Dictionary<int, Dictionary<string, bool>> AssignmentFlagsByStart { get; set; } = new Dictionary<int, Dictionary<string, bool>>();
         public Dictionary<int, ExpansionPointModel> ExpansionPoints { get; set; } = new Dictionary<int, ExpansionPointModel>();

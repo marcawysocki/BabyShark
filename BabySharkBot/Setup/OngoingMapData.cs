@@ -74,14 +74,14 @@ namespace BabySharkBot.Setup
                 Settings.CurrentBaseHasBeenPlayed = true;
                 if (workerCount == 12)
                 {
-                    if (mapData.TealM1IsFar != null && startIndex < mapData.TealM1IsFar.Length)
+                    if (mapData.M1IsFar != null && startIndex < mapData.M1IsFar.Length)
                     {
-                        Settings.TealM1IsFar = mapData.TealM1IsFar;
+                        Settings.M1IsFar = mapData.M1IsFar;
                     }
 
-                    if (mapData.YellowM8IsFar != null && startIndex < mapData.YellowM8IsFar.Length)
+                    if (mapData.M8IsFar != null && startIndex < mapData.M8IsFar.Length)
                     {
-                        Settings.YellowM8IsFar = mapData.YellowM8IsFar;
+                        Settings.M8IsFar = mapData.M8IsFar;
                     }
                 }
             }
@@ -350,9 +350,9 @@ namespace BabySharkBot.Setup
         {
             if (Settings.WorkerCount == 12)
             {
-                return teamNumber switch { 1 => "T", 2 => "S", 3 => "B", 4 => "Y", _ => "" };
+                return teamNumber switch { 1 => "Y", 2 => "B", 3 => "S", 4 => "T", _ => "" };
             }
-            return teamNumber switch { 1 => "G", 2 => "P", 3 => "O", 4 => "R", _ => "" };
+            return teamNumber switch { 1 => "O", 2 => "R", 3 => "P", 4 => "G", _ => "" };
         }
 
         private static string ResolveVespeneLabel(OrderedVespene vespene)

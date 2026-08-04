@@ -322,10 +322,10 @@ namespace BabySharkBot.Setup
 
                 var prefix = assignment.TeamNumber switch
                 {
-                    1 => "T",
-                    2 => "S",
-                    3 => "B",
-                    4 => "Y",
+                    1 => "Y",
+                    2 => "B",
+                    3 => "S",
+                    4 => "T",
                     _ => string.Empty
                 };
 
@@ -435,13 +435,13 @@ namespace BabySharkBot.Setup
                 mapData.AssignmentFlagsByStart[startIndex] = flags;
             }
 
-            if (prefix == "T")
+            if (prefix == "Y")
             {
-                flags["TealM1IsFar"] = IsFarMineral(first, farMineral);
+                flags["M1IsFar"] = IsFarMineral(first, farMineral);
             }
-            else if (prefix == "Y")
+            else if (prefix == "T")
             {
-                flags["YellowM8IsFar"] = IsFarMineral(second, farMineral);
+                flags["M8IsFar"] = IsFarMineral(second, farMineral);
             }
         }
 
@@ -474,40 +474,40 @@ namespace BabySharkBot.Setup
                 return;
             }
 
-            if (prefix == "T")
+            if (prefix == "Y")
             {
-                var t2Source = "W4";
-                var tealM1IsFar = IsFarMineralFlagSet(mapData, startIndex, "TealM1IsFar");
-                Console.WriteLine($"TeamLabelRegistrationHelper: start[{startIndex}] TealM1IsFar={tealM1IsFar}");
-                if (tealM1IsFar)
+                var y2Source = "W4";
+                var m1IsFar = IsFarMineralFlagSet(mapData, startIndex, "M1IsFar");
+                Console.WriteLine($"TeamLabelRegistrationHelper: start[{startIndex}] M1IsFar={m1IsFar}");
+                if (m1IsFar)
                 {
                     System.Diagnostics.Debugger.Break();
-                    t2Source = "W2";
+                    y2Source = "W2";
                 }
-                AssignWorkerFinalLabel(teamWorkers, t2Source, "T2", workerLabelService);
-                AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "T2" }, new[] { "T1", "T3" }, workerLabelService);
-                SetNoPushFlag(mapData, "TealNoPush", teamWorkers, nearMineral, "T1", "T3");
-            }
-            else if (prefix == "Y")
-            {
-                var y2Source = IsFarMineralFlagSet(mapData, startIndex, "YellowM8IsFar")
-                    ? "W11"
-                    : "W9";
                 AssignWorkerFinalLabel(teamWorkers, y2Source, "Y2", workerLabelService);
                 AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "Y2" }, new[] { "Y1", "Y3" }, workerLabelService);
                 SetNoPushFlag(mapData, "YellowNoPush", teamWorkers, nearMineral, "Y1", "Y3");
             }
-            else if (prefix == "S")
+            else if (prefix == "T")
             {
-                AssignWorkerFinalLabel(teamWorkers, "W1", "S3", workerLabelService);
-                AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "S3" }, new[] { "S1", "S2" }, workerLabelService);
-                SetNoPushFlag(mapData, "SalmonNoPush", teamWorkers, nearMineral, "S1", "S2");
+                var t2Source = IsFarMineralFlagSet(mapData, startIndex, "M8IsFar")
+                    ? "W11"
+                    : "W9";
+                AssignWorkerFinalLabel(teamWorkers, t2Source, "T2", workerLabelService);
+                AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "T2" }, new[] { "T1", "T3" }, workerLabelService);
+                SetNoPushFlag(mapData, "TealNoPush", teamWorkers, nearMineral, "T1", "T3");
             }
             else if (prefix == "B")
             {
-                AssignWorkerFinalLabel(teamWorkers, "W12", "B3", workerLabelService);
+                AssignWorkerFinalLabel(teamWorkers, "W1", "B3", workerLabelService);
                 AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "B3" }, new[] { "B1", "B2" }, workerLabelService);
                 SetNoPushFlag(mapData, "BlueNoPush", teamWorkers, nearMineral, "B1", "B2");
+            }
+            else if (prefix == "S")
+            {
+                AssignWorkerFinalLabel(teamWorkers, "W12", "S3", workerLabelService);
+                AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "S3" }, new[] { "S1", "S2" }, workerLabelService);
+                SetNoPushFlag(mapData, "SalmonNoPush", teamWorkers, nearMineral, "S1", "S2");
             }
             else if (prefix == "G" || prefix == "P" || prefix == "O" || prefix == "R")
             {
@@ -630,10 +630,10 @@ namespace BabySharkBot.Setup
             {
                 return teamNumber switch
                 {
-                    1 => "T",
-                    2 => "S",
-                    3 => "B",
-                    4 => "Y",
+                    1 => "Y",
+                    2 => "B",
+                    3 => "S",
+                    4 => "T",
                     _ => string.Empty
                 };
             }
@@ -641,10 +641,10 @@ namespace BabySharkBot.Setup
             // 8 Workers or other non-standard starts
             return teamNumber switch
             {
-                1 => "G", // Green
-                2 => "P", // Purple
-                3 => "O", // Orange
-                4 => "R", // Red
+                1 => "O", // Orange
+                2 => "R", // Red
+                3 => "P", // Purple
+                4 => "G", // Green
                 _ => string.Empty
             };
         }

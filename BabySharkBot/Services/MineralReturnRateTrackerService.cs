@@ -11,27 +11,33 @@ namespace BabySharkBot.Services
 
         public MineralReturnRateTrackerService()
         {
-            for (int droneCount = 8; droneCount <= 11; droneCount++)
+            for (int droneCount = 8; droneCount <= 16; droneCount++)
             {
                 _statsByDroneCount[droneCount] = new BucketStats();
             }
         }
 
-        public void Record(int droneCount, float collectionRateMinerals)
+        public void Record(int droneCount, float collectionRateMinerals, float deltaCollected = 0)
         {
-            if (droneCount < 8 || droneCount > 11)
-            {
-                return;
-            }
-
-            if (collectionRateMinerals <= 0)
+            if (droneCount < 8 || droneCount > 16)
             {
                 return;
             }
 
             lock (_lock)
             {
-                _statsByDroneCount[droneCount].Add(collectionRateMinerals);
+                var stats = _statsByDroneCount[droneCount];
+                if (collectionRateMinerals > 0)
+                {
+                    stats.Add(collectionRateMinerals);
+                }
+                
+                if (deltaCollected > 0)
+                {
+                    stats.AddCollected(deltaCollected);
+                }
+                
+                stats.AddFrame();
             }
         }
 
@@ -44,12 +50,17 @@ namespace BabySharkBot.Services
                     .Select(kvp =>
                     {
                         var stats = kvp.Value;
-                        if (stats.Samples == 0)
+                        if (stats.Samples == 0 && stats.TotalCollected == 0)
                         {
                             return $"{kvp.Key} drones: n/a";
                         }
 
-                        return $"{kvp.Key} drones: avg={stats.Average:F1} ppm samples={stats.Samples}";
+                        // Calculate PPM based on total minerals collected and time spent in this bucket
+                        // SC2 Faster speed is 22.4 frames per second
+                        float seconds = stats.TotalFrames / 22.4f;
+                        float ppm = seconds > 0 ? (stats.TotalCollected / seconds) * 60f : 0;
+
+                        return $"{kvp.Key} drones: avg={ppm:F0} ppm total={stats.TotalCollected:F0}";
                     });
 
                 return string.Join(" | ", parts);
@@ -60,9 +71,10 @@ namespace BabySharkBot.Services
         {
             lock (_lock)
             {
-                if (_statsByDroneCount.TryGetValue(droneCount, out var stats) && stats.Samples > 0)
+                if (_statsByDroneCount.TryGetValue(droneCount, out var stats) && stats.TotalFrames > 0)
                 {
-                    average = (float)stats.Average;
+                    float seconds = stats.TotalFrames / 22.4f;
+                    average = seconds > 0 ? (stats.TotalCollected / seconds) * 60f : 0;
                     return true;
                 }
             }
@@ -75,12 +87,24 @@ namespace BabySharkBot.Services
         {
             public int Samples { get; private set; }
             public double TotalRate { get; private set; }
+            public float TotalCollected { get; private set; }
+            public int TotalFrames { get; private set; }
             public float Average => Samples == 0 ? 0f : (float)(TotalRate / Samples);
 
             public void Add(float rate)
             {
                 Samples++;
                 TotalRate += rate;
+            }
+
+            public void AddCollected(float amount)
+            {
+                TotalCollected += amount;
+            }
+
+            public void AddFrame()
+            {
+                TotalFrames++;
             }
         }
     }

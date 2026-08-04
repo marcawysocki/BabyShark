@@ -14,13 +14,13 @@ namespace BabySharkBot.Setup
             Settings.CurrentSpawnLocation = ResolveCurrentSpawnLocation(gameInfo);
             Globals.CurrentMapData = mapData;
             Globals.CurrentStartIndex = currentIndex;
-            if (mapData?.TealM1IsFar != null && currentIndex >= 0 && currentIndex < mapData.TealM1IsFar.Length)
+            if (mapData?.M1IsFar != null && currentIndex >= 0 && currentIndex < mapData.M1IsFar.Length)
             {
-                Settings.TealM1IsFar = mapData.TealM1IsFar;
+                Settings.M1IsFar = mapData.M1IsFar;
             }
-            if (mapData?.YellowM8IsFar != null && currentIndex >= 0 && currentIndex < mapData.YellowM8IsFar.Length)
+            if (mapData?.M8IsFar != null && currentIndex >= 0 && currentIndex < mapData.M8IsFar.Length)
             {
-                Settings.YellowM8IsFar = mapData.YellowM8IsFar;
+                Settings.M8IsFar = mapData.M8IsFar;
             }
         }
 

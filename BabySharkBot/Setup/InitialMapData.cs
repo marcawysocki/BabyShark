@@ -1073,10 +1073,29 @@ namespace BabySharkBot.Setup
                         if (multiStartingUnits.Count > si && multiStartingUnits[si].Count > 0)
                         {
                             var workersForStart = multiStartingUnits[si];
-                            // workersForStart[0] is the worker furthest from COM (W12).
-                            // This ensures the mineral greedy chain (M8..M1) starts from the W12 side.
-                            anchorPosition = workersForStart[0].Position;
-                            Console.WriteLine($"InitialMapData: Start[{si}] using W12 (first in list) as greedy anchor at ({anchorPosition.X:F2},{anchorPosition.Y:F2})");
+                            var workerCount = workersForStart.Count;
+
+                            // For an 8 worker start W3 needs to be the Anchor point instead of W4/W12 for determing M[7]/M[8]
+                            if (workerCount == 8)
+                            {
+                                var w3 = workersForStart.FirstOrDefault(w => w.Label == "W3");
+                                if (w3 != null)
+                                {
+                                    anchorPosition = w3.Position;
+                                    Console.WriteLine($"InitialMapData: Start[{si}] using W3 as greedy anchor (8-worker start) at ({anchorPosition.X:F2},{anchorPosition.Y:F2})");
+                                }
+                                else
+                                {
+                                    anchorPosition = workersForStart[0].Position;
+                                }
+                            }
+                            else
+                            {
+                                // workersForStart[0] is the worker furthest from COM (W12).
+                                // This ensures the mineral greedy chain (M8..M1) starts from the W12 side.
+                                anchorPosition = workersForStart[0].Position;
+                                Console.WriteLine($"InitialMapData: Start[{si}] using W12 (first in list) as greedy anchor at ({anchorPosition.X:F2},{anchorPosition.Y:F2})");
+                            }
                         }
 
                         orderedList = GreedyOrderMinerals(minerals, anchorPosition, com, townhallPosition, si, resources, multiMainMineralTags[si]);
@@ -1128,9 +1147,11 @@ namespace BabySharkBot.Setup
                         w4Position = multiStartingUnits[si].First(w => w.Label == "W3").Position;
                         Console.WriteLine($"InitialMapData: Start[{si}] using W3 as vespene anchor (8-worker start)");
                     }
-                    else
+                    else if (multiStartingUnits.Count > si && multiStartingUnits[si].Count > 0)
                     {
-                        Console.WriteLine($"InitialMapData: Start[{si}] - saved W4/W3 position not available");
+                        // Fallback to furthest worker if W4/W3 not found
+                        w4Position = multiStartingUnits[si][0].Position;
+                        Console.WriteLine($"InitialMapData: Start[{si}] fallback using W8/W12 as vespene anchor");
                     }
 
                     // Get vespenes for this start
@@ -1238,19 +1259,19 @@ namespace BabySharkBot.Setup
 
                 tempBaseDto.AssignmentsByWorkerCount[workerCount] = _teamPatchAssignments;
 
-                tempBaseDto.TealM1IsFar = new bool[numStartLocations];
-                tempBaseDto.YellowM8IsFar = new bool[numStartLocations];
+                tempBaseDto.M1IsFar = new bool[numStartLocations];
+                tempBaseDto.M8IsFar = new bool[numStartLocations];
                 for (int i = 0; i < numStartLocations; i++)
                 {
                     if (orderedMainMinerals.Count > i && orderedMainMinerals[i] != null)
                     {
                         var orderedList = orderedMainMinerals[i];
-                        tempBaseDto.TealM1IsFar[i] = orderedList.Any(m => m != null && m.Index == 1 && m.IsFar);
-                        tempBaseDto.YellowM8IsFar[i] = orderedList.Any(m => m != null && m.Index == 8 && m.IsFar);
+                        tempBaseDto.M1IsFar[i] = orderedList.Any(m => m != null && m.Index == 1 && m.IsFar);
+                        tempBaseDto.M8IsFar[i] = orderedList.Any(m => m != null && m.Index == 8 && m.IsFar);
                     }
                 }
-                Settings.TealM1IsFar = tempBaseDto.TealM1IsFar;
-                Settings.YellowM8IsFar = tempBaseDto.YellowM8IsFar;
+                Settings.M1IsFar = tempBaseDto.M1IsFar;
+                Settings.M8IsFar = tempBaseDto.M8IsFar;
                 tempBaseDto.MainMineralCargoPoints = BuildMultiLocationCargoPoints(multiMainMinerals, startingTownHalls);
                 tempBaseDto.MainVespeneCargoPoints = BuildMultiLocationCargoPoints(multiMainVespene, startingTownHalls);
                 tempBaseDto.MainMineralJitCargoPoints = BuildMultiLocationJitCargoPoints(tempBaseDto.OrderedMainMinerals, tempBaseDto.MainMineralCargoPoints);

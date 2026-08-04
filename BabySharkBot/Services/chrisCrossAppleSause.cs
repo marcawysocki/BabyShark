@@ -45,8 +45,8 @@ namespace BabySharkBot.Services
                 {
                     SpawnKey = key,
                     StartIndex = startIndex,
-                    TealM1IsFar = startIndex >= 0 && mapData?.TealM1IsFar != null && startIndex < mapData.TealM1IsFar.Length && mapData.TealM1IsFar[startIndex],
-                    YellowM8IsFar = startIndex >= 0 && mapData?.YellowM8IsFar != null && startIndex < mapData.YellowM8IsFar.Length && mapData.YellowM8IsFar[startIndex],
+                    M1IsFar = startIndex >= 0 && mapData?.M1IsFar != null && startIndex < mapData.M1IsFar.Length && mapData.M1IsFar[startIndex],
+                    M8IsFar = startIndex >= 0 && mapData?.M8IsFar != null && startIndex < mapData.M8IsFar.Length && mapData.M8IsFar[startIndex],
                     Phase = TestPhase.Idle,
                     HarvestCommandsIssued = false
                 };
@@ -232,16 +232,16 @@ namespace BabySharkBot.Services
             // Handle Crossover Bumping Pairs (Higher priority)
             if (workerCount == 12)
             {
-                // FIX: S3 now bumps T1 (not T2); B3 now bumps Y1 (not Y2)
-                if (state.TealM1IsFar && workerByLabel.TryGetValue("S3", out var s3) && workerByLabel.TryGetValue("T1", out var t1))
+                // FIX: Team 2 (B) bumps Team 1 (Y) if M1IsFar; Team 3 (S) bumps Team 4 (T) if M8IsFar
+                if (state.M1IsFar && workerByLabel.TryGetValue("B3", out var b3) && workerByLabel.TryGetValue("Y1", out var y1))
                 {
-                    var mineralTA = GetMineralOrdered(state, 1, "TA");
-                    if (mineralTA != null) commands.AddRange(ProcessBumpingPair(frame, state, 5, t1, s3, mineralTA));
+                    var mineralYA = GetMineralOrdered(state, 1, "YA");
+                    if (mineralYA != null) commands.AddRange(ProcessBumpingPair(frame, state, 5, y1, b3, mineralYA));
                 }
-                if (state.YellowM8IsFar && workerByLabel.TryGetValue("B3", out var b3) && workerByLabel.TryGetValue("Y1", out var y1))
+                if (state.M8IsFar && workerByLabel.TryGetValue("S3", out var s3) && workerByLabel.TryGetValue("T1", out var t1))
                 {
-                    var mineralYA = GetMineralOrdered(state, 4, "YA");
-                    if (mineralYA != null) commands.AddRange(ProcessBumpingPair(frame, state, 6, y1, b3, mineralYA));
+                    var mineralTA = GetMineralOrdered(state, 4, "TA");
+                    if (mineralTA != null) commands.AddRange(ProcessBumpingPair(frame, state, 6, t1, s3, mineralTA));
                 }
             }
 
@@ -265,7 +265,7 @@ namespace BabySharkBot.Services
                 }
                 else if (workerCount == 12)
                 {
-                    bool isCrossover = (team.TeamNumber == 1 && state.TealM1IsFar) || (team.TeamNumber == 2 && state.TealM1IsFar) || (team.TeamNumber == 3 && state.YellowM8IsFar) || (team.TeamNumber == 4 && state.YellowM8IsFar);
+                    bool isCrossover = (team.TeamNumber == 1 && state.M1IsFar) || (team.TeamNumber == 2 && state.M1IsFar) || (team.TeamNumber == 3 && state.M8IsFar) || (team.TeamNumber == 4 && state.M8IsFar);
                     if (isCrossover)
                     {
                         if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame));
@@ -527,8 +527,8 @@ namespace BabySharkBot.Services
         public string SpawnKey { get; set; } = string.Empty;
         public int StartIndex { get; set; } = -1;
         public bool CcaMining { get; set; }
-        public bool TealM1IsFar { get; set; }
-        public bool YellowM8IsFar { get; set; }
+        public bool M1IsFar { get; set; }
+        public bool M8IsFar { get; set; }
         public List<TeamPatchAssignmentDto> TeamAssignments { get; set; } = new List<TeamPatchAssignmentDto>();
         public Dictionary<int, bool> TeamBumping { get; set; } = new Dictionary<int, bool>();
         public Dictionary<ulong, Vector2Dto> InitialPositions { get; set; } = new Dictionary<ulong, Vector2Dto>();
