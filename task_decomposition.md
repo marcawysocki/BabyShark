@@ -1,7 +1,9 @@
 ### TASK DECOMPOSITION
 
-1. **Investigate Worker Labeling Logic**: Check how `WorkerLabelService` handles worker identification and assignment
-2. **Analyze Mining Manager Initialization**: Examine `BabySharkMiningManager`'s role in setting up the greedy chain for different worker counts
-3. **Review Color Team Assignment Implementation**: Update the color team mapping as specified in the task
-4. **Debug Worker Mining Commands**: Identify why workers aren't executing mining orders during initialization
+To fix the worker mining assignment bug, I need to analyze and modify the following components:
+
+1. **WorkerLabelService** - Ensure proper label initialization and maintenance
+2. **BabySharkMiningManager** - Fix the mining assignment logic that may be targeting enemy bases
+3. **InitialMapData** - Verify proper data structure population for worker assignments
+4. **CrosshairService** - Ensure COM visualization doesn't interfere with mining logic
 
