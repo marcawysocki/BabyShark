@@ -314,7 +314,7 @@ namespace BabySharkBot
                 _miningManager.SetCurrentMapData(mapData);
                 if (mapData != null)
                 {
-                    GetApiLocAndCOM.LoadCurrentSettings(gameInfo, mapData);
+                    GetApiLocAndCOM.LoadCurrentSettings(gameInfo, mapData, observation);
                     Globals.CurrentStartIndex = Settings.CurrentSpawnIndex;
                     if (mapData.M1IsFar != null && Settings.CurrentSpawnIndex >= 0 && Settings.CurrentSpawnIndex < mapData.M1IsFar.Length)
                     {

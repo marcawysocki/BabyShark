@@ -1,14 +1,151 @@
-# BabyShark Naming Conventions
+# BabyShark Conventions
 
-## Domain Metaphors
-Some service names use playful/domain metaphors. These are **functional production code**.
-- `chrisCrossAppleSause` = worker initialization (sitting cross-legged / attention)
-- `PupusPistrixVectatorPestium` = Documentation and prompt collection for StarCraft II bot development.
+This document describes conventions for the live `BabySharkBot/` project. It complements `CONTRIBUTING.md`, which defines the protected-path policy for the copied `Sharky/` framework.
 
-Always check XML `<summary>` comments before interpreting a filename as a placeholder.
+## Source-of-truth rules
 
-## File Categories
-- `Managers/` — Stateful orchestrators (e.g., `BabySharkMiningManager`)
-- `Services/` — Stateless logic (e.g., `JitPrepositionService`, `chrisCrossAppleSause`)
-- `MicroTasks/` — Unit-level behaviors (e.g., `TeamPatchMiningTask`, `CustomMiningTask`)
-- `Setup/` — Map data, initialization, DTOs (e.g., `InitialMapData`, `BaseDtos.cs`)
+- Treat the live C# files under `BabySharkBot/` as authoritative.
+- Treat older prompt payloads, generated file maps, and architecture notes as reference material only; verify every path, namespace, method signature, and type against the source before implementing it.
+- Do not copy stale `src/BabyShark/...` paths into this project. The live project root is `BabySharkBot/`.
+- Do not create duplicate services merely to match documentation. Reuse the existing implementation and public API.
+- Do not replace production managers with simplified examples from documentation.
+- Before changing behavior, inspect the owning class, its call sites, and the startup/frame lifecycle.
+
+## Protected framework boundary
+
+- `Sharky/` is a copied upstream framework and is read-only by default.
+- BabyShark customizations belong under `BabySharkBot/`, not `Sharky/`.
+- A change under `Sharky/` requires explicit owner authorization, a file-specific justification, and the protected-path workflow described in `CONTRIBUTING.md`.
+- Do not commit generated binaries, secrets, credentials, local map data, or temporary files.
+- Keep the existing project references to `Sharky/` and `RLIntegration/` intact unless the task explicitly changes dependencies.
+
+## Project layout
+
+Use the existing directories and their responsibilities:
+
+- `BabySharkBot/` — composition root and top-level bot types.
+- `BabySharkBot/Managers/` — stateful frame-loop coordinators implementing manager contracts.
+- `BabySharkBot/Services/` — reusable calculations, state machines, drawing adapters, placement, expansion, and mining support.
+- `BabySharkBot/MicroTasks/` — Sharky `MiningTask`/`MicroTask` specializations.
+- `BabySharkBot/Setup/` — map lifecycle, serialized DTOs, labels, settings, and registration helpers.
+- `BabySharkBot/Builds/` — build strategies and build-order components.
+- `BabySharkBot/Manager/` — existing singular directory containing `WorkerLabelChangedEventArgs.cs`; do not create new singular/plural duplicates without a reason.
+
+The `.csproj` uses SDK default compile globs. New `.cs` files under `BabySharkBot/` are normally included automatically; do not add redundant `<Compile Include>` entries.
+
+## Namespaces and types
+
+Use namespaces matching the directory and current source:
+
+- `BabySharkBot`
+- `BabySharkBot.Managers`
+- `BabySharkBot.Services`
+- `BabySharkBot.MicroTasks`
+- `BabySharkBot.Setup`
+- `BabySharkBot.Builds`
+- `BabySharkBot.Manager` for the existing event-args file
+
+Do not introduce the stale `BabyShark` namespace or create `Workers`/`ColorTeams` namespaces solely to mirror old documentation.
+
+Use the existing domain types:
+
+- Unit tags: `ulong`, matching `SC2APIProtocol.Unit.Tag` and Sharky unit data.
+- Serialized positions: `BabySharkBot.Setup.Vector2Dto`.
+- Runtime movement/pathing positions: Sharky's `Point2D` where the surrounding API uses it.
+- Debug drawing positions/colors: `SC2APIProtocol.Point` and `SC2APIProtocol.Color`.
+- Serialized map data: `MawBaseLocationData` and its MemoryPack-compatible DTO graph.
+
+Do not replace `ulong` with `int` for unit tags or introduce parallel position types without an explicit conversion boundary.
+
+## Naming
+
+- Types and public members use PascalCase.
+- Private fields use the existing underscore-prefixed style, such as `_mapData` and `_workerLabelService`.
+- Local variables and parameters use camelCase.
+- Acronyms follow the established source spelling: `CCA`, `JIT`, `COM`, `DTO`, `API` in prose; preserve existing identifiers such as `CcaManager`, `JitPrepositionService`, `WorkerEntryDto`, and `GetApiLocAndCOM`.
+- Preserve established domain names even when playful or unconventional. These are production identifiers:
+  - `chrisCrossAppleSause` — CCA worker initialization/choreography service.
+  - `PupusPistrixVectatorPestium` — documentation/prompt collection project.
+- Check XML `<summary>` documentation before treating an unusual name as a placeholder or typo.
+
+## Worker-label conventions
+
+- Use the existing `WorkerLabelService` in `BabySharkBot/Setup/BaseDtos.cs`.
+- Keep its `ulong`-based API:
+
+```csharp
+SetLabel(string label, ulong tag, Point? pos = null)
+GetLabel(ulong tag)
+GetTag(string label)
+```
+
+- Preserve the synchronized label-to-tag and tag-to-label mappings.
+- W-chain labels are generated by `WorkerLabelChainHelper`.
+- Team labels are assigned by `TeamLabelRegistrationHelper` using `TeamColorService` mappings.
+- Worker discovery and frame-level worker entries must be restricted to `Alliance.Self` workers.
+- Do not add a second worker-label service under `Workers/` or change labels to an `int`-keyed dictionary.
+
+## Map and mining conventions
+
+- `InitialMapData` generates new `MawBaseLocationData`.
+- `SecondaryMapData` processes a new spawn on an already-known map.
+- `OngoingMapData` refreshes current observations and exposes `ResolveTeamAssignments(mapData, startIndex)`.
+- Always resolve assignments using the current spawn index. Never select the first non-empty list across all starts.
+- Cached-map startup must identify the current spawn from the observed self town hall when possible.
+- CCA and JIT consumers must fail closed when current-spawn assignments are missing or invalid rather than issuing commands to another mineral line.
+- Keep CCA command ownership in `CcaManager`/`chrisCrossAppleSause` and steady-state JIT ownership in `BabySharkMiningManager`.
+- `TeamPatchMiningTask` coordinates JIT prepositioning through `JitPrepositionService`; it is not a replacement for `BabySharkMiningManager`.
+- `CustomMiningTask` intentionally suppresses Sharky's generic mining debug labels.
+- Preserve `MOVE` for positioning and `SMART` for final resource handoffs when working in the mining command logic, unless the target API requires a different ability.
+
+## Manager and service boundaries
+
+- Managers own long-lived state and frame-loop orchestration.
+- Services should expose focused reusable behavior and should not silently register duplicate managers.
+- Setup helpers may construct and register data, labels, and assignments but should not issue unrelated frame commands.
+- The composition root creates shared service instances and passes them to dependent managers. Do not instantiate a second service inside a consumer when a shared instance already exists.
+- `DrawOnlyManager` is responsible for invoking persistent debug visualization; do not move all drawing into one-time map generation.
+
+## Serialization and persistence
+
+- `MawBaseLocationData` is serialized with MemoryPack.
+- Cached files use the versioned naming convention managed by `MapDataManager` and `Program`:
+  `data/base/{sanitized-map-name}.Version{Settings.SpeedMiningVersion}.dat`.
+- Changes to serialized DTO shape or map-generation semantics require a version review and a plan for invalidating/regenerating incompatible cached data.
+- Avoid changing public DTO property names casually; persisted data and other runtime components depend on them.
+
+## Error handling and safety
+
+- Validate null values and per-start list/array bounds before indexing map data.
+- Prefer no command over a command aimed at an unverified worker, mineral, base, or cached coordinate.
+- Do not log secrets, credentials, or complete external payloads unnecessarily.
+- Keep comments focused on why a non-obvious guard or lifecycle rule exists.
+- Do not use comments as a substitute for updating the implementation or documentation.
+
+## Formatting and implementation style
+
+- Match the surrounding file's indentation, brace style, nullable annotations, and using order.
+- Use existing libraries and helpers; verify dependency availability in `BabySharkBot.csproj` or neighboring code before adding a new one.
+- Keep methods focused, but avoid speculative extraction when it would split an established lifecycle across too many files.
+- Prefer explicit, readable guards in startup and command-generation code.
+- Do not make unrelated cleanup changes while fixing a focused bug.
+
+## Verification expectations
+
+For code changes:
+
+```powershell
+dotnet build .\BabySharkBot\BabySharkBot.csproj
+dotnet build .\BabyShark.sln
+```
+
+Also run `git diff --check` on changed files. If a test project exists or is added, run the repository's test command.
+
+For mining or startup changes, include a local SC2 verification when available:
+
+- confirm the resolved spawn index and town-hall coordinates;
+- confirm self worker labels and tags;
+- confirm current-spawn assignment targets;
+- confirm the CCA-to-steady-state handoff;
+- confirm no worker is sent to another spawn's mineral line;
+- confirm `Sharky/` remains unchanged.

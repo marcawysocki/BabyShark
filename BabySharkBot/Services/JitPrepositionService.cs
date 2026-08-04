@@ -85,12 +85,13 @@ namespace BabySharkBot.Services
         private ulong SelectOptimalTeam4Worker()
         {
             var mapData = _miningManager.CurrentMapData;
-            if (mapData == null || mapData.TeamPatchAssignments == null) return 0;
+            if (mapData == null) return 0;
 
             var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-            if (mapData.TeamPatchAssignments.Count <= startIndex) return 0;
-            
-            var team4 = mapData.TeamPatchAssignments[startIndex]?.FirstOrDefault(t => t.TeamNumber == 4);
+            var assignments = OngoingMapData.ResolveTeamAssignments(mapData, startIndex);
+            if (assignments == null || assignments.Count == 0) return 0;
+
+            var team4 = assignments.FirstOrDefault(t => t.TeamNumber == 4);
             if (team4 == null) return 0;
 
             // Pick the worker that has just returned cargo (wasCarrying=true, carrying=false in Task)

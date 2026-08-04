@@ -161,23 +161,25 @@ namespace BabySharkBot.Setup
 
         public static List<TeamPatchAssignmentDto> ResolveTeamAssignments(MawBaseLocationData mapData, int startIndex)
         {
-            if (mapData == null || startIndex < 0) return new List<TeamPatchAssignmentDto>();
+            if (mapData == null || startIndex < 0)
+            {
+                return new List<TeamPatchAssignmentDto>();
+            }
 
-            if (mapData.AssignmentsByWorkerCount.TryGetValue(Settings.WorkerCount, out var assignmentsByStart) && assignmentsByStart.Count > startIndex && assignmentsByStart[startIndex].Count > 0)
+            if (mapData.AssignmentsByWorkerCount != null
+                && mapData.AssignmentsByWorkerCount.TryGetValue(Settings.WorkerCount, out var assignmentsByStart)
+                && assignmentsByStart != null
+                && assignmentsByStart.Count > startIndex
+                && assignmentsByStart[startIndex] != null
+                && assignmentsByStart[startIndex].Count > 0)
             {
                 return assignmentsByStart[startIndex];
             }
 
-            if (mapData.SecondaryTeamPatchAssignments.Count > startIndex && mapData.SecondaryTeamPatchAssignments[startIndex].Count > 0)
-            {
-                return mapData.SecondaryTeamPatchAssignments[startIndex];
-            }
-
-            if (mapData.TeamPatchAssignments.Count > startIndex)
-            {
-                return mapData.TeamPatchAssignments[startIndex];
-            }
-
+            // SecondaryTeamPatchAssignments and TeamPatchAssignments are legacy
+            // unkeyed schemas and are not safe to reuse when the live patch changes
+            // the starting worker count. The startup path regenerates the active
+            // count-specific bucket when it is absent.
             return new List<TeamPatchAssignmentDto>();
         }
 

@@ -1,4 +1,5 @@
 using SC2APIProtocol;
+using Sharky;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -9,9 +10,14 @@ namespace BabySharkBot.Setup
     {
         public static void LoadCurrentSettings(ResponseGameInfo gameInfo, MawBaseLocationData mapData)
         {
-            var currentIndex = ResolveCurrentSpawnIndex(gameInfo);
+            LoadCurrentSettings(gameInfo, mapData, null);
+        }
+
+        public static void LoadCurrentSettings(ResponseGameInfo gameInfo, MawBaseLocationData mapData, ResponseObservation observation)
+        {
+            var currentIndex = ResolveCurrentSpawnIndex(gameInfo, mapData, observation);
             Settings.CurrentSpawnIndex = currentIndex;
-            Settings.CurrentSpawnLocation = ResolveCurrentSpawnLocation(gameInfo);
+            Settings.CurrentSpawnLocation = ResolveCurrentSpawnLocation(gameInfo, mapData, currentIndex);
             Globals.CurrentMapData = mapData;
             Globals.CurrentStartIndex = currentIndex;
             if (mapData?.M1IsFar != null && currentIndex >= 0 && currentIndex < mapData.M1IsFar.Length)
@@ -22,6 +28,55 @@ namespace BabySharkBot.Setup
             {
                 Settings.M8IsFar = mapData.M8IsFar;
             }
+        }
+
+        public static int ResolveCurrentSpawnIndex(ResponseGameInfo gameInfo, MawBaseLocationData mapData, ResponseObservation observation)
+        {
+            var observedTownHall = observation?.Observation?.RawData?.Units?
+                .FirstOrDefault(u => u != null
+                    && u.Alliance == Alliance.Self
+                    && IsTownHall(u.UnitType))?.Pos;
+
+            if (observedTownHall != null && mapData?.StartingTownHall != null)
+            {
+                const float tolerance = 3f;
+                var closestIndex = -1;
+                var closestDistance = float.MaxValue;
+
+                for (var i = 0; i < mapData.StartingTownHall.Length; i++)
+                {
+                    var townHall = mapData.StartingTownHall[i];
+                    if (townHall == null)
+                    {
+                        continue;
+                    }
+
+                    var dx = observedTownHall.X - townHall.X;
+                    var dy = observedTownHall.Y - townHall.Y;
+                    var distance = dx * dx + dy * dy;
+                    if (distance <= tolerance * tolerance && distance < closestDistance)
+                    {
+                        closestIndex = i;
+                        closestDistance = distance;
+                    }
+                }
+
+                if (closestIndex >= 0)
+                {
+                    return closestIndex;
+                }
+
+                return -1;
+            }
+
+            if (mapData?.StartingTownHall != null
+                && Settings.CurrentSpawnIndex >= 0
+                && Settings.CurrentSpawnIndex < mapData.StartingTownHall.Length)
+            {
+                return Settings.CurrentSpawnIndex;
+            }
+
+            return ResolveCurrentSpawnIndex(gameInfo);
         }
 
         public static int ResolveCurrentSpawnIndex(ResponseGameInfo gameInfo)
@@ -68,15 +123,35 @@ namespace BabySharkBot.Setup
 
         public static Vector2Dto ResolveCurrentSpawnLocation(ResponseGameInfo gameInfo)
         {
+            return ResolveCurrentSpawnLocation(gameInfo, null, ResolveCurrentSpawnIndex(gameInfo));
+        }
+
+        private static Vector2Dto ResolveCurrentSpawnLocation(ResponseGameInfo gameInfo, MawBaseLocationData mapData, int index)
+        {
+            if (mapData?.StartingTownHall != null && index >= 0 && index < mapData.StartingTownHall.Length)
+            {
+                var townHall = mapData.StartingTownHall[index];
+                if (townHall != null)
+                {
+                    return new Vector2Dto(townHall.X, townHall.Y, townHall.Z);
+                }
+            }
+
             var apiStarts = gameInfo?.StartRaw?.StartLocations;
             if (apiStarts == null || apiStarts.Count == 0)
             {
                 return new Vector2Dto();
             }
 
-            var index = ResolveCurrentSpawnIndex(gameInfo);
-            var spawn = apiStarts.Count > index ? apiStarts[index] : apiStarts.FirstOrDefault();
+            var spawn = index >= 0 && apiStarts.Count > index ? apiStarts[index] : apiStarts.FirstOrDefault();
             return spawn == null ? new Vector2Dto() : new Vector2Dto(spawn.X, spawn.Y, 0f);
+        }
+
+        private static bool IsTownHall(uint unitType)
+        {
+            return unitType == (uint)UnitTypes.ZERG_HATCHERY
+                || unitType == (uint)UnitTypes.TERRAN_COMMANDCENTER
+                || unitType == (uint)UnitTypes.PROTOSS_NEXUS;
         }
 
         public static Vector2Dto ResolveCurrentCOM(MawBaseLocationData mapData, int currentSpawnIndex)

@@ -67,7 +67,7 @@ namespace BabySharkBot.Setup
             targetTeamPatchAssignments ??= mapData.TeamPatchAssignments;
             EnsureAssignmentCapacity(targetTeamPatchAssignments, startIndex + 1);
 
-            if (IsTeamAssignmentsReady(mapData, startIndex) && targetTeamPatchAssignments[startIndex] != null && targetTeamPatchAssignments[startIndex].Count > 0)
+            if (IsTeamAssignmentsReady(mapData, startIndex, workers.Count) && targetTeamPatchAssignments[startIndex] != null && targetTeamPatchAssignments[startIndex].Count > 0)
             {
                 return targetTeamPatchAssignments[startIndex];
             }
@@ -75,7 +75,7 @@ namespace BabySharkBot.Setup
             var assignments = BuildAssignmentsForStart(mapData, startIndex, orderedMinerals, workers, mineralCenterOfMass, workerLabelService);
             targetTeamPatchAssignments[startIndex] = assignments;
             ApplySpawnFlags(mapData, startIndex, assignments);
-            MarkTeamAssignmentsReady(mapData, startIndex, assignments);
+            MarkTeamAssignmentsReady(mapData, startIndex, assignments, workers.Count);
             return assignments;
         }
 
@@ -84,7 +84,7 @@ namespace BabySharkBot.Setup
             int startIndex,
             List<List<TeamPatchAssignmentDto>>? targetTeamPatchAssignments = null)
         {
-            if (mapData == null || startIndex < 0 || !IsTeamAssignmentsReady(mapData, startIndex))
+            if (mapData == null || startIndex < 0 || !IsTeamAssignmentsReady(mapData, startIndex, Settings.WorkerCount))
             {
                 return new List<TeamPatchAssignmentDto>();
             }
@@ -123,7 +123,7 @@ namespace BabySharkBot.Setup
             var assignments = BuildAssignmentsForStart(mapData, startIndex, orderedMinerals, workers, mineralCenterOfMass, workerLabelService);
             targetTeamPatchAssignments[startIndex] = assignments;
             ApplySpawnFlags(mapData, startIndex, assignments);
-            MarkTeamAssignmentsReady(mapData, startIndex, assignments);
+            MarkTeamAssignmentsReady(mapData, startIndex, assignments, workers.Count);
         }
 
         private static List<TeamPatchAssignmentDto> BuildAssignmentsForStart(
@@ -154,12 +154,17 @@ namespace BabySharkBot.Setup
                 }
 
                 ApplyMineralFinalLabels(mapData, startIndex, mineralPair, teamNum, workers.Count);
-                // FIX: ApplyMineralFinalLabels sets IsNear/IsFar on the pair, but does NOT reorder the list.
-                // We must pass the ACTUAL near and far minerals to ApplyWorkerFinalLabels so distance
-                // calculations for Y1/Y3 (and T1/T3, etc.) use the correct target.
-                var actualNearMineral = mineralPair[0].IsNear ? mineralPair[0] : mineralPair[1];
-                var actualFarMineral = mineralPair[0].IsNear ? mineralPair[1] : mineralPair[0];
-                ApplyWorkerFinalLabels(mapData, startIndex, GetTeamPrefix(teamNum, workers.Count), teamWorkers, actualNearMineral, actualFarMineral, workerLabelService);
+                if (workers.Count == 12)
+                {
+                    ApplyTwelveWorkerFinalLabels(mapData, startIndex, teamNum, teamWorkers, mineralPair, workerLabelService);
+                }
+                else
+                {
+                    // The 8-worker opening keeps the existing direct distance-based role assignment.
+                    var actualNearMineral = mineralPair[0].IsNear ? mineralPair[0] : mineralPair[1];
+                    var actualFarMineral = mineralPair[0].IsNear ? mineralPair[1] : mineralPair[0];
+                    ApplyWorkerFinalLabels(mapData, startIndex, GetTeamPrefix(teamNum, workers.Count), teamWorkers, actualNearMineral, actualFarMineral, workerLabelService);
+                }
 
                 var hatcheryPos = mapData.StartingTownHall[startIndex];
                 var jitPoints = CalculateJitPoints(mineralPair[0], mineralPair[1], hatcheryPos);
@@ -459,6 +464,109 @@ namespace BabySharkBot.Setup
             return ReferenceEquals(candidate, farMineral);
         }
 
+        private static void ApplyTwelveWorkerFinalLabels(
+            MawBaseLocationData mapData,
+            int startIndex,
+            int teamNumber,
+            List<WorkerEntryDto> teamWorkers,
+            List<OrderedMineral> mineralPair,
+            WorkerLabelService? workerLabelService)
+        {
+            if (teamWorkers == null || teamWorkers.Count != 3 || mineralPair == null || mineralPair.Count != 2)
+            {
+                return;
+            }
+
+            var prefix = GetTeamPrefix(teamNumber, 12);
+            var nearMineral = mineralPair.FirstOrDefault(m => m.IsNear) ?? mineralPair[0];
+            var farMineral = mineralPair.FirstOrDefault(m => !m.IsNear && m != nearMineral) ?? mineralPair[1];
+            var remaining = teamWorkers.ToList();
+
+            if (teamNumber == 1 || teamNumber == 4)
+            {
+                // Teal and Yellow require an adjacent 1/3 pair for CCA push-repell.
+                var pair = FindClosestAdjacentPair(remaining);
+                if (pair != null)
+                {
+                    var primary = pair.Value.First;
+                    var support = pair.Value.Second;
+                    if (DistanceSquared(primary.Position, nearMineral.Position) > DistanceSquared(support.Position, nearMineral.Position))
+                    {
+                        (primary, support) = (support, primary);
+                    }
+
+                    AssignFinalLabel(primary, $"{prefix}1", workerLabelService);
+                    AssignFinalLabel(support, $"{prefix}3", workerLabelService);
+                    remaining.Remove(primary);
+                    remaining.Remove(support);
+                }
+
+                foreach (var worker in remaining)
+                {
+                    AssignFinalLabel(worker, $"{prefix}2", workerLabelService);
+                }
+
+                return;
+            }
+
+            // Salmon and Blue keep the fixed middle-chain targets. Their suffix is
+            // derived from whether that target is the team's A or B mineral.
+            foreach (var worker in teamWorkers)
+            {
+                if (worker.StartLabel == "W1" || worker.StartLabel == "W12")
+                {
+                    AssignFinalLabel(worker, $"{prefix}3", workerLabelService);
+                    continue;
+                }
+
+                var pairPosition = teamNumber switch
+                {
+                    2 when worker.StartLabel == "W7" => 1,
+                    2 when worker.StartLabel == "W8" => 0,
+                    3 when worker.StartLabel == "W5" => 0,
+                    3 when worker.StartLabel == "W6" => 1,
+                    _ => -1
+                };
+
+                if (pairPosition < 0 || pairPosition >= mineralPair.Count)
+                {
+                    Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] No fixed middle-chain target for {worker.StartLabel} in team {prefix}");
+                    continue;
+                }
+
+                var target = mineralPair[pairPosition];
+                var suffix = target?.FinalLabel?.EndsWith("A", StringComparison.OrdinalIgnoreCase) == true ? "1" : "2";
+                AssignFinalLabel(worker, $"{prefix}{suffix}", workerLabelService);
+            }
+        }
+
+        private static (WorkerEntryDto First, WorkerEntryDto Second)? FindClosestAdjacentPair(List<WorkerEntryDto> workers)
+        {
+            if (workers == null || workers.Count < 2)
+            {
+                return null;
+            }
+
+            var pair = workers
+                .SelectMany((first, firstIndex) => workers.Skip(firstIndex + 1).Select(second => (first, second)))
+                .OrderBy(candidate => DistanceSquared(candidate.first.Position, candidate.second.Position))
+                .FirstOrDefault();
+
+            return pair.first == null || pair.second == null ? null : (pair.first, pair.second);
+        }
+
+        private static float DistanceSquared(Vector2Dto first, Vector2Dto second)
+        {
+            if (first == null || second == null)
+            {
+                return float.MaxValue;
+            }
+
+            var dx = first.X - second.X;
+            var dy = first.Y - second.Y;
+            return dx * dx + dy * dy;
+        }
+
         private static void ApplyWorkerFinalLabels(
             MawBaseLocationData mapData,
             int startIndex,
@@ -480,7 +588,6 @@ namespace BabySharkBot.Setup
                 Console.WriteLine($"TeamLabelRegistrationHelper: start[{startIndex}] M1IsFar={m1IsFar}");
                 if (m1IsFar)
                 {
-                    System.Diagnostics.Debugger.Break();
                     y2Source = "W2";
                 }
                 AssignWorkerFinalLabel(teamWorkers, y2Source, "Y2", workerLabelService);
@@ -648,7 +755,7 @@ namespace BabySharkBot.Setup
             };
         }
 
-        private static void MarkTeamAssignmentsReady(MawBaseLocationData mapData, int startIndex, List<TeamPatchAssignmentDto> assignments)
+        private static void MarkTeamAssignmentsReady(MawBaseLocationData mapData, int startIndex, List<TeamPatchAssignmentDto> assignments, int workerCount)
         {
             if (mapData == null)
             {
@@ -661,10 +768,10 @@ namespace BabySharkBot.Setup
                 mapData.AssignmentFlagsByStart[startIndex] = flags;
             }
 
-            flags[TeamAssignmentsReadyFlag] = assignments != null && assignments.Count > 0;
+            flags[$"{TeamAssignmentsReadyFlag}:{workerCount}"] = assignments != null && assignments.Count > 0;
         }
 
-        private static bool IsTeamAssignmentsReady(MawBaseLocationData mapData, int startIndex)
+        private static bool IsTeamAssignmentsReady(MawBaseLocationData mapData, int startIndex, int workerCount)
         {
             if (mapData == null)
             {
@@ -672,7 +779,7 @@ namespace BabySharkBot.Setup
             }
 
             return mapData.AssignmentFlagsByStart.TryGetValue(startIndex, out var flags)
-                && flags.TryGetValue(TeamAssignmentsReadyFlag, out var ready)
+                && flags.TryGetValue($"{TeamAssignmentsReadyFlag}:{workerCount}", out var ready)
                 && ready;
         }
 

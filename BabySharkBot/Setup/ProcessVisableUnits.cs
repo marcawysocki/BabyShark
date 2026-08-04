@@ -186,6 +186,24 @@ namespace BabySharkBot.Setup
             }
 
             var orderedWorkers = new List<WorkerEntryDto>(workerEntries);
+            if (Globals.CurrentMapData != null && Settings.CurrentSpawnIndex >= 0)
+            {
+                var liveWorkers = observation.Observation.RawData.Units
+                    .Where(unit => unit != null
+                        && unit.Alliance == Alliance.Self
+                        && (unit.UnitType == (uint)UnitTypes.ZERG_DRONE
+                            || unit.UnitType == (uint)UnitTypes.TERRAN_SCV
+                            || unit.UnitType == (uint)UnitTypes.PROTOSS_PROBE))
+                    .ToList();
+                orderedWorkers = WorkerLabelChainHelper.BuildWorkersInAW12ThroughW1Order(
+                    liveWorkers,
+                    Globals.CurrentMapData.MineralCenterOfMass.Count > Settings.CurrentSpawnIndex
+                        ? Globals.CurrentMapData.MineralCenterOfMass[Settings.CurrentSpawnIndex]
+                        : Settings.CurrentSpawnCOM,
+                    workerLabelService);
+                workerEntries = new List<WorkerEntryDto>(orderedWorkers);
+            }
+
             var labeledCount = orderedWorkers.Count(w => IsValidWorkerLabel(w.Label));
 
             if (labeledCount == 0 && orderedWorkers.Count > 0)
@@ -239,6 +257,17 @@ namespace BabySharkBot.Setup
                             vespeneLabelService,
                             spawningPoolPlacementService);
 
+                        if (!Globals.CurrentMapData.AssignmentsByWorkerCount.TryGetValue(Settings.WorkerCount, out var assignmentsByStart))
+                        {
+                            assignmentsByStart = new List<List<TeamPatchAssignmentDto>>();
+                            Globals.CurrentMapData.AssignmentsByWorkerCount[Settings.WorkerCount] = assignmentsByStart;
+                        }
+
+                        while (assignmentsByStart.Count <= Settings.CurrentSpawnIndex)
+                        {
+                            assignmentsByStart.Add(new List<TeamPatchAssignmentDto>());
+                        }
+
                         TeamLabelRegistrationHelper.EnsureTeamLabelsForStart(
                             Globals.CurrentMapData,
                             Settings.CurrentSpawnIndex,
@@ -246,7 +275,7 @@ namespace BabySharkBot.Setup
                             workerEntries,
                             Settings.CurrentSpawnCOM,
                             workerLabelService,
-                            Globals.CurrentMapData.TeamPatchAssignments);
+                            assignmentsByStart);
                     }
                 }
             }

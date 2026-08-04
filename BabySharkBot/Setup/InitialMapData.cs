@@ -433,9 +433,10 @@ namespace BabySharkBot.Setup
                                 multiMainVespene[assignedToStart].Add(vpos);
                             }
                         }
-                        else if (ut == Sharky.UnitTypes.ZERG_DRONE || ut == Sharky.UnitTypes.TERRAN_SCV || ut == Sharky.UnitTypes.PROTOSS_PROBE)
+                        else if (unit.Alliance == Alliance.Self
+                            && (ut == Sharky.UnitTypes.ZERG_DRONE || ut == Sharky.UnitTypes.TERRAN_SCV || ut == Sharky.UnitTypes.PROTOSS_PROBE))
                         {
-                            // collect tag, position, and unit type so we can match tags to greedy ordering later
+                            // Collect only self workers for greedy ordering and team assignment.
                             try { workerList.Add((unit.Tag, unit.Pos.X, unit.Pos.Y, unit.Pos.Z, unit.UnitType)); } catch { }
                         }
 

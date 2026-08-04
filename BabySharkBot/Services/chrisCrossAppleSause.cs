@@ -90,30 +90,16 @@ namespace BabySharkBot.Services
             }
 
             var workerCount = Settings.WorkerCount > 0 ? Settings.WorkerCount : 12;
-
-            // Fallback for missing assignments
-            if (state.TeamAssignments.Count == 0 && mapData.TeamPatchAssignments != null)
+            var currentAssignments = OngoingMapData.ResolveTeamAssignments(mapData, startIndex);
+            if (!HasValidCurrentSpawnAssignments(mapData, startIndex, currentAssignments, workerEntries, selfUnits))
             {
-                var firstValid = mapData.TeamPatchAssignments.FirstOrDefault(a => a != null && a.Count > 0);
-                if (firstValid != null) state.TeamAssignments = firstValid;
+                // Never substitute another spawn's assignments. Failing closed is safer than
+                // issuing a valid command to the wrong mineral line.
+                state.TeamAssignments = new List<TeamPatchAssignmentDto>();
+                return commands;
             }
 
-            // Secondary Fallback: Try SecondaryTeamPatchAssignments
-            if (state.TeamAssignments.Count == 0 && mapData.SecondaryTeamPatchAssignments != null)
-            {
-                var firstValid = mapData.SecondaryTeamPatchAssignments.FirstOrDefault(a => a != null && a.Count > 0);
-                if (firstValid != null) state.TeamAssignments = firstValid;
-            }
-
-            // Tertiary Fallback: Try AssignmentsByWorkerCount
-            if (state.TeamAssignments.Count == 0 && mapData.AssignmentsByWorkerCount != null)
-            {
-                if (mapData.AssignmentsByWorkerCount.TryGetValue(workerCount, out var assignmentsByStart))
-                {
-                    var firstValid = assignmentsByStart.FirstOrDefault(a => a != null && a.Count > 0);
-                    if (firstValid != null) state.TeamAssignments = firstValid;
-                }
-            }
+            state.TeamAssignments = currentAssignments;
 
             // On frame 0, issue STOP
             if (frame == StartFrame)
@@ -138,12 +124,14 @@ namespace BabySharkBot.Services
             // Initialize TeamBumping for all teams if 12 workers
             if (workerCount == 12)
             {
-                if (!state.TeamBumping.ContainsKey(1)) state.TeamBumping[1] = true;
-                if (!state.TeamBumping.ContainsKey(2)) state.TeamBumping[2] = true;
-                if (!state.TeamBumping.ContainsKey(3)) state.TeamBumping[3] = true;
-                if (!state.TeamBumping.ContainsKey(4)) state.TeamBumping[4] = true;
-                if (!state.TeamBumping.ContainsKey(5)) state.TeamBumping[5] = true; // Crossover Pair 5 (S3/T2)
-                if (!state.TeamBumping.ContainsKey(6)) state.TeamBumping[6] = true; // Crossover Pair 6 (B3/Y2)
+                // Team numbers are Y=1, B=2, S=3, T=4 in TeamLabelRegistrationHelper.
+                // Only Teal and Yellow use CCA push-repell pairs; Salmon and Blue remain direct.
+                state.TeamBumping[1] = true;
+                state.TeamBumping[2] = false;
+                state.TeamBumping[3] = false;
+                state.TeamBumping[4] = true;
+                state.TeamBumping[5] = false;
+                state.TeamBumping[6] = false;
             }
 
             bool stateChanged = true;
@@ -229,22 +217,6 @@ namespace BabySharkBot.Services
             var commands = new List<SC2APIProtocol.Action>();
             if (frame >= AlignThreshold) { SetPhase(state, TestPhase.AlignAtMineralA); return commands; }
 
-            // Handle Crossover Bumping Pairs (Higher priority)
-            if (workerCount == 12)
-            {
-                // FIX: Team 2 (B) bumps Team 1 (Y) if M1IsFar; Team 3 (S) bumps Team 4 (T) if M8IsFar
-                if (state.M1IsFar && workerByLabel.TryGetValue("B3", out var b3) && workerByLabel.TryGetValue("Y1", out var y1))
-                {
-                    var mineralYA = GetMineralOrdered(state, 1, "YA");
-                    if (mineralYA != null) commands.AddRange(ProcessBumpingPair(frame, state, 5, y1, b3, mineralYA));
-                }
-                if (state.M8IsFar && workerByLabel.TryGetValue("S3", out var s3) && workerByLabel.TryGetValue("T1", out var t1))
-                {
-                    var mineralTA = GetMineralOrdered(state, 4, "TA");
-                    if (mineralTA != null) commands.AddRange(ProcessBumpingPair(frame, state, 6, t1, s3, mineralTA));
-                }
-            }
-
             foreach (var team in state.TeamAssignments)
             {
                 var logicalWorkers = team.Workers;
@@ -265,21 +237,28 @@ namespace BabySharkBot.Services
                 }
                 else if (workerCount == 12)
                 {
-                    bool isCrossover = (team.TeamNumber == 1 && state.M1IsFar) || (team.TeamNumber == 2 && state.M1IsFar) || (team.TeamNumber == 3 && state.M8IsFar) || (team.TeamNumber == 4 && state.M8IsFar);
-                    if (isCrossover)
+                    if (team.TeamNumber == 2 || team.TeamNumber == 3)
                     {
                         if (w1 != null) commands.AddRange(ProcessWorkerMovement(w1, mineralA, frame));
-                        if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame));
-                        if (w3 != null) commands.AddRange(ProcessWorkerMovement(w3, (team.TeamNumber == 1 || team.TeamNumber == 4) ? mineralA : mineralB, frame));
+                        if (w2 != null) commands.AddRange(ProcessWorkerMovement(w2, mineralB, frame));
+                        if (w3 != null)
+                        {
+                            var helperMineral = team.TeamNumber == 2
+                                ? GetMineralOrdered(state, 3, "SA")
+                                : GetMineralOrdered(state, 4, "BA");
+                            commands.AddRange(ProcessWorkerMovement(w3, helperMineral ?? mineralA, frame));
+                        }
                         continue;
                     }
 
-                    // FIX: All teams now use w3 as the bumper (toward A) and w2 goes to mineral B
+                    // Teal and Yellow use w1/w3 as the side-by-side push pair.
+                    // Salmon and Blue use direct A/B movement; their w3 worker is a
+                    // normal target mover and must not enter the bump state machine.
                     WorkerEntryDto? lead = w1;
                     WorkerEntryDto? partner = w3;
                     WorkerEntryDto? side = w2;
 
-                    if (state.TeamBumping.GetValueOrDefault(team.TeamNumber, true) && lead != null && partner != null)
+                    if (state.TeamBumping.GetValueOrDefault(team.TeamNumber, false) && lead != null && partner != null)
                     {
                         commands.AddRange(ProcessBumpingPair(frame, state, team.TeamNumber, lead, partner, mineralA));
                     }
@@ -435,6 +414,67 @@ namespace BabySharkBot.Services
         private OrderedMineral? GetMineralOrdered(CcaSpawnLearningState state, int teamNum, string label)
         {
             return state.TeamAssignments.FirstOrDefault(t => t.TeamNumber == teamNum)?.Minerals.FirstOrDefault(m => string.Equals(m.FinalLabel ?? m.Label, label, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool HasValidCurrentSpawnAssignments(
+            MawBaseLocationData mapData,
+            int startIndex,
+            IReadOnlyCollection<TeamPatchAssignmentDto> assignments,
+            IReadOnlyCollection<WorkerEntryDto> workerEntries,
+            IEnumerable<Unit>? selfUnits)
+        {
+            if (mapData == null || startIndex < 0 || assignments == null || assignments.Count == 0
+                || mapData.StartingTownHall == null || startIndex >= mapData.StartingTownHall.Length
+                || mapData.StartingTownHall[startIndex] == null)
+            {
+                return false;
+            }
+
+            var currentMinerals = startIndex < mapData.OrderedMainMinerals.Count
+                ? mapData.OrderedMainMinerals[startIndex]
+                : new List<OrderedMineral>();
+            if (currentMinerals.Count == 0)
+            {
+                return false;
+            }
+
+            var currentWorkerTags = (selfUnits ?? Enumerable.Empty<Unit>())
+                .Where(unit => unit != null && IsWorkerType(unit.UnitType))
+                .Select(unit => unit.Tag)
+                .ToHashSet();
+            if (currentWorkerTags.Count == 0)
+            {
+                currentWorkerTags = (workerEntries ?? Array.Empty<WorkerEntryDto>())
+                    .Where(worker => worker != null && worker.UnitTag != 0)
+                    .Select(worker => worker.UnitTag)
+                    .ToHashSet();
+            }
+
+            var currentMineralTags = currentMinerals
+                .Where(m => m != null && m.UnitTag != 0)
+                .Select(m => m.UnitTag)
+                .ToHashSet();
+            var currentPositions = currentMinerals
+                .Where(m => m?.Position != null)
+                .Select(m => $"{m.Position.X:F2},{m.Position.Y:F2}")
+                .ToHashSet(StringComparer.Ordinal);
+
+            return assignments.All(team => team != null
+                && team.Workers != null
+                && team.Workers.Count > 0
+                && team.Workers.All(worker => worker != null && worker.UnitTag != 0 && currentWorkerTags.Contains(worker.UnitTag))
+                && team.Minerals != null
+                && team.Minerals.Count > 0
+                && team.Minerals.All(mineral => mineral?.Position != null
+                    && ((mineral.UnitTag != 0 && currentMineralTags.Contains(mineral.UnitTag))
+                        || currentPositions.Contains($"{mineral.Position.X:F2},{mineral.Position.Y:F2}"))));
+        }
+
+        private static bool IsWorkerType(uint unitType)
+        {
+            return unitType == (uint)UnitTypes.ZERG_DRONE
+                || unitType == (uint)UnitTypes.TERRAN_SCV
+                || unitType == (uint)UnitTypes.PROTOSS_PROBE;
         }
 
         private static string BuildSpawnKey(MawBaseLocationData mapData, int startIndex)

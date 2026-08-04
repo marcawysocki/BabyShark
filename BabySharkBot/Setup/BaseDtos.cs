@@ -349,6 +349,7 @@ namespace BabySharkBot.Setup
         public List<Vector2Dto> ExpansionMineralCenterOfMass { get; set; } = new List<Vector2Dto>();
         public List<List<WorkerEntryDto>> StartingUnits { get; set; } = new List<List<WorkerEntryDto>>();
         public List<List<WorkerEntryDto>> SecondaryStartingUnits { get; set; } = new List<List<WorkerEntryDto>>();
+        public Dictionary<int, List<List<WorkerEntryDto>>> StartingUnitsByWorkerCount { get; set; } = new Dictionary<int, List<List<WorkerEntryDto>>>();
         public List<List<OrderedMineral>> SecondaryOrderedMainMinerals { get; set; } = new List<List<OrderedMineral>>();
         public List<Vector2Dto> SecondaryMineralCenterOfMass { get; set; } = new List<Vector2Dto>();
         public List<List<TeamPatchAssignmentDto>> SecondaryTeamPatchAssignments { get; set; } = new List<List<TeamPatchAssignmentDto>>();
@@ -387,13 +388,41 @@ namespace BabySharkBot.Setup
 
         public void SetLabel(string label, ulong tag, Point? pos = null)
         {
+            if (string.IsNullOrWhiteSpace(label) || tag == 0)
+            {
+                return;
+            }
+
             lock (_lock)
             {
-                if (!_labelToTag.TryGetValue(label, out var existingTag) || existingTag != tag || 
-                    !_tagToLabel.TryGetValue(tag, out var existingLabel) || existingLabel != label)
+                var mappingChanged = !_tagToLabel.TryGetValue(tag, out var existingLabel)
+                    || !string.Equals(existingLabel, label, StringComparison.Ordinal);
+
+                if (_tagToLabel.TryGetValue(tag, out existingLabel)
+                    && !string.Equals(existingLabel, label, StringComparison.Ordinal))
                 {
-                    _labelToTag[label] = tag;
-                    _tagToLabel[tag] = label;
+                    _tagToLabel.Remove(tag);
+                    if (_labelToTag.TryGetValue(existingLabel, out var mappedTag) && mappedTag == tag)
+                    {
+                        _labelToTag.Remove(existingLabel);
+                    }
+                }
+
+                if (_labelToTag.TryGetValue(label, out var existingTag) && existingTag != tag)
+                {
+                    _labelToTag.Remove(label);
+                    if (_tagToLabel.TryGetValue(existingTag, out var mappedLabel)
+                        && string.Equals(mappedLabel, label, StringComparison.Ordinal))
+                    {
+                        _tagToLabel.Remove(existingTag);
+                    }
+                }
+
+                _labelToTag[label] = tag;
+                _tagToLabel[tag] = label;
+
+                if (mappingChanged)
+                {
                     Console.WriteLine($"WorkerLabelService: Label set {label} -> {tag}");
                     LabelChanged?.Invoke(this, new WorkerLabelChangedEventArgs(tag, label));
                 }

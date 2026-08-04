@@ -116,14 +116,17 @@ namespace BabySharkBot.Setup
                 }
             }
 
+            if (!mapData.AssignmentsByWorkerCount.TryGetValue(workerCount, out var assignmentsByStart)
+                || assignmentsByStart == null)
+            {
+                assignmentsByStart = new List<List<TeamPatchAssignmentDto>>();
+                mapData.AssignmentsByWorkerCount[workerCount] = assignmentsByStart;
+            }
+
             var teamAssignments = new List<TeamPatchAssignmentDto>();
-            if (mapData.AssignmentsByWorkerCount.TryGetValue(workerCount, out var assignmentsByStart) && assignmentsByStart.Count > startIndex)
+            if (assignmentsByStart.Count > startIndex && assignmentsByStart[startIndex] != null)
             {
                 teamAssignments = assignmentsByStart[startIndex];
-            }
-            else if (mapData.TeamPatchAssignments.Count > startIndex)
-            {
-                teamAssignments = mapData.TeamPatchAssignments[startIndex];
             }
 
             _secondarySpawnData[startKey] = new SecondarySpawnData
@@ -133,6 +136,17 @@ namespace BabySharkBot.Setup
                 OrderedVespenes = orderedVespenes,
                 TeamAssignments = teamAssignments
             };
+
+            if (!mapData.StartingUnitsByWorkerCount.TryGetValue(workerCount, out var startingUnitsByStart)
+                || startingUnitsByStart == null)
+            {
+                startingUnitsByStart = new List<List<WorkerEntryDto>>();
+                mapData.StartingUnitsByWorkerCount[workerCount] = startingUnitsByStart;
+            }
+            if (startingUnitsByStart.Count <= startIndex)
+            {
+                startingUnitsByStart.AddRange(Enumerable.Repeat(new List<WorkerEntryDto>(), startIndex - startingUnitsByStart.Count + 1));
+            }
 
             if (mapData.SecondaryStartingUnits.Count <= startIndex)
             {
@@ -151,7 +165,12 @@ namespace BabySharkBot.Setup
                 mapData.SecondaryTeamPatchAssignments.AddRange(Enumerable.Repeat(new List<TeamPatchAssignmentDto>(), startIndex - mapData.SecondaryTeamPatchAssignments.Count + 1));
             }
 
+            startingUnitsByStart[startIndex] = workerEntries;
             mapData.SecondaryStartingUnits[startIndex] = workerEntries;
+            if (mapData.StartingUnits.Count <= startIndex)
+            {
+                mapData.StartingUnits.AddRange(Enumerable.Repeat(new List<WorkerEntryDto>(), startIndex - mapData.StartingUnits.Count + 1));
+            }
             mapData.StartingUnits[startIndex] = workerEntries;
             mapData.SecondaryOrderedMainMinerals[startIndex] = orderedMinerals;
             mapData.SecondaryMineralCenterOfMass[startIndex] = mapData.MineralCenterOfMass.Count > startIndex ? mapData.MineralCenterOfMass[startIndex] : new Vector2Dto();
@@ -166,8 +185,9 @@ namespace BabySharkBot.Setup
             var teamAssignmentsReady = flags.TryGetValue("TeamAssignmentsReady", out var ready) && ready;
             if (!teamAssignmentsReady || teamAssignments == null || teamAssignments.Count == 0)
             {
-                TeamLabelRegistrationHelper.EnsureTeamLabelsForStart(mapData, startIndex, orderedMinerals, workerEntries, mapData.SecondaryMineralCenterOfMass[startIndex], workerLabelService, mapData.SecondaryTeamPatchAssignments);
-                flags["TeamAssignmentsReady"] = true;
+                TeamLabelRegistrationHelper.EnsureTeamLabelsForStart(mapData, startIndex, orderedMinerals, workerEntries, mapData.SecondaryMineralCenterOfMass[startIndex], workerLabelService, assignmentsByStart);
+                teamAssignments = assignmentsByStart[startIndex];
+                mapData.SecondaryTeamPatchAssignments[startIndex] = teamAssignments;
             }
 
             ApplyMineralLabels(orderedMinerals, mineralLabelService);

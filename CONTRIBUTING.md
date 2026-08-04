@@ -10,6 +10,10 @@ This repository contains custom code plus a copied upstream framework. Files und
 ## Automation / Assistant Policy
 - Automated tools and the assistant must not propose, create, or modify files inside `Sharky/` unless a file-by-file authorization is granted.
 - If a suggested fix appears to require changes under `Sharky/`, the assistant will ask for explicit approval and list the exact files.
+- Read `PROJECT_CANON.md` before changing 12-worker mining or worker-role logic.
+- Treat confirmed worker/mineral invariants in `PROJECT_CANON.md` as unchangeable unless the owner explicitly revises them.
+- Do not infer worker roles from screen direction, nearest-worker distance alone, or W-number order.
+- Discuss any unresolved assignment rule before implementing it; do not fill gaps by guessing.
 
 ## Recommended Local Safeguards
 1. Work in a custom branch:

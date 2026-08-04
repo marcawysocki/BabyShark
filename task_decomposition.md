@@ -1,9 +1,8 @@
 ### TASK DECOMPOSITION
 
-To fix the worker mining assignment bug, I need to analyze and modify the following components:
-
-1. **WorkerLabelService** - Ensure proper label initialization and maintenance
-2. **BabySharkMiningManager** - Fix the mining assignment logic that may be targeting enemy bases
-3. **InitialMapData** - Verify proper data structure population for worker assignments
-4. **CrosshairService** - Ensure COM visualization doesn't interfere with mining logic
+1. **Namespace Standardization**: Convert all KimiK3.md references from BabyShark to BabySharkBot namespace
+2. **Directory Structure Mapping**: Create missing Workers/ and ColorTeams/ directories under BabySharkBot/
+3. **WorkerLabelService Implementation**: Extract standalone WorkerLabelService from BaseDtos.cs with int-based API for compatibility
+4. **GreedyChainColorTeamAssignment Creation**: Implement new color team assignment logic under BabySharkBot/ColorTeams/
+5. **Mining Assignment Fix**: Investigate and patch OngoingMapData.ResolveTeamAssignments() to prevent enemy base targeting
 
