@@ -18,7 +18,7 @@ namespace BabySharkBot.Builds
     {
         private readonly DroneMorphService _droneMorph;
         private readonly ExtractorTrickService _extractorTrick;
-        private const int DesiredDrones = 16;
+        private const int DesiredDrones = 14;
         
         private readonly Sharky.Builds.MacroServices.BuildingRequestCancellingService _buildingRequestCancellingService;
 

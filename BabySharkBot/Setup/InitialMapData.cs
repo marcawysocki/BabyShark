@@ -578,14 +578,16 @@ namespace BabySharkBot.Setup
                                         multiStartingUnits[0].AddRange(workerEntries);
                                     }
 
-                                    foreach (var workerEntry in workerEntries)
-                                    {
-                                        if (workerEntry?.Label == "W4")
-                                        {
-                                            w4PositionByStart[0] = workerEntry.Position;
-                                            break;
-                                        }
-                                    }
+                                     foreach (var workerEntry in workerEntries)
+                                     {
+                                         var anchorLabel = workerList.Count == 8 ? "W3" : "W4";
+                                         if (workerEntry?.Label == anchorLabel)
+                                         {
+                                             w4PositionByStart[0] = workerEntry.Position;
+                                             Console.WriteLine($"InitialMapData: Start[0] anchor {anchorLabel} found at ({workerEntry.Position.X:F2},{workerEntry.Position.Y:F2})");
+                                             break;
+                                         }
+                                     }
 
                                     Console.WriteLine($"InitialMapData: Start[0] built worker chain with {workerEntries.Count} entries");
                                 }
@@ -1075,26 +1077,18 @@ namespace BabySharkBot.Setup
                             var workersForStart = multiStartingUnits[si];
                             var workerCount = workersForStart.Count;
 
-                            // For an 8 worker start W3 needs to be the Anchor point instead of W4/W12 for determing M[7]/M[8]
-                            if (workerCount == 8)
+                            // Use dynamic anchor logic based on worker count: W3 for 8-workers, W4 for 12-workers
+                            var anchorLabel = workerCount == 8 ? "W3" : "W4";
+                            var anchorWorker = workersForStart.FirstOrDefault(w => w.Label == anchorLabel);
+                            if (anchorWorker != null)
                             {
-                                var w3 = workersForStart.FirstOrDefault(w => w.Label == "W3");
-                                if (w3 != null)
-                                {
-                                    anchorPosition = w3.Position;
-                                    Console.WriteLine($"InitialMapData: Start[{si}] using W3 as greedy anchor (8-worker start) at ({anchorPosition.X:F2},{anchorPosition.Y:F2})");
-                                }
-                                else
-                                {
-                                    anchorPosition = workersForStart[0].Position;
-                                }
+                                anchorPosition = anchorWorker.Position;
+                                Console.WriteLine($"InitialMapData: Start[{si}] using {anchorLabel} as greedy anchor at ({anchorPosition.X:F2},{anchorPosition.Y:F2})");
                             }
                             else
                             {
-                                // workersForStart[0] is the worker furthest from COM (W12).
-                                // This ensures the mineral greedy chain (M8..M1) starts from the W12 side.
                                 anchorPosition = workersForStart[0].Position;
-                                Console.WriteLine($"InitialMapData: Start[{si}] using W12 (first in list) as greedy anchor at ({anchorPosition.X:F2},{anchorPosition.Y:F2})");
+                                Console.WriteLine($"InitialMapData: Start[{si}] {anchorLabel} not found; fallback to {workersForStart[0].Label} as greedy anchor");
                             }
                         }
 
@@ -1135,23 +1129,24 @@ namespace BabySharkBot.Setup
                 {
                     var orderedList = new List<OrderedVespene>();
 
-                    // Use the W4 position saved when W4 was labeled above.
+                    // Use the anchor position saved when workers were labeled above.
                     Vector2Dto w4Position = null;
+                    var anchorLabel = workerList.Count == 8 ? "W3" : "W4";
                     if (w4PositionByStart.TryGetValue(si, out var savedW4Position))
                     {
                         w4Position = savedW4Position;
-                        Console.WriteLine($"InitialMapData: Start[{si}] saved W4 position found at ({w4Position.X:F2},{w4Position.Y:F2})");
+                        Console.WriteLine($"InitialMapData: Start[{si}] saved anchor {anchorLabel} position found at ({w4Position.X:F2},{w4Position.Y:F2})");
                     }
-                    else if (multiStartingUnits.Count > si && multiStartingUnits[si].Any(w => w.Label == "W3"))
+                    else if (multiStartingUnits.Count > si && multiStartingUnits[si].Any(w => w.Label == anchorLabel))
                     {
-                        w4Position = multiStartingUnits[si].First(w => w.Label == "W3").Position;
-                        Console.WriteLine($"InitialMapData: Start[{si}] using W3 as vespene anchor (8-worker start)");
+                        w4Position = multiStartingUnits[si].First(w => w.Label == anchorLabel).Position;
+                        Console.WriteLine($"InitialMapData: Start[{si}] using {anchorLabel} as vespene anchor");
                     }
                     else if (multiStartingUnits.Count > si && multiStartingUnits[si].Count > 0)
                     {
-                        // Fallback to furthest worker if W4/W3 not found
+                        // Fallback to furthest worker if anchor not found
                         w4Position = multiStartingUnits[si][0].Position;
-                        Console.WriteLine($"InitialMapData: Start[{si}] fallback using W8/W12 as vespene anchor");
+                        Console.WriteLine($"InitialMapData: Start[{si}] fallback using W{workerList.Count} as vespene anchor");
                     }
 
                     // Get vespenes for this start

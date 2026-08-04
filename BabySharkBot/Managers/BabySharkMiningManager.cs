@@ -940,7 +940,7 @@ namespace BabySharkBot.Managers
         private void PrintTwelveDroneMilestone(ResponseObservation observation)
         {
             if (_printedTwelveDroneMilestone || observation?.Observation?.RawData?.Units == null) return;
-            if (observation.Observation.RawData.Units.Count(u => u != null && u.Alliance == Alliance.Self && u.UnitType == (uint)UnitTypes.ZERG_DRONE) >= 12)
+            if (observation.Observation.RawData.Units.Count(u => u != null && u.Alliance == Alliance.Self && u.UnitType == (uint)UnitTypes.ZERG_DRONE && u.BuildProgress >= 1.0f) >= 12)
             {
                 _printedTwelveDroneMilestone = true;
                 Console.WriteLine($"BabySharkMiningManager: 12-drone milestone reached at frame {_currentFrame}");

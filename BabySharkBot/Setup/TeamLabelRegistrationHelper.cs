@@ -213,30 +213,29 @@ namespace BabySharkBot.Setup
 
             Console.WriteLine($"TeamLabelRegistrationHelper: Building layouts for {workers?.Count ?? 0} workers and {minerals?.Count ?? 0} minerals.");
 
-            // If we have a full 12-worker spawn, use the legacy 3-worker-per-team labels.
+            // If we have a full 12-worker spawn, use the correct mapping from architecture docs:
             if (workers != null && workers.Count == 12)
             {
-                // Explicit mapping requested by user:
-                // Team 1: M[1], M[2] (Indices 7, 6) -> W2, W3, W4
-                // Team 2: M[3], M[4] (Indices 5, 4) -> W1, W5, W6
-                // Team 3: M[6], M[5] (Indices 2, 3) -> W12, W7, W8
-                // Team 4: M[8], M[7] (Indices 0, 1) -> W9, W10, W11
-                AddTeamIfPossible(teams, minerals, workers, 7, 6, new[] { "W2", "W3", "W4" }, 1);
-                AddTeamIfPossible(teams, minerals, workers, 5, 4, new[] { "W1", "W5", "W6" }, 2);
-                AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W12", "W7", "W8" }, 3);
-                AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W9", "W10", "W11" }, 4);
+                // Team 1: Y (M1, M2) -> W9, W10, W11
+                // Team 2: B (M3, M4) -> W7, W8, W12
+                // Team 3: S (M5, M6) -> W5, W6, W1
+                // Team 4: T (M7, M8) -> W2, W3, W4
+                AddTeamIfPossible(teams, minerals, workers, 7, 6, new[] { "W9", "W10", "W11" }, 1);
+                AddTeamIfPossible(teams, minerals, workers, 5, 4, new[] { "W7", "W8", "W12" }, 2);
+                AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W1" }, 3);
+                AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W2", "W3", "W4" }, 4);
             }
             else
             {
-                // For non-12 worker spawns (e.g., 8 workers):
-                // Team 1: M[1], M[2] (Indices 7, 6) -> W1, W2
-                // Team 2: M[3], M[4] (Indices 5, 4) -> W3, W4
-                // Team 3: M[6], M[5] (Indices 2, 3) -> W5, W6
-                // Team 4: M[8], M[7] (Indices 0, 1) -> W7, W8
-                AddTeamIfPossible(teams, minerals, workers, 7, 6, new[] { "W1", "W2" }, 1);
-                AddTeamIfPossible(teams, minerals, workers, 5, 4, new[] { "W3", "W4" }, 2);
-                AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6" }, 3);
-                AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W7", "W8" }, 4);
+                // For 8-worker starts, use the corresponding 2-worker-per-team mapping:
+                // Team 1: O (M1, M2) -> W7, W8
+                // Team 2: R (M3, M4) -> W5, W6
+                // Team 3: P (M5, M6) -> W3, W4
+                // Team 4: G (M7, M8) -> W1, W2
+                AddTeamIfPossible(teams, minerals, workers, 7, 6, new[] { "W7", "W8" }, 1);
+                AddTeamIfPossible(teams, minerals, workers, 5, 4, new[] { "W5", "W6" }, 2);
+                AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W3", "W4" }, 3);
+                AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W1", "W2" }, 4);
             }
 
 
