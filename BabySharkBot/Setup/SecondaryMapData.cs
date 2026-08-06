@@ -36,10 +36,7 @@ namespace BabySharkBot.Setup
             ResponseData data,
             ResponseObservation observation,
             int startIndex,
-            WorkerLabelService? workerLabelService = null,
             CrosshairService? crosshairService = null,
-            MineralLabelService? mineralLabelService = null,
-            VespeneLabelService? vespeneLabelService = null,
             ExpansionCOMService? expansionCOMService = null,
             ExpansionPointService? expansionPointService = null,
             ExpansionPointDrawService? expansionPointDrawService = null,
@@ -47,7 +44,10 @@ namespace BabySharkBot.Setup
             Sharky.Pathing.MapDataService? mapDataService = null,
             MawBaseLocationData? existingMapData = null)
         {
-            Console.WriteLine("SecondaryMapData: processing new spawn on a known map");
+            var snapshot = Globals.CurrentObservation;
+            if (snapshot == null) return Globals.CurrentMapData ?? new MawBaseLocationData();
+
+            Console.WriteLine("SecondaryMapData: processing new spawn from snapshot");
 
             var mapData = Globals.CurrentMapData;
             if (mapData == null)
@@ -61,138 +61,12 @@ namespace BabySharkBot.Setup
                 return mapData;
             }
 
-            var startKey = $"start-{startIndex}";
+            // Sync Near/Far flags from map data to settings
+            if (mapData.M1IsFar != null && startIndex < mapData.M1IsFar.Length) Settings.M1IsFar = mapData.M1IsFar;
+            if (mapData.M8IsFar != null && startIndex < mapData.M8IsFar.Length) Settings.M8IsFar = mapData.M8IsFar;
 
-            var selfUnits = observation?.Observation?.RawData?.Units?
-                .Where(u => u != null && u.Alliance == Alliance.Self)
-                .ToList() ?? new List<Unit>();
-
-            var workers = selfUnits
-                .Where(u => u.UnitType == (uint)UnitTypes.ZERG_DRONE || u.UnitType == (uint)UnitTypes.TERRAN_SCV || u.UnitType == (uint)UnitTypes.PROTOSS_PROBE)
-                .OrderByDescending(u => u.Tag)
-                .ToList();
-
-            var workerCount = workers.Count;
-            Settings.WorkerCount = workerCount;
-
-            var workerEntries = WorkerLabelChainHelper.BuildWorkersInAW12ThroughW1Order(workers, ResolveSpawnCenter(mapData, startIndex), workerLabelService);
-            if (workerEntries.Count > 0)
-            {
-                Console.WriteLine($"SecondaryMapData: completed W12-through-W1 worker ordering for start[{startIndex}] with {workerEntries.Count} workers");
-            }
-
-            var orderedMinerals = mapData.OrderedMainMinerals.Count > startIndex
-                ? mapData.OrderedMainMinerals[startIndex]
-                : new List<OrderedMineral>();
-
-            var orderedVespenes = mapData.OrderedMainVespene.Count > startIndex
-                ? mapData.OrderedMainVespene[startIndex]
-                : new List<OrderedVespene>();
-
-            bool baseHasBeenPlayed = false;
-            if (workerCount == 8)
-            {
-                baseHasBeenPlayed = mapData.BaseHasBeenPlayed8 != null && startIndex < mapData.BaseHasBeenPlayed8.Length && mapData.BaseHasBeenPlayed8[startIndex];
-            }
-            else if (workerCount == 12)
-            {
-                baseHasBeenPlayed = mapData.BaseHasBeenPlayed12 != null && startIndex < mapData.BaseHasBeenPlayed12.Length && mapData.BaseHasBeenPlayed12[startIndex];
-            }
-
-            if (baseHasBeenPlayed)
-            {
-                Settings.CurrentBaseHasBeenPlayed = true;
-                if (workerCount == 12)
-                {
-                    if (mapData.M1IsFar != null && startIndex < mapData.M1IsFar.Length)
-                    {
-                        Settings.M1IsFar = mapData.M1IsFar;
-                    }
-
-                    if (mapData.M8IsFar != null && startIndex < mapData.M8IsFar.Length)
-                    {
-                        Settings.M8IsFar = mapData.M8IsFar;
-                    }
-                }
-            }
-
-            if (!mapData.AssignmentsByWorkerCount.TryGetValue(workerCount, out var assignmentsByStart)
-                || assignmentsByStart == null)
-            {
-                assignmentsByStart = new List<List<TeamPatchAssignmentDto>>();
-                mapData.AssignmentsByWorkerCount[workerCount] = assignmentsByStart;
-            }
-
-            var teamAssignments = new List<TeamPatchAssignmentDto>();
-            if (assignmentsByStart.Count > startIndex && assignmentsByStart[startIndex] != null)
-            {
-                teamAssignments = assignmentsByStart[startIndex];
-            }
-
-            _secondarySpawnData[startKey] = new SecondarySpawnData
-            {
-                Workers = workerEntries,
-                OrderedMinerals = orderedMinerals,
-                OrderedVespenes = orderedVespenes,
-                TeamAssignments = teamAssignments
-            };
-
-            if (!mapData.StartingUnitsByWorkerCount.TryGetValue(workerCount, out var startingUnitsByStart)
-                || startingUnitsByStart == null)
-            {
-                startingUnitsByStart = new List<List<WorkerEntryDto>>();
-                mapData.StartingUnitsByWorkerCount[workerCount] = startingUnitsByStart;
-            }
-            if (startingUnitsByStart.Count <= startIndex)
-            {
-                startingUnitsByStart.AddRange(Enumerable.Repeat(new List<WorkerEntryDto>(), startIndex - startingUnitsByStart.Count + 1));
-            }
-
-            if (mapData.SecondaryStartingUnits.Count <= startIndex)
-            {
-                mapData.SecondaryStartingUnits.AddRange(Enumerable.Repeat(new List<WorkerEntryDto>(), startIndex - mapData.SecondaryStartingUnits.Count + 1));
-            }
-            if (mapData.SecondaryOrderedMainMinerals.Count <= startIndex)
-            {
-                mapData.SecondaryOrderedMainMinerals.AddRange(Enumerable.Repeat(new List<OrderedMineral>(), startIndex - mapData.SecondaryOrderedMainMinerals.Count + 1));
-            }
-            if (mapData.SecondaryMineralCenterOfMass.Count <= startIndex)
-            {
-                mapData.SecondaryMineralCenterOfMass.AddRange(Enumerable.Repeat(new Vector2Dto(), startIndex - mapData.SecondaryMineralCenterOfMass.Count + 1));
-            }
-            if (mapData.SecondaryTeamPatchAssignments.Count <= startIndex)
-            {
-                mapData.SecondaryTeamPatchAssignments.AddRange(Enumerable.Repeat(new List<TeamPatchAssignmentDto>(), startIndex - mapData.SecondaryTeamPatchAssignments.Count + 1));
-            }
-
-            startingUnitsByStart[startIndex] = workerEntries;
-            mapData.SecondaryStartingUnits[startIndex] = workerEntries;
-            if (mapData.StartingUnits.Count <= startIndex)
-            {
-                mapData.StartingUnits.AddRange(Enumerable.Repeat(new List<WorkerEntryDto>(), startIndex - mapData.StartingUnits.Count + 1));
-            }
-            mapData.StartingUnits[startIndex] = workerEntries;
-            mapData.SecondaryOrderedMainMinerals[startIndex] = orderedMinerals;
-            mapData.SecondaryMineralCenterOfMass[startIndex] = mapData.MineralCenterOfMass.Count > startIndex ? mapData.MineralCenterOfMass[startIndex] : new Vector2Dto();
-            mapData.SecondaryTeamPatchAssignments[startIndex] = teamAssignments;
-
-            if (!mapData.AssignmentFlagsByStart.TryGetValue(startIndex, out var flags))
-            {
-                flags = new Dictionary<string, bool>();
-                mapData.AssignmentFlagsByStart[startIndex] = flags;
-            }
-
-            var teamAssignmentsReady = flags.TryGetValue("TeamAssignmentsReady", out var ready) && ready;
-            if (!teamAssignmentsReady || teamAssignments == null || teamAssignments.Count == 0)
-            {
-                TeamLabelRegistrationHelper.EnsureTeamLabelsForStart(mapData, startIndex, orderedMinerals, workerEntries, mapData.SecondaryMineralCenterOfMass[startIndex], workerLabelService, assignmentsByStart);
-                teamAssignments = assignmentsByStart[startIndex];
-                mapData.SecondaryTeamPatchAssignments[startIndex] = teamAssignments;
-            }
-
-            ApplyMineralLabels(orderedMinerals, mineralLabelService);
-            ApplyVespeneLabels(orderedVespenes, vespeneLabelService);
-            MapLabelRegistrationHelper.RegisterLabels(mapData, startIndex, mineralLabelService, vespeneLabelService, null);
+            // Labelling and chain establishment is now owned by chrisCrossAppleSause on Frame Zero
+            // using the ObservationManager snapshot.
 
             return mapData;
         }

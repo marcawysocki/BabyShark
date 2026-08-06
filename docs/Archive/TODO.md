@@ -23,31 +23,26 @@ Add HarvestPoint and DropOffPoint calculations to mineral and vespene data struc
 **Tasks (In Order)**
 
 1. **Update Data Structures**
-   - [ ] Add `HarvestPoint: Point` to `OrderedMineral` class (BaseDtos.cs)
-   - [ ] Add `DropOffPoint: Point` to `OrderedMineral` class (BaseDtos.cs)
-   - [ ] Add `HarvestPoint: Point` to `OrderedVespene` class (BaseDtos.cs)
-   - [ ] Add `DropOffPoint: Point` to `OrderedVespene` class (BaseDtos.cs)
+   - [x] Add `HarvestPoint: Point` to `OrderedMineral` class (BaseDtos.cs)
+   - [x] Add `DropOffPoint: Point` to `OrderedMineral` class (BaseDtos.cs)
+   - [x] Add `HarvestPoint: Point` to `OrderedVespene` class (BaseDtos.cs)
+   - [x] Add `DropOffPoint: Point` to `OrderedVespene` class (BaseDtos.cs)
 
 2. **Calculate Harvest/Dropoff Points - MINERALS**
-   - [ ] In `InitialMapData.cs` RegisterMineralLabels() method
-   - [ ] For each ordered mineral, calculate:
-     - **DropOffPoint**: 2 units from base, along vector from base→mineral
-       - Formula: `basePos + 2 * normalize(mineralPos - basePos)`
-     - **HarvestPoint**: 0.5 units from mineral, along vector from mineral→base
-       - Formula: `mineralPos + 0.5 * normalize(basePos - mineralPos)`
-   - [ ] Set these in OrderedMineral before storing in service
+   - [x] In `InitialMapData.cs` RegisterMineralLabels() method
+   - [x] For each ordered mineral, calculate:
+     - **DropOffPoint**: 2.75 units from base (hatchery radius)
+     - **HarvestPoint**: 1 unit from mineral (mineral radius)
+   - [x] Set these in OrderedMineral before storing in service
 
 3. **Calculate Harvest/Dropoff Points - VESPENE**
-   - [ ] In `InitialMapData.cs` RegisterVespeneLabels() method
-   - [ ] Apply same formulas to vespene geysers
-   - [ ] Set these in OrderedVespene before storing in service
+   - [x] In `InitialMapData.cs` RegisterVespeneLabels() method
+   - [x] Apply same formulas to vespene geysers
+   - [x] Set these in OrderedVespene before storing in service
 
 4. **Serialize to Map Data**
-   - [ ] Update `MapDataSnapshot` (BaseDtos.cs) to store per-mineral harvest/dropoff data
-     - Add: `Dictionary<int, (Point HarvestPoint, Point DropOffPoint)> MineralPoints`
-     - OR: Extend existing MineralPatches to include these values
-   - [ ] Update `MapDataSnapshot` to store per-vespene harvest/dropoff data
-     - Add: `Dictionary<int, (Point HarvestPoint, Point DropOffPoint)> VespenePoints`
+   - [x] Update `MapDataSnapshot` (BaseDtos.cs) to store per-mineral harvest/dropoff data
+   - [x] Update `MapDataSnapshot` to store per-vespene harvest/dropoff data
 
 5. **Test & Validate**
    - [ ] Verify calculations by logging harvest/dropoff coordinates

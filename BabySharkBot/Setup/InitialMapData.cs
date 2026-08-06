@@ -26,7 +26,7 @@ namespace BabySharkBot.Setup
         private List<List<HarvestReturnCargoPointDto>> _expansionVespeneCargoPoints = new List<List<HarvestReturnCargoPointDto>>();
         private List<List<TeamPatchAssignmentDto>> _teamPatchAssignments = new List<List<TeamPatchAssignmentDto>>();
 
-        public MawBaseLocationData GetNewMiningData(ResponseGameInfo gameInfo, ResponseData data, ResponseObservation observation, Point2D? startLoc = null, WorkerLabelService? workerLabelService = null, CrosshairService? crosshairService = null, MineralLabelService? mineralLabelService = null, VespeneLabelService? vespeneLabelService = null, ExpansionCOMService? expansionCOMService = null, ExpansionPointService? expansionPointService = null, ExpansionPointDrawService? expansionPointDrawService = null, ProvisionalExpansionService? provisionalExpansionService = null, Sharky.Pathing.MapDataService? mapDataService = null)
+        public MawBaseLocationData GetNewMiningData(ResponseGameInfo gameInfo, ResponseData data, ResponseObservation observation, Point2D? startLoc = null, CrosshairService? crosshairService = null, ExpansionCOMService? expansionCOMService = null, ExpansionPointService? expansionPointService = null, ExpansionPointDrawService? expansionPointDrawService = null, ProvisionalExpansionService? provisionalExpansionService = null, Sharky.Pathing.MapDataService? mapDataService = null, WorkerLabelService? workerLabelService = null)
         {
             Console.WriteLine("InitialMapData: GetNewMiningData called");
 
@@ -452,80 +452,7 @@ namespace BabySharkBot.Setup
                             }
                             if (bestIdx >= 0 && bestD <= 9f)
                             {
-                                if (ut == Sharky.UnitTypes.ZERG_HATCHERY)
-                                {
-                                    discoveredStartUnits[bestIdx].Add(unit);
-                                    try
-                                    {
-                                        hatcheryCounters[bestIdx] = hatcheryCounters.GetValueOrDefault(bestIdx) + 1;
-                                        var label = $"H{hatcheryCounters[bestIdx]}";
-                                        if (workerLabelService != null && unit.Tag != 0)
-                                        {
-                                            var existing = workerLabelService.GetLabel(unit.Tag);
-                                            if (string.IsNullOrEmpty(existing))
-                                            {
-                                                workerLabelService.SetLabel(label, unit.Tag);
-                                                Console.WriteLine($"InitialMapData: Created label {label} -> {unit.Tag}");
-                                            }
-                                            else
-                                            {
-                                                Console.WriteLine($"InitialMapData: Existing label for tag {unit.Tag} = {existing}");
-                                            }
-                                        }
-                                    }
-                                    catch { }
-                                }
-                                else if (ut == Sharky.UnitTypes.ZERG_OVERLORD)
-                                {
-                                    discoveredStartUnits[bestIdx].Add(unit);
-                                    try
-                                    {
-                                        overlordCounters[bestIdx] = overlordCounters.GetValueOrDefault(bestIdx) + 1;
-                                        var label = $"OV{overlordCounters[bestIdx]}";
-                                        if (workerLabelService != null && unit.Tag != 0)
-                                        {
-                                            var existing = workerLabelService.GetLabel(unit.Tag);
-                                            if (string.IsNullOrEmpty(existing))
-                                            {
-                                                workerLabelService.SetLabel(label, unit.Tag);
-                                                Console.WriteLine($"InitialMapData: Created label {label} -> {unit.Tag}");
-                                            }
-                                            else
-                                            {
-                                                Console.WriteLine($"InitialMapData: Existing label for tag {unit.Tag} = {existing}");
-                                            }
-                                        }
-                                    }
-                                    catch { }
-                                }
-                                else if (ut == Sharky.UnitTypes.ZERG_LARVA)
-                                {
-                                    discoveredStartUnits[bestIdx].Add(unit);
-                                    try
-                                    {
-                                        larvaCounters[bestIdx] = larvaCounters.GetValueOrDefault(bestIdx) + 1;
-                                        var label = $"L{larvaCounters[bestIdx]}";
-                                        if (workerLabelService != null && unit.Tag != 0)
-                                        {
-                                            var existing = workerLabelService.GetLabel(unit.Tag);
-                                            if (string.IsNullOrEmpty(existing))
-                                            {
-                                                workerLabelService.SetLabel(label, unit.Tag);
-                                                Console.WriteLine($"InitialMapData: Created label {label} -> {unit.Tag}");
-                                            }
-                                            else
-                                            {
-                                                Console.WriteLine($"InitialMapData: Existing label for tag {unit.Tag} = {existing}");
-                                            }
-                                        }
-                                    }
-                                    catch { }
-                                }
-                                else if (ut == Sharky.UnitTypes.ZERG_DRONE || ut == Sharky.UnitTypes.TERRAN_SCV || ut == Sharky.UnitTypes.PROTOSS_PROBE)
-                                {
-                                    // Worker: collect position only; labeling deferred until greedy chain
-                                    discoveredStartUnits[bestIdx].Add(unit);
-                                }
+                                discoveredStartUnits[bestIdx].Add(unit);
                             }
                         }
                     }
@@ -556,48 +483,8 @@ namespace BabySharkBot.Setup
 
                         Console.WriteLine($"InitialMapData: Start[{si}] minerals COM=({avgX:F2},{avgY:F2}) nodes={nodeCountByStart[si]} avgDistance={avgDistance:F2}");
 
-                        // Build the worker chain data for Start[0] immediately after its COM is calculated
-                        if (si == 0)
-                        {
-                            try
-                            {
-                                Vector2Dto mineralCenterOfMass = comVector;
-
-                                if (mineralCenterOfMass == null)
-                                {
-                                    Console.WriteLine("InitialMapData: MineralCenterOfMass not available — skipping worker greedy labeling.");
-                                }
-                                else if (workerList != null && workerList.Count > 0)
-                                {
-                                    var workerEntries = WorkerLabelChainHelper.BuildWorkersInAW12ThroughW1Order(
-                                        workerList,
-                                        mineralCenterOfMass,
-                                        workerLabelService);
-
-                                    if (multiStartingUnits.Count > 0)
-                                    {
-                                        multiStartingUnits[0].AddRange(workerEntries);
-                                    }
-
-                                     foreach (var workerEntry in workerEntries)
-                                     {
-                                         var anchorLabel = workerList.Count == 8 ? "W3" : "W4";
-                                         if (workerEntry?.Label == anchorLabel)
-                                         {
-                                             w4PositionByStart[0] = workerEntry.Position;
-                                             Console.WriteLine($"InitialMapData: Start[0] anchor {anchorLabel} found at ({workerEntry.Position.X:F2},{workerEntry.Position.Y:F2})");
-                                             break;
-                                         }
-                                     }
-
-                                    Console.WriteLine($"InitialMapData: Start[0] built worker chain with {workerEntries.Count} entries");
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"InitialMapData: Error building worker chain for Start[0]: {ex.Message}");
-                            }
-                        }
+                        // Worker Chain building removed from InitialMapData.
+                        // CCA (chrisCrossAppleSause) now owns W1-W12/W8 chain establishment on Frame Zero.
 
                         // Classify minerals into near/far lists based on avgDistance
                         // This happens after worker labeling so that worker positions are established first
@@ -1019,6 +906,7 @@ namespace BabySharkBot.Setup
                 for (int si = 0; si < numStartLocations; si++)
                 {
                     var orderedList = new List<OrderedMineral>();
+                    var townhallPosition = startingTownHalls[si];
 
                     // Get W1 position (furthest worker from COM) for this start
                     Vector2Dto w1Position = null;
@@ -1041,9 +929,6 @@ namespace BabySharkBot.Setup
 
                     if (w1Position != null && minerals != null && minerals.Count > 0)
                     {
-                        // Get the starting townhall position for this start location
-                        var townhallPosition = startingTownHalls[si];
-
                         // Get resource amounts for this start's minerals
                         List<uint> resources = null;
                         if (multiMineralResources.Count > si)
@@ -1129,6 +1014,7 @@ namespace BabySharkBot.Setup
                 for (int si = 0; si < numStartLocations; si++)
                 {
                     var orderedList = new List<OrderedVespene>();
+                    var townhallPosition = startingTownHalls[si];
 
                     // Use the anchor position saved when workers were labeled above.
                     Vector2Dto w4Position = null;
@@ -1181,9 +1067,12 @@ namespace BabySharkBot.Setup
 
                         if (closest != null)
                         {
+                            var linePoints = townhallPosition != null ? BuildMineralLinePoints(closest.Vespene, townhallPosition) : (null, null, null, null);
                             orderedList.Add(new OrderedVespene
                             {
                                 Position = closest.Vespene,
+                                HarvestPoint = linePoints.Item1,
+                                ReturnPoint = linePoints.Item3,
                                 Index = 1,
                                 DistanceToW4 = closest.Distance,
                                 Label = "V1"
@@ -1193,9 +1082,12 @@ namespace BabySharkBot.Setup
 
                         if (farthest != null && farthest.Index != closest?.Index)
                         {
+                            var linePoints = townhallPosition != null ? BuildMineralLinePoints(farthest.Vespene, townhallPosition) : (null, null, null, null);
                             orderedList.Add(new OrderedVespene
                             {
                                 Position = farthest.Vespene,
+                                HarvestPoint = linePoints.Item1,
+                                ReturnPoint = linePoints.Item3,
                                 Index = 2,
                                 DistanceToW4 = farthest.Distance,
                                 Label = "V2"
@@ -1286,16 +1178,6 @@ namespace BabySharkBot.Setup
                 Settings.CurrentBaseHasBeenPlayed = false;
 
                 Console.WriteLine($"InitialMapData: Populated multi-location data - {numStartLocations} start locations, {tempBaseDto.ExpansionTownhalls.Count} expansions");
-                
-                if (mineralLabelService != null)
-                {
-                    RegisterMineralLabels(orderedMainMinerals, mineralLabelService, tempBaseDto);
-                }
-
-                if (vespeneLabelService != null)
-                {
-                    RegisterVespeneLabels(orderedMainVespenes, vespeneLabelService, tempBaseDto);
-                }
             }
             catch (Exception ex)
             {
@@ -2414,7 +2296,7 @@ namespace BabySharkBot.Setup
                 Console.WriteLine($"InitialMapData.ClassifyMineralSizes: Classified {orderedMinerals.Count} minerals: {largeCount} Large ({highResourceValue} resources), {normalCount} Normal ({lowResourceValue} resources)");
                 foreach (var ord in orderedMinerals)
                 {
-                    Console.WriteLine($"  M[{ord.Index}] Resources={ord.Resources} → {(ord.Size == MineralSize.Large ? "Large" : "Normal")} (IsNear={ord.IsNear})");
+                    Console.WriteLine($"  M[{ord.Index}] Resources={ord.Resources} -> {(ord.Size == MineralSize.Large ? "Large" : "Normal")} (IsNear={ord.IsNear})");
                 }
             }
             catch (Exception ex)

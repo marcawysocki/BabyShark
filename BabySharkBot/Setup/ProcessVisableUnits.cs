@@ -38,17 +38,38 @@ namespace BabySharkBot.Setup
             VespeneLabelService? vespeneLabelService = null,
             SpawningPoolPlacementService? spawningPoolPlacementService = null)
         {
-            if (observation == null) return new List<WorkerEntryDto>();
-            var frame = observation?.Observation?.GameLoop ?? 0;
+            if (observation == null || Globals.CurrentObservation == null) return new List<WorkerEntryDto>();
 
-            // Heavy path: only during the very first frames or when the base setup hasn't finished yet.
-            if (frame <= 1 || !Settings.CurrentBaseHasBeenPlayed)
+            // The new refactor path: simply extract self workers from the centralized snapshot.
+            // ObservationManager already classified them.
+            var workerEntries = new List<WorkerEntryDto>();
+            var snapshot = Globals.CurrentObservation;
+
+            foreach (var tag in snapshot.AvailableWorkers)
             {
-                return InitializeVisibleUnits(observation, workerLabelService, mineralLabelService, vespeneLabelService, spawningPoolPlacementService);
+                if (snapshot.SelfUnits.TryGetValue(tag, out var entry))
+                {
+                    // Preserve existing labels from the service if available
+                    var label = workerLabelService?.GetLabel(tag) ?? string.Empty;
+                    entry.Label = label;
+                    entry.FinalLabel = label;
+                    workerEntries.Add(entry);
+                }
             }
 
-            // Steady-state lightweight path.
-            return ExtractWorkerEntries(observation, workerLabelService);
+            // Also include workers already assigned (in Commanders)
+            foreach (var kvp in snapshot.SelfUnits)
+            {
+                if (!snapshot.AvailableWorkers.Contains(kvp.Key))
+                {
+                    var label = workerLabelService?.GetLabel(kvp.Key) ?? string.Empty;
+                    kvp.Value.Label = label;
+                    kvp.Value.FinalLabel = label;
+                    workerEntries.Add(kvp.Value);
+                }
+            }
+
+            return workerEntries;
         }
 
         public static List<WorkerEntryDto> ProcessVisibleUnits(
@@ -56,319 +77,6 @@ namespace BabySharkBot.Setup
             WorkerLabelService? workerLabelService)
         {
             return ProcessVisibleUnits(observation, workerLabelService, null, null, null);
-        }
-
-        /// <summary>
-        /// One-time heavy initialization. Mirrors the original full-frame logic:
-        /// discovers minerals/vespenes, assigns W-chain and team labels, registers
-        /// hatchery/overlord/larva labels, and runs team-label registration.
-        /// </summary>
-        private static List<WorkerEntryDto> InitializeVisibleUnits(
-            ResponseObservation observation,
-            WorkerLabelService? workerLabelService,
-            MineralLabelService? mineralLabelService,
-            VespeneLabelService? vespeneLabelService,
-            SpawningPoolPlacementService? spawningPoolPlacementService)
-        {
-            var workerEntries = new List<WorkerEntryDto>();
-            var visibleMinerals = new List<Unit>();
-            var visibleVespene = new List<Unit>();
-            var larvaLabelIndex = 13;
-
-            if (observation?.Observation?.RawData?.Units == null) return workerEntries;
-
-            var baseHasBeenPlayed = Settings.WorkerCount == 8
-                ? Settings.CurrentBaseHasBeenPlayed8
-                : (Settings.WorkerCount == 12 ? Settings.CurrentBaseHasBeenPlayed12 : Settings.CurrentBaseHasBeenPlayed);
-
-            foreach (var unit in observation.Observation.RawData.Units)
-            {
-                try
-                {
-                    if (unit?.Pos == null || unit.DisplayType != DisplayType.Visible)
-                    {
-                        continue;
-                    }
-
-                    var ut = (UnitTypes)unit.UnitType;
-
-                    if (unit.Alliance == Alliance.Self)
-                    {
-                        if (ut == UnitTypes.ZERG_OVERLORD)
-                        {
-                            if (workerLabelService != null)
-                            {
-                                workerLabelService.SetLabel("OV1", unit.Tag);
-                            }
-                        }
-                        else if (ut == UnitTypes.ZERG_LARVA)
-                        {
-                            if (workerLabelService != null)
-                            {
-                                workerLabelService.SetLabel($"Leo{larvaLabelIndex}", unit.Tag);
-                                larvaLabelIndex++;
-                            }
-                        }
-                        else if (ut == UnitTypes.ZERG_HATCHERY || ut == UnitTypes.TERRAN_COMMANDCENTER || ut == UnitTypes.PROTOSS_NEXUS)
-                        {
-                            if (workerLabelService != null)
-                            {
-                                workerLabelService.SetLabel("H1", unit.Tag);
-                            }
-                        }
-                        else if (ut == UnitTypes.ZERG_DRONE || ut == UnitTypes.TERRAN_SCV || ut == UnitTypes.PROTOSS_PROBE)
-                        {
-                            var label = workerLabelService?.GetLabel(unit.Tag) ?? string.Empty;
-                            workerEntries.Add(new WorkerEntryDto
-                            {
-                                UnitTag = unit.Tag,
-                                Position = new Vector2Dto(unit.Pos.X, unit.Pos.Y, unit.Pos.Z),
-                                UnitType = unit.UnitType,
-                                Label = label,
-                                StartLabel = label,
-                                FinalLabel = label
-                            });
-                        }
-                    }
-                    else if (unit.Alliance == Alliance.Neutral &&
-                             (ut == UnitTypes.NEUTRAL_MINERALFIELD || ut == UnitTypes.NEUTRAL_MINERALFIELD750 || ut == UnitTypes.NEUTRAL_RICHMINERALFIELD || ut == UnitTypes.NEUTRAL_RICHMINERALFIELD750 || ut == UnitTypes.NEUTRAL_PURIFIERMINERALFIELD || ut == UnitTypes.NEUTRAL_PURIFIERMINERALFIELD750 || ut == UnitTypes.NEUTRAL_PURIFIERRICHMINERALFIELD || ut == UnitTypes.NEUTRAL_PURIFIERRICHMINERALFIELD750 || ut == UnitTypes.NEUTRAL_LABMINERALFIELD || ut == UnitTypes.NEUTRAL_LABMINERALFIELD750 || ut == UnitTypes.NEUTRAL_BATTLESTATIONMINERALFIELD || ut == UnitTypes.NEUTRAL_BATTLESTATIONMINERALFIELD750))
-                    {
-                        if (baseHasBeenPlayed)
-                        {
-                            if (mineralLabelService != null && Globals.CurrentMapData != null)
-                            {
-                                var key = $"{unit.Pos.X:F2},{unit.Pos.Y:F2}";
-                                if (Globals.CurrentMapData.MineralFinalLabelsByPosition.TryGetValue(key, out var finalLabel) && !string.IsNullOrWhiteSpace(finalLabel))
-                                {
-                                    var color = GetFinalLabelColor(finalLabel);
-                                    mineralLabelService.SetMineralLabel(finalLabel, new Point
-                                    {
-                                        X = unit.Pos.X,
-                                        Y = unit.Pos.Y,
-                                        Z = unit.Pos.Z + 0.5f
-                                    }, color, unit.Tag);
-                                }
-                            }
-                        }
-                        else
-                        {
-                            visibleMinerals.Add(unit);
-                        }
-                    }
-                    else if (unit.Alliance == Alliance.Neutral &&
-                             (ut == UnitTypes.NEUTRAL_VESPENEGEYSER || ut == UnitTypes.NEUTRAL_SPACEPLATFORMGEYSER || ut == UnitTypes.NEUTRAL_SHAKURASVESPENEGEYSER || ut == UnitTypes.NEUTRAL_RICHVESPENEGEYSER || ut == UnitTypes.NEUTRAL_PURIFIERVESPENEGEYSER || ut == UnitTypes.NEUTRAL_PROTOSSVESPENEGEYSER))
-                    {
-                        if (baseHasBeenPlayed)
-                        {
-                            if (vespeneLabelService != null && Globals.CurrentMapData != null)
-                            {
-                                var key = $"{unit.Pos.X:F2},{unit.Pos.Y:F2}";
-                                if (Globals.CurrentMapData.VespeneFinalLabelsByPosition.TryGetValue(key, out var finalLabel) && !string.IsNullOrWhiteSpace(finalLabel))
-                                {
-                                    vespeneLabelService.SetVespeneLabel(finalLabel, new Point
-                                    {
-                                        X = unit.Pos.X,
-                                        Y = unit.Pos.Y,
-                                        Z = unit.Pos.Z + 1.0f
-                                    }, GetFinalLabelColor(finalLabel));
-                                }
-                            }
-                        }
-                        else
-                        {
-                            visibleVespene.Add(unit);
-                        }
-                    }
-                }
-                catch
-                {
-                }
-            }
-
-            var orderedWorkers = new List<WorkerEntryDto>(workerEntries);
-            if (Globals.CurrentMapData != null && Settings.CurrentSpawnIndex >= 0)
-            {
-                var liveWorkers = observation.Observation.RawData.Units
-                    .Where(unit => unit != null
-                        && unit.Alliance == Alliance.Self
-                        && (unit.UnitType == (uint)UnitTypes.ZERG_DRONE
-                            || unit.UnitType == (uint)UnitTypes.TERRAN_SCV
-                            || unit.UnitType == (uint)UnitTypes.PROTOSS_PROBE))
-                    .ToList();
-                orderedWorkers = WorkerLabelChainHelper.BuildWorkersInAW12ThroughW1Order(
-                    liveWorkers,
-                    Globals.CurrentMapData.MineralCenterOfMass.Count > Settings.CurrentSpawnIndex
-                        ? Globals.CurrentMapData.MineralCenterOfMass[Settings.CurrentSpawnIndex]
-                        : Settings.CurrentSpawnCOM,
-                    workerLabelService);
-                workerEntries = new List<WorkerEntryDto>(orderedWorkers);
-            }
-
-            var labeledCount = orderedWorkers.Count(w => IsValidWorkerLabel(w.Label));
-
-            if (labeledCount == 0 && orderedWorkers.Count > 0)
-            {
-                var workerLabelIndex = orderedWorkers.Count;
-                foreach (var worker in orderedWorkers)
-                {
-                    var label = $"W{workerLabelIndex}";
-                    worker.Label = label;
-                    worker.StartLabel = label;
-                    worker.FinalLabel = label;
-
-                    if (workerLabelService != null)
-                    {
-                        workerLabelService.SetLabel(label, worker.UnitTag);
-                    }
-                    workerLabelIndex--;
-                }
-            }
-            else if (labeledCount < orderedWorkers.Count)
-            {
-                var nextIndex = orderedWorkers.Count + 1;
-                foreach (var worker in orderedWorkers.Where(w => !IsValidWorkerLabel(w.Label)))
-                {
-                    var label = $"W{nextIndex}";
-                    worker.Label = label;
-                    worker.StartLabel = label;
-                    worker.FinalLabel = label;
-                    if (workerLabelService != null) workerLabelService.SetLabel(label, worker.UnitTag);
-                    nextIndex++;
-                }
-            }
-
-            // Phase 2: only on first play, draw minerals first, then pause.
-            if (!Settings.CurrentBaseHasBeenPlayed)
-            {
-                var hasMapData = Globals.CurrentMapData != null;
-                var hasSpawnIndex = Settings.CurrentSpawnIndex >= 0;
-
-                if (hasMapData && hasSpawnIndex)
-                {
-                    var hasMineralData = Globals.CurrentMapData.OrderedMainMinerals.Count > Settings.CurrentSpawnIndex;
-                    var hasWorkerData = Globals.CurrentMapData.StartingUnits.Count > Settings.CurrentSpawnIndex;
-
-                    if (hasMineralData && hasWorkerData)
-                    {
-                        MapLabelRegistrationHelper.RegisterLabels(
-                            Globals.CurrentMapData,
-                            Settings.CurrentSpawnIndex,
-                            mineralLabelService,
-                            vespeneLabelService,
-                            spawningPoolPlacementService);
-
-                        if (!Globals.CurrentMapData.AssignmentsByWorkerCount.TryGetValue(Settings.WorkerCount, out var assignmentsByStart))
-                        {
-                            assignmentsByStart = new List<List<TeamPatchAssignmentDto>>();
-                            Globals.CurrentMapData.AssignmentsByWorkerCount[Settings.WorkerCount] = assignmentsByStart;
-                        }
-
-                        while (assignmentsByStart.Count <= Settings.CurrentSpawnIndex)
-                        {
-                            assignmentsByStart.Add(new List<TeamPatchAssignmentDto>());
-                        }
-
-                        TeamLabelRegistrationHelper.EnsureTeamLabelsForStart(
-                            Globals.CurrentMapData,
-                            Settings.CurrentSpawnIndex,
-                            Globals.CurrentMapData.OrderedMainMinerals[Settings.CurrentSpawnIndex],
-                            workerEntries,
-                            Settings.CurrentSpawnCOM,
-                            workerLabelService,
-                            assignmentsByStart);
-                    }
-                }
-            }
-
-            return orderedWorkers;
-        }
-
-        /// <summary>
-        /// Steady-state lightweight path.
-        /// Only extracts self workers and preserves their existing labels.
-        /// Skips neutral scanning, mineral/vespene re-labeling, and team registration.
-        /// </summary>
-        private static List<WorkerEntryDto> ExtractWorkerEntries(
-            ResponseObservation observation,
-            WorkerLabelService? workerLabelService)
-        {
-            var workerEntries = new List<WorkerEntryDto>();
-            if (observation?.Observation?.RawData?.Units == null) return workerEntries;
-
-            foreach (var unit in observation.Observation.RawData.Units)
-            {
-                try
-                {
-                    if (unit?.Pos == null || unit.DisplayType != DisplayType.Visible || unit.Alliance != Alliance.Self)
-                        continue;
-
-                    var ut = (UnitTypes)unit.UnitType;
-                    if (ut != UnitTypes.ZERG_DRONE && ut != UnitTypes.TERRAN_SCV && ut != UnitTypes.PROTOSS_PROBE)
-                        continue;
-
-                    var label = workerLabelService?.GetLabel(unit.Tag) ?? string.Empty;
-                    workerEntries.Add(new WorkerEntryDto
-                    {
-                        UnitTag = unit.Tag,
-                        Position = new Vector2Dto(unit.Pos.X, unit.Pos.Y, unit.Pos.Z),
-                        UnitType = unit.UnitType,
-                        Label = label,
-                        StartLabel = label,
-                        FinalLabel = label
-                    });
-                }
-                catch
-                {
-                }
-            }
-
-            // Back-fill any newly-spawned workers that don't have a label yet
-            var labeledCount = workerEntries.Count(w => IsValidWorkerLabel(w.Label));
-            if (labeledCount < workerEntries.Count)
-            {
-                var mapData = Globals.CurrentMapData;
-                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                
-                if (mapData != null && startIndex >= 0 && workerLabelService != null)
-                {
-                    // Use dynamic assignment for new workers
-                    var unassignedWorkers = workerEntries.Where(w => !IsValidWorkerLabel(w.Label)).ToList();
-                    int existingWorkerCount = labeledCount;
-
-                    foreach (var worker in unassignedWorkers)
-                    {
-                        var entry = TeamLabelRegistrationHelper.AssignDynamicWorker(
-                            worker.UnitTag,
-                            worker.Position,
-                            existingWorkerCount,
-                            workerLabelService,
-                            mapData,
-                            startIndex);
-                        
-                        worker.Label = entry.Label;
-                        worker.StartLabel = entry.StartLabel;
-                        worker.FinalLabel = entry.FinalLabel;
-                        existingWorkerCount++;
-                    }
-                }
-                else
-                {
-                    // Fallback to simple W-labeling if context is missing
-                    var nextIndex = workerEntries.Count(w => IsValidWorkerLabel(w.Label)) + 1;
-                    foreach (var worker in workerEntries.Where(w => !IsValidWorkerLabel(w.Label)))
-                    {
-                        var label = $"W{nextIndex}";
-                        worker.Label = label;
-                        worker.StartLabel = label;
-                        worker.FinalLabel = label;
-                        if (workerLabelService != null)
-                            workerLabelService.SetLabel(label, worker.UnitTag);
-                        nextIndex++;
-                    }
-                }
-            }
-
-            return workerEntries;
         }
 
         public static List<WorkerEntryDto> ProcessVisibleUnits(

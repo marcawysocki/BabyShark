@@ -49,6 +49,14 @@ namespace BabySharkBot.Setup
         public string Label { get; set; } = string.Empty;
         public string StartLabel { get; set; } = string.Empty;
         public string FinalLabel { get; set; } = string.Empty;
+        public int FirstSeenFrame { get; set; }
+        public Vector2Dto FirstSeenPosition { get; set; } = new Vector2Dto();
+        public bool BecameVisible { get; set; }
+        public bool IsMorphing { get; set; }
+        public bool IsCompleted { get; set; }
+        public bool IsCarrying { get; set; }
+        public bool WasCarrying { get; set; }
+        public bool JustPickedUp { get; set; }
     }
 
     /// <summary>
@@ -211,6 +219,16 @@ namespace BabySharkBot.Setup
         public Vector2Dto Position { get; set; } = new Vector2Dto();
 
         /// <summary>
+        /// Harvest point on the line from geyser to hatchery.
+        /// </summary>
+        public Vector2Dto HarvestPoint { get; set; } = new Vector2Dto();
+
+        /// <summary>
+        /// Return point on the line from geyser to hatchery.
+        /// </summary>
+        public Vector2Dto ReturnPoint { get; set; } = new Vector2Dto();
+
+        /// <summary>
         /// Index in greedy chain: 1-2 (V1-V2)
         /// 1 = closest to W4
         /// 2 = next closest to W4
@@ -228,6 +246,11 @@ namespace BabySharkBot.Setup
         /// Set by InitialMapData based on distance ordering to W4
         /// </summary>
         public string Label { get; set; } = "";
+
+        /// <summary>
+        /// Unit tag from SC2 unit data.
+        /// </summary>
+        public ulong UnitTag { get; set; } = 0;
     }
 
     /// <summary>
@@ -322,6 +345,52 @@ namespace BabySharkBot.Setup
     {
         public List<Vector2Dto> MineralPatches { get; set; } = new List<Vector2Dto>();
         public List<Vector2Dto> VespenePatches { get; set; } = new List<Vector2Dto>();
+    }
+
+    [MemoryPackable]
+    public partial class EnemyUnitObservationDto
+    {
+        public ulong UnitTag { get; set; }
+        public Vector2Dto Position { get; set; } = new();
+        public Vector2Dto LastXY { get; set; } = new();
+        public string Notes { get; set; } = string.Empty;
+        public float DPS { get; set; }
+        public List<string> Spells { get; set; } = new();
+        public List<float> CoolDowns { get; set; } = new();
+    }
+
+    [MemoryPackable]
+    public partial class UnitReadyForLabelingDto
+    {
+        public List<ulong> Overlord { get; set; } = new();
+        public List<ulong> Zergling { get; set; } = new();
+        public List<ulong> Drone { get; set; } = new();
+        public List<ulong> Queen { get; set; } = new();
+        public List<ulong> Other { get; set; } = new();
+
+        public void Clear()
+        {
+            Overlord.Clear();
+            Zergling.Clear();
+            Drone.Clear();
+            Queen.Clear();
+            Other.Clear();
+        }
+    }
+
+    [MemoryPackable]
+    public partial class ObservationSnapshotDto
+    {
+        public int Frame { get; set; }
+        public List<ulong> AvailableWorkers { get; set; } = new();
+        public List<ulong> AvailableLarva { get; set; } = new();
+        public List<ulong> AvailableQueens { get; set; } = new();
+        public List<ulong> AvailableOverlords { get; set; } = new();
+        public UnitReadyForLabelingDto ReadyForLabeling { get; set; } = new();
+        public Dictionary<ulong, EnemyUnitObservationDto> EnemyUnits { get; set; } = new();
+        public Dictionary<ulong, WorkerEntryDto> SelfUnits { get; set; } = new();
+        public Dictionary<ulong, MineralDto> Minerals { get; set; } = new();
+        public Dictionary<ulong, OrderedVespene> Vespene { get; set; } = new();
     }
 
     [MemoryPackable]

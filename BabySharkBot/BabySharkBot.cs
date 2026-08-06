@@ -83,6 +83,14 @@ namespace BabySharkBot
             // Essential services
             DebugService = _defaultBot.DebugService;
 
+            // 1. ObservationManager - Runs first every frame to populate shared DTO state
+            var observationManager = new ObservationManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.BaseData, _defaultBot.MapDataService, _defaultBot.UnitDataService);
+            Managers.Add(observationManager);
+
+            // 2. ScoutingManager - Takes priority for labeling newly discovered units (e.g. Overlords)
+            var scoutingManager = new ScoutingManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData);
+            Managers.Add(scoutingManager);
+
             // Initialize ManagerDebugService with Sharky's debug service and options
             // This allows custom managers to use ManagerDebugService.DrawText() etc.
             ManagerDebugService.Initialize(DebugService, SharkyOptions);
@@ -139,7 +147,7 @@ namespace BabySharkBot
             Managers.Add(babySharkUnitManager);
 
             // Create BabySharkMiningManager with shared CCA service instance
-            _miningManager = new BabySharkMiningManager(workerLabelService, crosshairService, mineralLabelService, vespeneLabelService, expansionCOMService, expansionPointService, expansionPointDrawService, provisionalExpansionService, MineralReturnRateTrackerService, FrameToTimeConverter, mapDataService, SpawningPoolPlacementService, ccaService);
+            _miningManager = new BabySharkMiningManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, workerLabelService, crosshairService, mineralLabelService, vespeneLabelService, expansionCOMService, expansionPointService, expansionPointDrawService, provisionalExpansionService, MineralReturnRateTrackerService, FrameToTimeConverter, mapDataService, SpawningPoolPlacementService, ccaService);
             Console.WriteLine("BabySharkAI: Created BabySharkMiningManager with shared CCA service instance");
             Managers.Add(_miningManager);
 
@@ -281,7 +289,7 @@ namespace BabySharkBot
                    // System.Diagnostics.Debugger.Break();
                     var initialMapData = new InitialMapData();
 
-                    var mapData = initialMapData.GetNewMiningData(gameInfo, data, observation, null, _miningManager.WorkerLabelService, _miningManager.CrosshairService, _miningManager.MineralLabelService, _miningManager.VespeneLabelService, ExpansionCOMService, _miningManager.ExpansionPointService, _miningManager.ExpansionPointDrawService, ProvisionalExpansionService, _defaultBot.MapDataService);
+                    var mapData = initialMapData.GetNewMiningData(gameInfo, data, observation, null, _miningManager.CrosshairService, ExpansionCOMService, _miningManager.ExpansionPointService, _miningManager.ExpansionPointDrawService, ProvisionalExpansionService, _defaultBot.MapDataService, _miningManager.WorkerLabelService);
                     _miningManager.SetCurrentMapData(mapData);
                     Globals.CurrentMapData = mapData;
                     Settings.CurrentSpawnIndex = 0;
@@ -333,19 +341,18 @@ namespace BabySharkBot
                 }
             }
 
-            //System.Diagnostics.Debugger.Break();
-            var workerEntries = ProcessVisableUnits.ProcessVisibleUnits(observation, _miningManager.WorkerLabelService, _miningManager.MineralLabelService, _miningManager.VespeneLabelService, SpawningPoolPlacementService);
+            var workerEntries = ProcessVisableUnits.ProcessVisibleUnits(observation, _miningManager.WorkerLabelService);
             Settings.ccaMining = true;
             if (_miningManager.CurrentMapData != null)
             {
                 var currentStartIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                _miningManager.CcaMiningService.EnableCcaMiningForCurrentSpawn(_miningManager.CurrentMapData, currentStartIndex);
-
-                // Build a live worker list from the current observation and pass frame/workers so the cca service can run immediately.
-                var frame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
                 
-                var currentAssignments = OngoingMapData.ResolveTeamAssignments(_miningManager.CurrentMapData, currentStartIndex);
-                _miningManager.CcaMiningService.RecordSpawnObservation(_miningManager.CurrentMapData, currentStartIndex, currentAssignments, _miningManager.WorkerLabelService, frame: frame, workerEntries: workerEntries, mineralLabelService: _miningManager.MineralLabelService);
+                // Initialize Frame Zero labeling in CCA service
+                var snapshot = Globals.CurrentObservation;
+                if (snapshot != null)
+                {
+                    _miningManager.CcaMiningService.InitializeFrameZero(_miningManager.CurrentMapData, currentStartIndex, snapshot, _miningManager.WorkerLabelService, _miningManager.MineralLabelService);
+                }
             }
 
             _miningManager.ProcessFrameObservation(observation);

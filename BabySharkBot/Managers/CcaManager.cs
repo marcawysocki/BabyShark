@@ -84,32 +84,49 @@ namespace BabySharkBot.Managers
                 {
                     Console.WriteLine($"CcaManager.OnFrame: frame={frame} ccaMining={Settings.ccaMining}");
                 }
+
+                // FAILURE BEHAVIOR: If map data is not yet loaded, wait and allow default behavior
+                // (Workers moving to center mineral) instead of issuing custom CCA commands.
+                if (!Settings.MapDataLoaded)
+                {
+                    if (frame % 5 == 0) Console.WriteLine("CcaManager: Waiting for MapData to load...");
+                    return Array.Empty<SC2APIProtocol.Action>();
+                }
+
                 var mapData = _miningManager?.CurrentMapData;
                 if (mapData == null)
                 {
                     return Array.Empty<SC2APIProtocol.Action>();
                 }
 
-                var startIndex = mapData?.StartingTownHall != null ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+                var snapshot = Globals.CurrentObservation;
+
+                if (frame == 0 && snapshot != null)
+                {
+                    _ccaService.InitializeFrameZero(mapData, startIndex, snapshot, _miningManager.WorkerLabelService, _miningManager.MineralLabelService);
+                    // Explicitly enable CCA mining here
+                    var state = _ccaService.GetOrCreateCurrentSpawnState(mapData, startIndex);
+                    state.CcaMining = true;
+                    Settings.ccaMining = true;
+                    if (state.Phase == chrisCrossAppleSause.TestPhase.Idle) _ccaService.SetPhase(state, chrisCrossAppleSause.TestPhase.AssigningWorkers);
+                }
+
                 var currentAssignments = OngoingMapData.ResolveTeamAssignments(mapData, startIndex);
 
-                // Build live worker entries from current observation
+                // Build live worker entries from current observation snapshot
                 var liveWorkers = new List<WorkerEntryDto>();
-                var rawUnits = observation?.Observation?.RawData?.Units;
-                if (rawUnits != null)
+                if (snapshot != null)
                 {
-                    foreach (var u in rawUnits.Where(u => u != null && u.Alliance == Alliance.Self && (u.UnitType == (uint)Sharky.UnitTypes.ZERG_DRONE || u.UnitType == (uint)Sharky.UnitTypes.TERRAN_SCV || u.UnitType == (uint)Sharky.UnitTypes.PROTOSS_PROBE)))
+                    foreach (var tag in snapshot.AvailableWorkers)
                     {
-                        var label = _miningManager.WorkerLabelService?.GetLabel(u.Tag) ?? string.Empty;
-                        liveWorkers.Add(new WorkerEntryDto
+                        if (snapshot.SelfUnits.TryGetValue(tag, out var unit))
                         {
-                            UnitTag = u.Tag,
-                            UnitType = u.UnitType,
-                            Position = new Vector2Dto(u.Pos.X, u.Pos.Y, u.Pos.Z),
-                            Label = label,
-                            StartLabel = label,
-                            FinalLabel = label
-                        });
+                            var label = _miningManager.WorkerLabelService?.GetLabel(tag) ?? string.Empty;
+                            unit.Label = label;
+                            unit.FinalLabel = label;
+                            liveWorkers.Add(unit);
+                        }
                     }
                 }
 

@@ -81,6 +81,7 @@ namespace BabySharkBot.Setup
         public static int CurrentStartIndex = -1;
         public static Dictionary<int, Vector2Dto> CurrentW4PositionsByStart = new Dictionary<int, Vector2Dto>();
         public static MawBaseLocationData CurrentMapData = null;
+        public static ObservationSnapshotDto CurrentObservation = new();
         public static string currentMapVespineBase = "";
         public static string currentMapVespineFullMap = "";
         public static string currentMapMineralsBase = "";

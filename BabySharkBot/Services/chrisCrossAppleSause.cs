@@ -67,12 +67,68 @@ namespace BabySharkBot.Services
             Console.WriteLine($"chrisCrossAppleSause [{state.SpawnKey}]: Phase changed to {state.Phase}");
         }
 
-        public void EnableCcaMiningForCurrentSpawn(MawBaseLocationData mapData, int startIndex)
+        public void InitializeFrameZero(MawBaseLocationData mapData, int startIndex, ObservationSnapshotDto snapshot, WorkerLabelService workerLabelService, MineralLabelService mineralLabelService)
         {
             var state = GetOrCreateCurrentSpawnState(mapData, startIndex);
-            state.CcaMining = true;
-            Settings.ccaMining = true;
-            if (state.Phase == TestPhase.Idle) SetPhase(state, TestPhase.AssigningWorkers);
+            if (state.FrameZeroInitialized) return;
+
+            Console.WriteLine($"chrisCrossAppleSause: Initializing Frame Zero for spawn {state.SpawnKey}");
+
+            // 1. establishing W12/W8 anchor and building W-chain
+            var liveWorkerTags = snapshot.AvailableWorkers;
+            var liveWorkers = snapshot.SelfUnits.Values.Where(u => liveWorkerTags.Contains(u.UnitTag)).ToList();
+            var com = mapData.MineralCenterOfMass.Count > startIndex ? mapData.MineralCenterOfMass[startIndex] : null;
+
+            if (com != null && liveWorkers.Count > 0)
+            {
+                var workerEntries = WorkerLabelChainHelper.BuildWorkersInAW12ThroughW1Order(
+                    liveWorkers.Select(w => (w.UnitTag, w.Position.X, w.Position.Y, w.Position.Z, w.UnitType)),
+                    com,
+                    workerLabelService);
+
+                // 2. Establishing greedy mineral relationship
+                // InitialMapData already calculates the orderedMainMinerals based on anchor worker (W12/W4)
+                // We just need to sync labels and tags.
+                var orderedMinerals = mapData.OrderedMainMinerals.Count > startIndex ? mapData.OrderedMainMinerals[startIndex] : new List<OrderedMineral>();
+                
+                foreach (var om in orderedMinerals)
+                {
+                    // Find the live mineral tag from the snapshot
+                    var liveMineral = snapshot.Minerals.Values.FirstOrDefault(m => 
+                        Math.Abs(m.Position.X - om.Position.X) < 0.1f && 
+                        Math.Abs(m.Position.Y - om.Position.Y) < 0.1f);
+                    
+                    if (liveMineral != null)
+                    {
+                        om.UnitTag = liveMineral.UnitTag;
+                    }
+
+                    // Assign mineral labels
+                    var label = om.FinalLabel ?? om.Label;
+                    if (!string.IsNullOrWhiteSpace(label))
+                    {
+                        mineralLabelService.SetMineralLabel(label, new Point { X = om.Position.X, Y = om.Position.Y, Z = om.Position.Z + 0.5f }, ProcessVisableUnits.GetFinalLabelColor(label), om.UnitTag);
+                    }
+                }
+
+                // 3. Assign team membership and final worker roles
+                // TeamLabelRegistrationHelper handles this logic, we call it here to ensure it uses the live workers.
+                if (!mapData.AssignmentsByWorkerCount.TryGetValue(liveWorkers.Count, out var assignmentsByStart))
+                {
+                    assignmentsByStart = new List<List<TeamPatchAssignmentDto>>();
+                    mapData.AssignmentsByWorkerCount[liveWorkers.Count] = assignmentsByStart;
+                }
+                
+                TeamLabelRegistrationHelper.EnsureTeamLabelsForStart(mapData, startIndex, orderedMinerals, workerEntries, com, workerLabelService, assignmentsByStart);
+                state.TeamAssignments = assignmentsByStart[startIndex];
+
+                // 4. Mineral Accounting
+                state.StartingTotalMinerals = snapshot.Minerals.Values.Sum(m => m.MineralContents);
+                state.CurrentTotalBaseMinerals = state.StartingTotalMinerals;
+                Console.WriteLine($"chrisCrossAppleSause: established mineral accounting. StartingTotalMinerals={state.StartingTotalMinerals}");
+            }
+
+            state.FrameZeroInitialized = true;
         }
 
         public IEnumerable<SC2APIProtocol.Action> BuildBumpOrders(int frame, MawBaseLocationData mapData, int startIndex, IReadOnlyList<WorkerEntryDto> workerEntries, IEnumerable<UnitCommander>? commanders = null, IEnumerable<Unit>? selfUnits = null)
@@ -245,7 +301,7 @@ namespace BabySharkBot.Services
                         {
                             var helperMineral = team.TeamNumber == 2
                                 ? GetMineralOrdered(state, 3, "SA")
-                                : GetMineralOrdered(state, 4, "BA");
+                                : GetMineralOrdered(state, 2, "BA");
                             commands.AddRange(ProcessWorkerMovement(w3, helperMineral ?? mineralA, frame));
                         }
                         continue;
@@ -576,5 +632,8 @@ namespace BabySharkBot.Services
         // NEW: Per-spawn phase machine
         public chrisCrossAppleSause.TestPhase Phase { get; set; } = chrisCrossAppleSause.TestPhase.Idle;
         public bool HarvestCommandsIssued { get; set; } = false;
+        public bool FrameZeroInitialized { get; set; } = false;
+        public int StartingTotalMinerals { get; set; } = 0;
+        public int CurrentTotalBaseMinerals { get; set; } = 0;
     }
 }

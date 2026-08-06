@@ -34,6 +34,9 @@ namespace BabySharkBot.Managers
         private InitialMapData _initialMapData;
         private SecondaryMapData _secondaryMapData;
         private OngoingMapData _ongoingMapData;
+        private readonly ActiveUnitData _activeUnitData;
+        private readonly SharkyUnitData _sharkyUnitData;
+        private readonly HashSet<UnitTypes> WorkerTypes = new() { UnitTypes.ZERG_DRONE, UnitTypes.TERRAN_SCV, UnitTypes.PROTOSS_PROBE };
         private bool _initialMiningManeuvers = true;
         private int _openingFrame = -1;
         private WorkerLabelService _workerLabelService;
@@ -109,11 +112,28 @@ namespace BabySharkBot.Managers
             }
         }
 
-        public BabySharkMiningManager(WorkerLabelService? workerLabelService = null, CrosshairService? crosshairService = null, MineralLabelService? mineralLabelService = null, VespeneLabelService? vespeneLabelService = null, ExpansionCOMService? expansionCOMService = null, ExpansionPointService? expansionPointService = null, ExpansionPointDrawService? expansionPointDrawService = null, ProvisionalExpansionService? provisionalExpansionService = null, MineralReturnRateTrackerService? mineralReturnRateTrackerService = null, FrameToTimeConverter? frameToTimeConverter = null, Sharky.Pathing.MapDataService? mapDataService = null, SpawningPoolPlacementService? spawningPoolPlacementService = null, chrisCrossAppleSause? ccaMiningService = null)
+        public BabySharkMiningManager(
+            ActiveUnitData activeUnitData,
+            SharkyUnitData sharkyUnitData,
+            WorkerLabelService? workerLabelService = null, 
+            CrosshairService? crosshairService = null, 
+            MineralLabelService? mineralLabelService = null, 
+            VespeneLabelService? vespeneLabelService = null, 
+            ExpansionCOMService? expansionCOMService = null, 
+            ExpansionPointService? expansionPointService = null, 
+            ExpansionPointDrawService? expansionPointDrawService = null, 
+            ProvisionalExpansionService? provisionalExpansionService = null, 
+            MineralReturnRateTrackerService? mineralReturnRateTrackerService = null, 
+            FrameToTimeConverter? frameToTimeConverter = null, 
+            Sharky.Pathing.MapDataService? mapDataService = null, 
+            SpawningPoolPlacementService? spawningPoolPlacementService = null, 
+            chrisCrossAppleSause? ccaMiningService = null)
         {
             _initialMapData = new InitialMapData();
             _secondaryMapData = new SecondaryMapData();
             _ongoingMapData = new OngoingMapData();
+            _activeUnitData = activeUnitData;
+            _sharkyUnitData = sharkyUnitData;
             _workerLabelService = workerLabelService ?? new WorkerLabelService();
             _crosshairService = crosshairService ?? new CrosshairService();
             _mineralLabelService = mineralLabelService ?? new MineralLabelService();
@@ -229,22 +249,47 @@ namespace BabySharkBot.Managers
 
         private void DrawWorkerLabels(ResponseObservation observation)
         {
-            if (_workerLabelService == null || observation?.Observation?.RawData?.Units == null) return;
-            var workers = observation.Observation.RawData.Units.Where(u => u != null && u.Alliance == Alliance.Self && (u.UnitType == (uint)UnitTypes.ZERG_DRONE || u.UnitType == (uint)UnitTypes.TERRAN_SCV || u.UnitType == (uint)UnitTypes.PROTOSS_PROBE)).ToList();
+            var snapshot = Globals.CurrentObservation;
+            if (_workerLabelService == null || snapshot == null) return;
+            
             var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
             var storedWorkers = GetStoredWorkersForStart(startIndex);
             var fallbackByPosition = BuildWorkerLabelFallbackMap(storedWorkers);
             var finalLabelByTag = BuildWorkerFinalLabelMap(storedWorkers);
-            foreach (var worker in workers)
+
+            foreach (var kvp in snapshot.SelfUnits)
             {
-                var label = _workerLabelService.GetLabel(worker.Tag);
-                if (string.IsNullOrWhiteSpace(label) || IsLegacyWorkerLabelForDebugBreak(label)) label = ResolveWorkerFinalLabelByTag(worker.Tag, finalLabelByTag);
-                if (string.IsNullOrWhiteSpace(label) && worker.Pos != null) label = ResolveWorkerLabelByPosition(worker.Pos.X, worker.Pos.Y, fallbackByPosition);
+                var tag = kvp.Key;
+                var entry = kvp.Value;
+                var ut = (UnitTypes)entry.UnitType;
+                if (!WorkerTypes.Contains(ut)) continue;
+
+                var label = _workerLabelService.GetLabel(tag);
+                if (string.IsNullOrWhiteSpace(label) || IsLegacyWorkerLabelForDebugBreak(label)) label = ResolveWorkerFinalLabelByTag(tag, finalLabelByTag);
+                if (string.IsNullOrWhiteSpace(label)) label = ResolveWorkerLabelByPosition(entry.Position.X, entry.Position.Y, fallbackByPosition);
+                
                 if (!string.IsNullOrWhiteSpace(label))
                 {
                     var color = ProcessVisableUnits.GetFinalLabelColor(label);
-                    ManagerDebugService.DrawText(label, new Point { X = worker.Pos.X, Y = worker.Pos.Y, Z = worker.Pos.Z + 0.5f }, color, 12);
+                    ManagerDebugService.DrawText(label, new Point { X = entry.Position.X, Y = entry.Position.Y, Z = entry.Position.Z + 0.5f }, color, 12);
                 }
+            }
+        }
+
+        private void DrawWorkerInstructions(ResponseObservation observation)
+        {
+            var snapshot = Globals.CurrentObservation;
+            if (!ManagerDebugService.IsDebugEnabled || snapshot == null) return;
+
+            foreach (var kvp in snapshot.SelfUnits)
+            {
+                var entry = kvp.Value;
+                var ut = (UnitTypes)entry.UnitType;
+                if (!WorkerTypes.Contains(ut)) continue;
+
+                var start = new Point { X = entry.Position.X, Y = entry.Position.Y, Z = entry.Position.Z + 0.25f };
+                var end = new Point { X = entry.Position.X, Y = entry.Position.Y, Z = entry.Position.Z + 1.25f };
+                DrawArrow(start, end, new Color { R = 255, G = 255, B = 255 });
             }
         }
 
@@ -276,24 +321,14 @@ namespace BabySharkBot.Managers
             }
         }
 
-        private void DrawWorkerInstructions(ResponseObservation observation)
-        {
-            if (!ManagerDebugService.IsDebugEnabled || observation?.Observation?.RawData?.Units == null) return;
-            var workers = observation.Observation.RawData.Units.Where(u => u != null && u.Alliance == Alliance.Self && (u.UnitType == (uint)UnitTypes.ZERG_DRONE || u.UnitType == (uint)UnitTypes.TERRAN_SCV || u.UnitType == (uint)UnitTypes.PROTOSS_PROBE)).ToList();
-            foreach (var worker in workers)
-            {
-                if (worker?.Pos == null) continue;
-                var start = new Point { X = worker.Pos.X, Y = worker.Pos.Y, Z = worker.Pos.Z + 0.25f };
-                var end = new Point { X = worker.Pos.X, Y = worker.Pos.Y, Z = worker.Pos.Z + 1.25f };
-                DrawArrow(start, end, new Color { R = 255, G = 255, B = 255 });
-            }
-        }
-
         private Dictionary<ulong, int> _workerIdleFrames = new Dictionary<ulong, int>();
 
         public IEnumerable<SC2Action> OnFrame(ResponseObservation observation)
         {
             _currentFrame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
+            var snapshot = Globals.CurrentObservation;
+            if (snapshot == null) return Array.Empty<SC2Action>();
+
             ProcessFrameObservation(observation);
 
             if (!_handoffBreakTriggered && !Settings.ccaMining && _currentFrame >= 35)
@@ -325,35 +360,45 @@ namespace BabySharkBot.Managers
         private IEnumerable<SC2Action> HandleIdleWorkerFallback(ResponseObservation observation)
         {
             var actions = new List<SC2Action>();
-            if (observation?.Observation?.RawData?.Units == null) return actions;
+            var snapshot = Globals.CurrentObservation;
+            if (snapshot == null) return actions;
 
-            var workers = observation.Observation.RawData.Units.Where(u => u != null && u.Alliance == Alliance.Self && (u.UnitType == (uint)UnitTypes.ZERG_DRONE || u.UnitType == (uint)UnitTypes.TERRAN_SCV || u.UnitType == (uint)UnitTypes.PROTOSS_PROBE)).ToList();
-
-            foreach (var worker in workers)
+            foreach (var tag in snapshot.SelfUnits.Keys)
             {
-                if (worker.Orders.Count == 0)
+                if (snapshot.SelfUnits.TryGetValue(tag, out var entry))
                 {
-                    _workerIdleFrames.TryGetValue(worker.Tag, out var idleCount);
-                    _workerIdleFrames[worker.Tag] = idleCount + 1;
+                    var ut = (UnitTypes)entry.UnitType;
+                    if (!WorkerTypes.Contains(ut)) continue;
 
-                    if (_workerIdleFrames[worker.Tag] > 30)
+                    // Get actual unit for orders check
+                    if (_activeUnitData.SelfUnits.TryGetValue(tag, out var unitCalculation))
                     {
-                        // Emergency reassign to nearest unmined mineral
-                        if (_jitWorkerStates.TryGetValue(worker.Tag, out var state))
+                        var worker = unitCalculation.Unit;
+                        if (worker.Orders.Count == 0)
                         {
-                            var mineral = ResolveMineralTag(observation, state.CurrentMineralPos);
-                            if (mineral != 0)
+                            _workerIdleFrames.TryGetValue(tag, out var idleCount);
+                            _workerIdleFrames[tag] = idleCount + 1;
+
+                            if (_workerIdleFrames[tag] > 30)
                             {
-                                actions.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { worker.Tag }, TargetUnitTag = mineral } } });
-                                Console.WriteLine($"[IDLE FALLBACK] Worker {worker.Tag} idle for {_workerIdleFrames[worker.Tag]} frames, forcing SMART to mineral {mineral}");
+                                // Emergency reassign to nearest unmined mineral
+                                if (_jitWorkerStates.TryGetValue(tag, out var state))
+                                {
+                                    var mineral = ResolveMineralTag(observation, state.CurrentMineralPos);
+                                    if (mineral != 0)
+                                    {
+                                        actions.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { tag }, TargetUnitTag = mineral } } });
+                                        Console.WriteLine($"[IDLE FALLBACK] Worker {tag} idle for {_workerIdleFrames[tag]} frames, forcing SMART to mineral {mineral}");
+                                    }
+                                }
+                                _workerIdleFrames[tag] = 0; // Reset counter after action
                             }
                         }
-                        _workerIdleFrames[worker.Tag] = 0; // Reset counter after action
+                        else
+                        {
+                            _workerIdleFrames[tag] = 0;
+                        }
                     }
-                }
-                else
-                {
-                    _workerIdleFrames[worker.Tag] = 0;
                 }
             }
 
@@ -362,32 +407,27 @@ namespace BabySharkBot.Managers
 
         public void DrawDebugVisuals(ResponseObservation observation)
         {
-            try
-            {
-                if (!ManagerDebugService.IsDebugEnabled) return;
-                DrawWorkerLabels(observation);
+            if (!ManagerDebugService.IsDebugEnabled) return;
 
-                DrawCenterOfMassLocations();
-                DrawExpansionCOMCrosshairs();
-                DrawCenterOfMass();
-                DrawMineralLabels();
-                DrawMineralTargetPoints();
-                DrawExpansionMineralLabels();
-                DrawVespeneLabels();
-                DrawExpansionPoints();
-                DrawSpawningPoolPlacement();
-                DrawWorkerInstructions(observation);
-                BreakWhenSpawnLabelsShouldBeVisible(observation);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"BabySharkMiningManager.DrawDebugVisuals: Error: {ex.Message}");
-            }
+            DrawMineralTargetPoints();
+            DrawWorkerLabels(observation);
+            DrawWorkerInstructions(observation);
+            DrawCenterOfMassLocations();
+            DrawExpansionCOMCrosshairs();
+            DrawCenterOfMass();
+            DrawMineralLabels();
+            DrawExpansionMineralLabels();
+            DrawVespeneLabels();
+            DrawExpansionPoints();
+            DrawSpawningPoolPlacement();
+            BreakWhenSpawnLabelsShouldBeVisible(observation);
         }
 
         public void ProcessFrameObservation(ResponseObservation observation)
         {
-            if (observation?.Observation?.RawData?.Units == null) return;
+            var snapshot = Globals.CurrentObservation;
+            if (snapshot == null) return;
+
             var workerEntries = ProcessVisableUnits.ProcessVisibleUnits(observation, _workerLabelService, _mineralLabelService, _vespeneLabelService, _spawningPoolPlacementService);
             if (_mapData == null) return;
             var currentStartIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
@@ -451,8 +491,8 @@ namespace BabySharkBot.Managers
 
             if (_speedMiningActive && !wasSpeedMining)
             {
-                Console.WriteLine($"BabySharkMiningManager: SPEED MINING ACTIVATED at {totalWorkers} workers");
-                // Transition pink workers to their final team roles
+                Console.WriteLine($"BabySharkMiningManager: SPEED MINING ACTIVATED at {totalWorkers} workers (Trigger: Worker 16)");
+                // Transition pink workers (S4, Y4, B4) to their final team roles
                 TransitionPinkWorkersToSpeedMining();
             }
         }
@@ -464,9 +504,16 @@ namespace BabySharkBot.Managers
                 var state = kvp.Value;
                 if (!state.IsTransitionComplete)
                 {
-                    // Worker now takes its final 4th-worker speed mining role
+                    // Pink workers change to their team color and role when they switch to the correct mineral
+                    // during their regular "A/B" switch cycle.
                     state.IsTransitionComplete = true;
-                    Console.WriteLine($"PinkWorker {kvp.Key}: Transitioned to {state.PrimaryPrefix}4 speed mining");
+                    
+                    // Signal to WorkerLabelService to update color if needed
+                    var label = _workerLabelService.GetLabel(kvp.Key);
+                    if (!string.IsNullOrEmpty(label))
+                    {
+                        Console.WriteLine($"PinkWorker {kvp.Key} ({label}): Transitioned to speed mining team.");
+                    }
                 }
             }
         }
@@ -543,32 +590,48 @@ namespace BabySharkBot.Managers
         private List<SC2Action> ExecuteJustInTimeMining(ResponseObservation observation)
         {
             var actions = new List<SC2Action>();
+            var snapshot = Globals.CurrentObservation;
+            if (snapshot == null) return actions;
+
             var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
             var teamAssignments = ResolveTeamAssignments(startIndex);
             if (teamAssignments.Count == 0) return actions;
-            var selfUnits = observation?.Observation?.RawData?.Units?
-                .Where(u => u != null && u.Alliance == Alliance.Self).ToList() ?? new List<Unit>();
-            var workers = selfUnits.Where(u =>
-                u.UnitType == (uint)UnitTypes.ZERG_DRONE ||
-                u.UnitType == (uint)UnitTypes.TERRAN_SCV ||
-                u.UnitType == (uint)UnitTypes.PROTOSS_PROBE).ToList();
-            if (workers.Count == 0) return actions;
+
+            // Use self units from snapshot
+            var selfUnits = snapshot.SelfUnits;
+            var liveWorkers = new List<Unit>();
+            foreach (var tag in snapshot.SelfUnits.Keys)
+            {
+                if (_activeUnitData.SelfUnits.TryGetValue(tag, out var unitCalculation))
+                {
+                    var unit = unitCalculation.Unit;
+                    var ut = (UnitTypes)unit.UnitType;
+                    if (WorkerTypes.Contains(ut))
+                    {
+                        liveWorkers.Add(unit);
+                    }
+                }
+            }
+
+            if (liveWorkers.Count == 0) return actions;
 
             var townhall = _mapData?.StartingTownHall[startIndex];
             if (townhall == null) return actions;
-            var townhallUnit = selfUnits.FirstOrDefault(u =>
-                (u.UnitType == (uint)UnitTypes.ZERG_HATCHERY ||
-                 u.UnitType == (uint)UnitTypes.TERRAN_COMMANDCENTER ||
-                 u.UnitType == (uint)UnitTypes.PROTOSS_NEXUS) &&
-                Math.Abs(u.Pos.X - townhall.X) < 1.0f &&
-                Math.Abs(u.Pos.Y - townhall.Y) < 1.0f);
+            
+            // Find townhall unit for SMART target
+            var townhallUnit = _activeUnitData.SelfUnits.Values.FirstOrDefault(u =>
+                (u.Unit.UnitType == (uint)UnitTypes.ZERG_HATCHERY ||
+                 u.Unit.UnitType == (uint)UnitTypes.TERRAN_COMMANDCENTER ||
+                 u.Unit.UnitType == (uint)UnitTypes.PROTOSS_NEXUS) &&
+                Math.Abs(u.Unit.Pos.X - townhall.X) < 1.0f &&
+                Math.Abs(u.Unit.Pos.Y - townhall.Y) < 1.0f)?.Unit;
 
             foreach (var assignment in teamAssignments)
             {
                 if (assignment?.Workers == null || assignment.Minerals == null || assignment.Minerals.Count == 0)
                     continue;
 
-                var teamWorkers = ResolveCurrentWorkersForTeamRaw(workers, assignment.Workers);
+                var teamWorkers = ResolveCurrentWorkersForTeamRaw(liveWorkers, assignment.Workers);
                 if (teamWorkers.Count == 0) continue;
 
                 // 3-worker teams = JIT rotation; 2-worker teams = static speed mining
@@ -852,20 +915,22 @@ namespace BabySharkBot.Managers
 
         private void UpdateScoutedMinerals(ResponseObservation observation)
         {
-            if (_mapData?.Minerals == null || _mapData.MineralTagToIndex == null || observation?.Observation?.RawData?.Units == null) return;
-            foreach (var unit in observation.Observation.RawData.Units)
+            var snapshot = Globals.CurrentObservation;
+            if (_mapData?.Minerals == null || _mapData.MineralTagToIndex == null || snapshot == null) return;
+            
+            foreach (var mineralDto in snapshot.Minerals.Values)
             {
                 try
                 {
-                    if (unit?.Pos == null || !IsMineralType((UnitTypes)unit.UnitType) || unit.DisplayType != DisplayType.Visible || unit.Tag == 0 || !_mapData.MineralTagToIndex.TryGetValue(unit.Tag, out var idx)) continue;
+                    if (mineralDto.UnitTag == 0 || !_mapData.MineralTagToIndex.TryGetValue(mineralDto.UnitTag, out var idx)) continue;
                     var mineral = _mapData.Minerals[idx];
-                    var contents = unit.HasMineralContents ? unit.MineralContents : 0;
+                    var contents = mineralDto.MineralContents;
                     if (contents != mineral.MaxMineralContents) _mapData.MismatchedMinerals = true;
                     if (contents > mineral.MaxMineralContents) mineral.MaxMineralContents = contents;
                     if (contents > mineral.MineralContents) mineral.MineralContents = contents;
-                    mineral.UnitTag = unit.Tag;
-                    mineral.UnitType = unit.UnitType;
-                    if (mineral.Position == null) mineral.Position = new Vector2Dto(unit.Pos.X, unit.Pos.Y, unit.Pos.Z);
+                    mineral.UnitTag = mineralDto.UnitTag;
+                    mineral.UnitType = mineralDto.UnitType;
+                    if (mineral.Position == null) mineral.Position = mineralDto.Position;
                 }
                 catch (Exception ex) { Console.WriteLine($"Error in UpdateScoutedMinerals: {ex.Message}"); }
             }
@@ -888,9 +953,10 @@ namespace BabySharkBot.Managers
                 return;
             }
 
-            if (observation?.Observation?.RawData?.Units == null) return;
+            var snapshot = Globals.CurrentObservation;
+            if (snapshot == null) return;
 
-            var droneCount = observation.Observation.RawData.Units.Count(u => u != null && u.Alliance == Alliance.Self && u.UnitType == (uint)UnitTypes.ZERG_DRONE && u.BuildProgress >= 1.0f);
+            var droneCount = snapshot.SelfUnits.Values.Count(u => u != null && u.UnitType == (uint)UnitTypes.ZERG_DRONE && u.IsCompleted);
             
             if (_lastFunctionalDroneCount != -1 && droneCount > _lastFunctionalDroneCount)
             {
@@ -922,6 +988,17 @@ namespace BabySharkBot.Managers
             }
         }
 
+        private void PrintTwelveDroneMilestone(ResponseObservation observation)
+        {
+            var snapshot = Globals.CurrentObservation;
+            if (_printedTwelveDroneMilestone || snapshot == null) return;
+            if (snapshot.SelfUnits.Values.Count(u => u != null && u.UnitType == (uint)UnitTypes.ZERG_DRONE && u.IsCompleted) >= 12)
+            {
+                _printedTwelveDroneMilestone = true;
+                Console.WriteLine($"BabySharkMiningManager: 12-drone milestone reached at frame {_currentFrame}");
+            }
+        }
+
         private void PrintMineralReturnRateSummary(ResponseObservation observation)
         {
             // Diagnostic heartbeat - every 100 frames to avoid spamming too much
@@ -934,16 +1011,6 @@ namespace BabySharkBot.Managers
             {
                 _lastMineralReturnRateConsoleFrame = _currentFrame;
                 Console.WriteLine($"Mineral Return Rate Summary: {_mineralReturnRateTrackerService.GetSummary()}");
-            }
-        }
-
-        private void PrintTwelveDroneMilestone(ResponseObservation observation)
-        {
-            if (_printedTwelveDroneMilestone || observation?.Observation?.RawData?.Units == null) return;
-            if (observation.Observation.RawData.Units.Count(u => u != null && u.Alliance == Alliance.Self && u.UnitType == (uint)UnitTypes.ZERG_DRONE && u.BuildProgress >= 1.0f) >= 12)
-            {
-                _printedTwelveDroneMilestone = true;
-                Console.WriteLine($"BabySharkMiningManager: 12-drone milestone reached at frame {_currentFrame}");
             }
         }
 
