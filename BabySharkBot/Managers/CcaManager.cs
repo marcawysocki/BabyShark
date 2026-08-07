@@ -6,15 +6,9 @@ using Sharky;
 using Sharky.Managers;
 using BabySharkBot.Services;
 using BabySharkBot.Setup;
-using SC2Action = SC2APIProtocol.Action;
 
 namespace BabySharkBot.Managers
 {
-    /// <summary>
-    /// Lifecycle manager for the "chrisCrossAppleSause" (CCA) worker initialization phase.
-    /// Monitors frame progress and signals the handoff from CCA choreography to steady-state mining.
-    /// Unregisters itself once the transition is complete.
-    /// </summary>
     public class CcaManager : IManager
     {
         public bool NeverSkip { get; set; } = false;
@@ -24,20 +18,20 @@ namespace BabySharkBot.Managers
 
         private readonly chrisCrossAppleSause _ccaService;
         private readonly BabySharkMiningManager _miningManager;
-        private readonly BabySharkBuildManager _buildManager;
 
         public chrisCrossAppleSause CcaMiningService => _ccaService;
+        private readonly DrawOnlyManager _drawOnlyWrapper;
         private bool _unregistered;
         private int _allMiningConsecutiveFrames = 0;
         private const int AllMiningConfirmationFrames = 2;
 
-        public CcaManager(chrisCrossAppleSause ccaService, BabySharkMiningManager miningManager, BabySharkBuildManager buildManager)
+        public CcaManager(chrisCrossAppleSause ccaService, BabySharkMiningManager miningManager)
         {
             _ccaService = ccaService ?? throw new ArgumentNullException(nameof(ccaService));
             _miningManager = miningManager ?? throw new ArgumentNullException(nameof(miningManager));
-            _buildManager = buildManager;
             // subscribe to mining started event so we can unregister ourselves
             _miningManager.OnMiningStarted += HandleMiningStarted;
+            _drawOnlyWrapper = new DrawOnlyManager(miningManager);
             _unregistered = false;
         }
 
@@ -50,15 +44,11 @@ namespace BabySharkBot.Managers
                 var ai = BabySharkBot.BabySharkAI.Instance;
                 if (ai != null)
                 {
+                    // Remove DrawOnly wrapper if present
+                    ai.Managers.RemoveAll(m => m == _drawOnlyWrapper);
                     // Remove this manager
                     ai.Managers.RemoveAll(m => m == this);
                     Console.WriteLine("CcaManager: unregistered from BabySharkAI.Managers");
-
-                    if (_buildManager != null && !ai.Managers.Contains(_buildManager))
-                    {
-                        ai.Managers.Add(_buildManager);
-                        Console.WriteLine("CcaManager: Added BabySharkBuildManager to BabySharkAI.Managers at frame 35 handoff");
-                    }
                 }
             }
             catch (Exception ex)
@@ -80,75 +70,113 @@ namespace BabySharkBot.Managers
             try
             {
                 var frame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
-                if (frame % 5 == 0)
-                {
-                    Console.WriteLine($"CcaManager.OnFrame: frame={frame} ccaMining={Settings.ccaMining}");
-                }
-
-                // FAILURE BEHAVIOR: If map data is not yet loaded, wait and allow default behavior
-                // (Workers moving to center mineral) instead of issuing custom CCA commands.
-                if (!Settings.MapDataLoaded)
-                {
-                    if (frame % 5 == 0) Console.WriteLine("CcaManager: Waiting for MapData to load...");
-                    return Array.Empty<SC2APIProtocol.Action>();
-                }
-
                 var mapData = _miningManager?.CurrentMapData;
                 if (mapData == null)
                 {
                     return Array.Empty<SC2APIProtocol.Action>();
                 }
 
-                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                var snapshot = Globals.CurrentObservation;
+                var startIndex = mapData?.StartingTownHall != null ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
 
-                if (frame == 0 && snapshot != null)
-                {
-                    _ccaService.InitializeFrameZero(mapData, startIndex, snapshot, _miningManager.WorkerLabelService, _miningManager.MineralLabelService);
-                    // Explicitly enable CCA mining here
-                    var state = _ccaService.GetOrCreateCurrentSpawnState(mapData, startIndex);
-                    state.CcaMining = true;
-                    Settings.ccaMining = true;
-                    if (state.Phase == chrisCrossAppleSause.TestPhase.Idle) _ccaService.SetPhase(state, chrisCrossAppleSause.TestPhase.AssigningWorkers);
-                }
-
-                var currentAssignments = OngoingMapData.ResolveTeamAssignments(mapData, startIndex);
-
-                // Build live worker entries from current observation snapshot
+                // Build live worker entries from current observation
                 var liveWorkers = new List<WorkerEntryDto>();
-                if (snapshot != null)
+                var rawUnits = observation?.Observation?.RawData?.Units;
+                if (rawUnits != null)
                 {
-                    foreach (var tag in snapshot.AvailableWorkers)
+                    foreach (var u in rawUnits.Where(u => u != null && u.Alliance == Alliance.Self && (u.UnitType == (uint)Sharky.UnitTypes.ZERG_DRONE || u.UnitType == (uint)Sharky.UnitTypes.TERRAN_SCV || u.UnitType == (uint)Sharky.UnitTypes.PROTOSS_PROBE)))
                     {
-                        if (snapshot.SelfUnits.TryGetValue(tag, out var unit))
+                        var label = _miningManager.WorkerLabelService?.GetLabel(u.Tag) ?? string.Empty;
+                        liveWorkers.Add(new WorkerEntryDto
                         {
-                            var label = _miningManager.WorkerLabelService?.GetLabel(tag) ?? string.Empty;
-                            unit.Label = label;
-                            unit.FinalLabel = label;
-                            liveWorkers.Add(unit);
-                        }
+                            UnitTag = u.Tag,
+                            UnitType = u.UnitType,
+                            Position = new Vector2Dto(u.Pos.X, u.Pos.Y, u.Pos.Z),
+                            Label = label,
+                            StartLabel = label,
+                            FinalLabel = label
+                        });
                     }
                 }
 
-                // After frame 35, ChrisCrossAppleSause unloads and BabySharkMiningManager takes over
-                if (frame >= 35 && !_unregistered)
+                var actions = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers);
+
+                // After frame 15, if bump is disabled, issue mining gather orders for any worker that isn't mining
+                if (frame >= 15)
                 {
-                    Console.WriteLine($"CcaManager: frame {frame} reached, initiating handoff to BabySharkMiningManager.");
-                    
-                    // Capture final actions from CCA service at the handoff frame
-                    var selfUnitsForHandoff = observation?.Observation?.RawData?.Units?.Where(u => u.Alliance == Alliance.Self);
-                    var actionsAtHandoff = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, null, selfUnitsForHandoff)?.ToList() ?? new List<SC2Action>();
+                    // Determine assigned workers for the current spawn
+                    var state = _miningManager.CcaMiningService.GetCurrentSpawnState(mapData, startIndex);
+                    if (state?.TeamAssignments != null)
+                    {
+                        var assignedTags = state.TeamAssignments.SelectMany(t => t.Workers ?? new List<WorkerEntryDto>()).Where(w => w != null).Select(w => w.UnitTag).ToHashSet();
 
-                    // Signal mining started to unregister this manager
-                    _miningManager.SignalMiningStarted();
-                    
-                    Console.WriteLine("CcaManager: Takeover successful.");
-                    
-                    return actionsAtHandoff;
+                        // Find workers that are not currently gathering and issue SMART to their assigned mineral harvest point
+                        var gatherActions = new List<SC2APIProtocol.Action>();
+                        foreach (var w in liveWorkers.Where(lw => assignedTags.Contains(lw.UnitTag)))
+                        {
+                            var unit = observation?.Observation?.RawData?.Units?.FirstOrDefault(u => u != null && u.Tag == w.UnitTag);
+                            var isMining = unit?.Orders != null && unit.Orders.Any(o => Convert.ToInt32(o.AbilityId) == (int)Abilities.HARVEST_GATHER || Convert.ToInt32(o.AbilityId) == (int)Abilities.HARVEST_GATHER_DRONE || Convert.ToInt32(o.AbilityId) == (int)Abilities.HARVEST_GATHER_PROBE || Convert.ToInt32(o.AbilityId) == (int)Abilities.HARVEST_GATHER_SCV || Convert.ToInt32(o.AbilityId) == (int)Abilities.HARVEST_RETURN);
+                            if (!isMining)
+                            {
+                                // Try to find assigned mineral for this worker
+                                var label = w.Label ?? w.FinalLabel ?? w.StartLabel;
+                                var assignedMineral = state.TeamAssignments.SelectMany(t => t.Minerals ?? new List<OrderedMineral>()).FirstOrDefault(m => string.Equals((m?.FinalLabel ?? m?.Label), label, StringComparison.OrdinalIgnoreCase));
+                                var targetPoint = assignedMineral?.HarvestPoint ?? assignedMineral?.Position;
+                                if (targetPoint != null)
+                                {
+                                    var cmd = new ActionRawUnitCommand
+                                    {
+                                        AbilityId = (int)Abilities.SMART,
+                                        TargetWorldSpacePos = new Point2D { X = targetPoint.X, Y = targetPoint.Y }
+                                    };
+                                    cmd.UnitTags.Add(w.UnitTag);
+                                    gatherActions.Add(new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = cmd } });
+                                }
+                            }
+                        }
+
+                        if (gatherActions.Count > 0)
+                        {
+                            // Return gather actions so they execute this frame
+                            return gatherActions;
+                        }
+
+                        // If no gather actions were needed, check if all assigned workers are mining; if so, signal mining started
+                        var allMining = true;
+                        foreach (var w in liveWorkers.Where(lw => assignedTags.Contains(lw.UnitTag)))
+                        {
+                            var unit = observation?.Observation?.RawData?.Units?.FirstOrDefault(u => u != null && u.Tag == w.UnitTag);
+                            var isMining = unit?.Orders != null && unit.Orders.Any(o => Convert.ToInt32(o.AbilityId) == (int)Abilities.HARVEST_GATHER || Convert.ToInt32(o.AbilityId) == (int)Abilities.HARVEST_RETURN);
+                            if (!isMining)
+                            {
+                                allMining = false;
+                                break;
+                            }
+                        }
+
+                        if (allMining && !_unregistered)
+                        {
+                            _allMiningConsecutiveFrames++;
+                            if (_allMiningConsecutiveFrames >= AllMiningConfirmationFrames)
+                            {
+                                Console.WriteLine("CcaManager: all assigned workers are mining (confirmed) — signalling handoff and unregistering");
+                                try
+                                {
+                                    _miningManager.SignalMiningStarted();
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"CcaManager: failed to signal mining started: {ex.Message}");
+                                }
+
+                                HandleMiningStarted();
+                            }
+                        }
+                        else if (!allMining)
+                        {
+                            _allMiningConsecutiveFrames = 0;
+                        }
+                    }
                 }
-
-                var selfUnits = observation?.Observation?.RawData?.Units?.Where(u => u.Alliance == Alliance.Self);
-                var actions = _ccaService.BuildBumpOrders(frame, mapData, startIndex, liveWorkers, null, selfUnits);
                 return actions != null ? actions.ToList() : Array.Empty<SC2APIProtocol.Action>();
             }
             catch (Exception ex)

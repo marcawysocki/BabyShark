@@ -389,6 +389,7 @@ namespace BabySharkBot.Setup
         public UnitReadyForLabelingDto ReadyForLabeling { get; set; } = new();
         public Dictionary<ulong, EnemyUnitObservationDto> EnemyUnits { get; set; } = new();
         public Dictionary<ulong, WorkerEntryDto> SelfUnits { get; set; } = new();
+        public Dictionary<ulong, Vector2Dto> WorkerPositions { get; set; } = new();
         public Dictionary<ulong, MineralDto> Minerals { get; set; } = new();
         public Dictionary<ulong, OrderedVespene> Vespene { get; set; } = new();
     }

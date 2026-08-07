@@ -94,7 +94,7 @@ namespace BabySharkBot
             var myRace = Race.Zerg;
             if (args.Length == 0)
             {
-                gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild).Wait();
+                 gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild).Wait();
             }
             else
             {

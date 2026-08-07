@@ -73,6 +73,13 @@ namespace BabySharkBot.Managers
 
             var frame = (int)observation.Observation.GameLoop;
             
+            // During the initialization phase, clear all Sharky Commanders to ensure 
+            // CCA has absolute authority over the workers.
+            if (frame < 35)
+            {
+                _activeUnitData.Commanders.Clear();
+            }
+
             // Initialize observation snapshot if it's the first frame or reset it
             if (Globals.CurrentObservation == null)
             {
@@ -87,6 +94,8 @@ namespace BabySharkBot.Managers
             Globals.CurrentObservation.AvailableLarva.Clear();
             Globals.CurrentObservation.AvailableQueens.Clear();
             Globals.CurrentObservation.AvailableOverlords.Clear();
+            Globals.CurrentObservation.WorkerPositions.Clear();
+            Globals.CurrentObservation.SelfUnits.Clear(); // Refresh self units to prevent staleness
 
             // Clear frame-specific dictionaries
             Globals.CurrentObservation.Minerals.Clear();
@@ -94,6 +103,11 @@ namespace BabySharkBot.Managers
             
             var currentSelfUnits = new Dictionary<ulong, WorkerEntryDto>();
             var currentVisibleTags = new HashSet<ulong>();
+
+            if (frame % 5 == 0)
+            {
+                Console.WriteLine($"ObservationManager: Processing frame {frame}. RawUnitsCount={observation.Observation.RawData.Units.Count}");
+            }
 
             foreach (var unit in observation.Observation.RawData.Units)
             {
@@ -139,6 +153,14 @@ namespace BabySharkBot.Managers
             entry.BecameVisible = becameVisible;
             entry.IsMorphing = unit.BuildProgress < 1.0f && ut != UnitTypes.ZERG_LARVA;
             entry.IsCompleted = unit.BuildProgress >= 1.0f;
+
+            // Explicitly expose X,Y coordinates for CCA service
+            Globals.CurrentObservation.WorkerPositions[unit.Tag] = entry.Position;
+            
+            if (frame % 5 == 0 && ut == UnitTypes.ZERG_DRONE)
+            {
+                // Console.WriteLine($"ObservationManager: Tracked Drone {unit.Tag} at ({entry.Position.X:F2},{entry.Position.Y:F2})");
+            }
             
             // Cargo Tracking
             bool isCarrying = unit.BuffIds.Any(b => b == 271 || b == 272); // Mineral/Vespene buffs

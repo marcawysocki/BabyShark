@@ -339,6 +339,10 @@ namespace BabySharkBot.Managers
 
             var actions = new List<SC2Action>();
 
+            // Update phase state (Speed Mining) based on current functional drone count
+            var droneCount = snapshot.SelfUnits.Values.Count(u => u != null && u.UnitType == (uint)UnitTypes.ZERG_DRONE && u.IsCompleted);
+            UpdatePhaseState(droneCount);
+
             // >>> CRITICAL: During CCA phase we emit ZERO unit commands. <<<
             // CcaManager owns frames 0-35 exclusively.
             if (!Settings.ccaMining)
@@ -432,7 +436,13 @@ namespace BabySharkBot.Managers
             if (_mapData == null) return;
             var currentStartIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
             var currentAssignments = OngoingMapData.ResolveTeamAssignments(_mapData, currentStartIndex);
-            _ccaMiningService.RecordSpawnObservation(_mapData, currentStartIndex, currentAssignments, _workerLabelService, workerEntries: workerEntries, mineralLabelService: _mineralLabelService);
+            
+            if (_currentFrame % 100 == 0)
+            {
+                Console.WriteLine($"BabySharkMiningManager.ProcessFrameObservation: Frame={_currentFrame}, StartIndex={currentStartIndex}, AssignmentsFound={currentAssignments.Count}");
+            }
+
+            _ccaMiningService.RecordSpawnObservation(_mapData, currentStartIndex, new List<List<TeamPatchAssignmentDto>> { currentAssignments }, _workerLabelService, workerEntries: workerEntries);
 
             var townhall = _mapData.StartingTownHall[currentStartIndex];
             if (townhall == null) return;
@@ -595,7 +605,12 @@ namespace BabySharkBot.Managers
 
             var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
             var teamAssignments = ResolveTeamAssignments(startIndex);
-            if (teamAssignments.Count == 0) return actions;
+            
+            if (teamAssignments.Count == 0)
+            {
+                if (_currentFrame % 100 == 0) Console.WriteLine($"BabySharkMiningManager: [WARN] No team assignments resolved for startIndex {startIndex} at frame {_currentFrame}. WorkerCount={Settings.WorkerCount}");
+                return actions;
+            }
 
             // Use self units from snapshot
             var selfUnits = snapshot.SelfUnits;

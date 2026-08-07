@@ -73,13 +73,6 @@ namespace BabySharkBot
             DebugManager = _defaultBot.DebugManager;
             Managers.Add(DebugManager);
 
-            // Essential Sharky managers for data and state tracking
-            Managers.Add(_defaultBot.UnitDataManager);
-            Managers.Add(_defaultBot.MapManager);
-            Managers.Add(_defaultBot.EnemyRaceManager);
-            Managers.Add(_defaultBot.BaseManager);
-            Managers.Add(_defaultBot.TargetingManager);
-
             // Essential services
             DebugService = _defaultBot.DebugService;
 
@@ -142,25 +135,14 @@ namespace BabySharkBot
             RegisterRequiredMicroTasks();
             InstallRlMicroControllerWrappers();
 
-            // Replace Sharky's unit observation manager with BabyShark's copy
-            var babySharkUnitManager = new BabySharkUnitManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.BaseData, _defaultBot.EnemyData, _defaultBot.SharkyOptions, _defaultBot.TargetPriorityService, _defaultBot.CollisionCalculator, _defaultBot.MapDataService, _defaultBot.DebugService, _defaultBot.DamageService, _defaultBot.UnitDataService, _defaultBot.TargetingData);
-            Managers.Add(babySharkUnitManager);
-
             // Create BabySharkMiningManager with shared CCA service instance
             _miningManager = new BabySharkMiningManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, workerLabelService, crosshairService, mineralLabelService, vespeneLabelService, expansionCOMService, expansionPointService, expansionPointDrawService, provisionalExpansionService, MineralReturnRateTrackerService, FrameToTimeConverter, mapDataService, SpawningPoolPlacementService, ccaService);
             Console.WriteLine("BabySharkAI: Created BabySharkMiningManager with shared CCA service instance");
-            Managers.Add(_miningManager);
-
-            // FIX: DrawOnlyManager ensures debug labels are sent every frame,
-            // even when BabySharkMiningManager is skipped for performance.
-            var drawOnlyManager = new DrawOnlyManager(_miningManager);
-            Managers.Add(drawOnlyManager);
-            Console.WriteLine("BabySharkAI: Registered DrawOnlyManager for persistent debug drawing");
 
             // Create and register CCA manager to run bump/order logic in the manager lifecycle.
             try
             {
-                var ccaManager = new CcaManager(ccaService, _miningManager, buildManager);
+                var ccaManager = new CcaManager(ccaService, _miningManager);
                 Managers.Add(ccaManager);
                 Console.WriteLine($"BabySharkAI: Registered CcaManager. Total managers: {Managers.Count}");
             }
@@ -185,29 +167,7 @@ namespace BabySharkBot
             {
                 var microTaskData = _defaultBot.MicroTaskData;
                 
-                // 1. Mining Tasks
-                var mineralMiner = new MineralMiner(_defaultBot);
-                var gasMiner = new GasMiner(_defaultBot);
-                var miningDefenseService = new MiningDefenseService(_defaultBot, null);
-
-                // CustomMiningTask overrides debug drawing to prevent Sharky's default labels
-                var customMiningTask = new CustomMiningTask(
-                    _defaultBot,
-                    priority: 8,
-                    miningDefenseService: miningDefenseService,
-                    mineralMiner: mineralMiner,
-                    gasMiner: gasMiner
-                );
-                microTaskData["MiningTask"] = customMiningTask;
-
-                // TeamPatchMiningTask implements the team-based mining logic
-                var teamPatchTask = new TeamPatchMiningTask(_defaultBot, priority: 8, miningDefenseService, mineralMiner, gasMiner, _miningManager);
-                microTaskData[teamPatchTask.GetType().Name] = teamPatchTask;
-
-                // 2. Scouting Tasks
-                var babySharkOverlordScoutTask = new BabySharkOverlordScoutTask(_defaultBot, true, 0.9f, ProvisionalExpansionService, ExpansionCOMService);
-                microTaskData["OverlordScoutTask"] = babySharkOverlordScoutTask;
-
+                // No microtasks registered to ensure MicroManager has nothing to do if it were present.
                 Console.WriteLine($"BabySharkAI: Registered {microTaskData.Count} essential microtasks.");
             }
             catch (Exception ex)
@@ -337,21 +297,6 @@ namespace BabySharkBot
                     Settings.CurrentBaseHasBeenPlayed = GetApiLocAndCOM.ResolveCurrentBaseHasBeenPlayed(mapData, Settings.CurrentSpawnIndex);
                     if (Settings.WorkerCount == 8) Settings.CurrentBaseHasBeenPlayed8 = Settings.CurrentBaseHasBeenPlayed;
                     else if (Settings.WorkerCount == 12) Settings.CurrentBaseHasBeenPlayed12 = Settings.CurrentBaseHasBeenPlayed;
-
-                }
-            }
-
-            var workerEntries = ProcessVisableUnits.ProcessVisibleUnits(observation, _miningManager.WorkerLabelService);
-            Settings.ccaMining = true;
-            if (_miningManager.CurrentMapData != null)
-            {
-                var currentStartIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                
-                // Initialize Frame Zero labeling in CCA service
-                var snapshot = Globals.CurrentObservation;
-                if (snapshot != null)
-                {
-                    _miningManager.CcaMiningService.InitializeFrameZero(_miningManager.CurrentMapData, currentStartIndex, snapshot, _miningManager.WorkerLabelService, _miningManager.MineralLabelService);
                 }
             }
 
@@ -380,62 +325,6 @@ namespace BabySharkBot
             return _defaultBot;
         }
 
-        // Ensure the mining manager and a MicroManager are registered with the manager list.
-        // This can be called by external services when they need microtasks or mining manager functionality at runtime.
-        public bool EnsureManagersRegistered()
-        {
-            try
-            {
-                try
-                {
-                    System.Diagnostics.Debugger.Break();
-                }
-                catch { }
-
-                Console.WriteLine("BabySharkAI.EnsureManagersRegistered: called");
-                var miningPresent = Managers.Contains(_miningManager);
-                var miningAdded = false;
-                if (_miningManager != null && !miningPresent)
-                {
-                    Managers.Add(_miningManager);
-                    miningAdded = true;
-                    Console.WriteLine("BabySharkAI: Ensured BabySharkMiningManager registered as part of takeover.");
-                    miningPresent = true;
-                }
-
-                var microPresent = Managers.Any(m => m.GetType().Name == "MicroManager");
-                var microAdded = false;
-                if (!microPresent)
-                {
-                    try
-                    {
-                        var microMgr = new Sharky.Managers.MicroManager(_defaultBot.ActiveUnitData, _defaultBot.MicroTaskData, _defaultBot.SharkyOptions, _defaultBot.DebugService);
-                        Managers.Add(microMgr);
-                        microAdded = true;
-                        Console.WriteLine("BabySharkAI: Added MicroManager into Managers");
-                        microPresent = true;
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"BabySharkAI: Failed to add MicroManager: {ex.Message}");
-                    }
-                }
-
-                var success = miningPresent && microPresent;
-                Settings.MiningManagerStarted = success;
-                if (!success)
-                {
-                    Console.WriteLine($"BabySharkAI: EnsureManagersRegistered partial success: miningPresent={miningPresent}, microPresent={microPresent}");
-                }
-                return success;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"BabySharkAI.EnsureManagersRegistered failed: {ex.Message}");
-                return false;
-            }
-        }
-
         private sealed class StartupAwareSharkyBot : ISharkyBot
         {
             private readonly BabySharkAI _owner;
@@ -449,51 +338,6 @@ namespace BabySharkBot
             {
                 // Hydrate MacroData so builds can read Minerals/Supply/Frame
                 MacroDataUpdater.UpdateFromObservation(observation, _owner._defaultBot.MacroData);
-
-                // Break every 5th frame BEFORE any processing, so the previous frame's
-                // debug labels are still visible on screen.
-                if (observation.Observation.GameLoop % 5 == 0)
-                {
-                    //System.Diagnostics.Debugger.Break();
-                }
-
-                if (observation.Observation.GameLoop % 100 == 0)
-                {
-                    Console.WriteLine($"StartupAwareSharkyBot.OnFrame: frame={observation.Observation.GameLoop} managers={_owner.Managers.Count}");
-                    foreach (var m in _owner.Managers)
-                    {
-                        Console.WriteLine($"  Manager: {m.GetType().Name}");
-                    }
-                }
-                // Ensure requested managers are present before running the manager loop
-                try
-                {
-                    if (Settings.MiningManagerStarted)
-                    {
-                        if (_owner._miningManager != null && !_owner.Managers.Contains(_owner._miningManager))
-                        {
-                            _owner.Managers.Add(_owner._miningManager);
-                            Console.WriteLine("StartupAwareSharkyBot: Re-registered BabySharkMiningManager into Managers");
-                        }
-
-                        if (!_owner.Managers.Any(m => m.GetType().Name == "MicroManager"))
-                        {
-                            try
-                            {
-                                var microMgr = new Sharky.Managers.MicroManager(_owner._defaultBot.ActiveUnitData, _owner._defaultBot.MicroTaskData, _owner._defaultBot.SharkyOptions, _owner._defaultBot.DebugService);
-                                _owner.Managers.Add(microMgr);
-                                Console.WriteLine("StartupAwareSharkyBot: Added MicroManager into Managers");
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"StartupAwareSharkyBot: Failed to add MicroManager: {ex.Message}");
-                            }
-                        }
-                    }
-                }
-                catch
-                {
-                }
 
                 if (_owner.Managers == null)
                 {

@@ -88,6 +88,7 @@ namespace BabySharkBot.Setup
                 return new List<TeamPatchAssignmentDto>();
             }
 
+            // High Priority: Exact match for current worker count
             if (mapData.AssignmentsByWorkerCount != null
                 && mapData.AssignmentsByWorkerCount.TryGetValue(Settings.WorkerCount, out var assignmentsByStart)
                 && assignmentsByStart != null
@@ -96,6 +97,24 @@ namespace BabySharkBot.Setup
                 && assignmentsByStart[startIndex].Count > 0)
             {
                 return assignmentsByStart[startIndex];
+            }
+
+            // Fallback: If we have > 12 workers, use the 12-worker base assignments for the main base
+            if (Settings.WorkerCount > 12 && mapData.AssignmentsByWorkerCount.TryGetValue(12, out var assignments12))
+            {
+                if (assignments12.Count > startIndex && assignments12[startIndex] != null && assignments12[startIndex].Count > 0)
+                {
+                    return assignments12[startIndex];
+                }
+            }
+
+            // Fallback: If we have 8-11 workers, use the 8-worker base assignments
+            if (Settings.WorkerCount > 8 && Settings.WorkerCount < 12 && mapData.AssignmentsByWorkerCount.TryGetValue(8, out var assignments8))
+            {
+                if (assignments8.Count > startIndex && assignments8[startIndex] != null && assignments8[startIndex].Count > 0)
+                {
+                    return assignments8[startIndex];
+                }
             }
 
             return new List<TeamPatchAssignmentDto>();

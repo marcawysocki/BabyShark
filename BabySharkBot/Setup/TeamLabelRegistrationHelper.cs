@@ -232,15 +232,15 @@ namespace BabySharkBot.Setup
             }
             else
             {
-                // For 8-worker starts, use the corresponding 2-worker-per-team mapping:
-                // Team 1: O (M1, M2) -> W7, W8
-                // Team 2: R (M3, M4) -> W5, W6
-                // Team 3: P (M5, M6) -> W3, W4
-                // Team 4: G (M7, M8) -> W1, W2
-                AddTeamIfPossible(teams, minerals, workers, 7, 6, new[] { "W7", "W8" }, 1);
-                AddTeamIfPossible(teams, minerals, workers, 5, 4, new[] { "W5", "W6" }, 2);
-                AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W3", "W4" }, 3);
-                AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W1", "W2" }, 4);
+                // For 8-worker starts, use a strict linear 1-to-1 mapping based on greedy chain order:
+                // Team 1: O (M0, M1) -> W1, W2
+                // Team 2: R (M2, M3) -> W3, W4
+                // Team 3: P (M4, M5) -> W5, W6
+                // Team 4: G (M6, M7) -> W7, W8
+                AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W1", "W2" }, 1);
+                AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W3", "W4" }, 2);
+                AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W5", "W6" }, 3);
+                AddTeamIfPossible(teams, minerals, workers, 6, 7, new[] { "W7", "W8" }, 4);
             }
 
 
@@ -617,13 +617,14 @@ namespace BabySharkBot.Setup
             }
             else if (prefix == "G" || prefix == "P" || prefix == "O" || prefix == "R")
             {
-                // 8 worker start logic: 1 is closest to near mineral, 2 is closest to far mineral
-                var sortedNear = teamWorkers.OrderBy(w => Vector2.Distance(new Vector2(w.Position.X, w.Position.Y), new Vector2(nearMineral.Position.X, nearMineral.Position.Y))).ToList();
-                var w1 = sortedNear[0];
+                // 8 worker start logic: Linear 1-to-1 mapping based on greedy chain order (W1-W8).
+                // W1/W3/W5/W7 -> First mineral in team pair (A)
+                // W2/W4/W6/W8 -> Second mineral in team pair (B)
+                var w1 = teamWorkers.FirstOrDefault(w => w.Label != null && (w.Label.EndsWith("1") || w.Label.EndsWith("3") || w.Label.EndsWith("5") || w.Label.EndsWith("7")));
                 var w2 = teamWorkers.FirstOrDefault(w => w != w1);
 
-                AssignFinalLabel(w1, $"{prefix}1", workerLabelService);
-                if (w2 != null) AssignFinalLabel(w2, $"{prefix}2", workerLabelService);
+                if (w1 != null) AssignFinalLabel(w1, w1.Label, workerLabelService);
+                if (w2 != null) AssignFinalLabel(w2, w2.Label, workerLabelService);
             }
         }
 
