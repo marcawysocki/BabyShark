@@ -65,6 +65,10 @@ namespace BabySharkBot.Managers
         private int _pauseUntilFrame = -1;
         private bool _forceCcaOnce = false;
         private bool _handoffBreakTriggered = false;
+        private bool _startingTeamsAssigned = false;
+        private bool _cargoReturnDebugBreakTriggered = false;
+        private int _lastReachabilityConsoleFrame = -999999;
+        private int _lastCargoEvaluationConsoleFrame = -999999;
         
         // JIT per-worker state (replaces MiningTeamState)
         private class JitWorkerState
@@ -79,6 +83,16 @@ namespace BabySharkBot.Managers
         }
 
         private Dictionary<ulong, bool> _previousCarryingState = new Dictionary<ulong, bool>();
+        private readonly HashSet<ulong> _cargoReturnSequenceActive = new HashSet<ulong>();
+        private readonly Dictionary<ulong, CargoReturnSequenceState> _pendingCargoReturnSequences = new Dictionary<ulong, CargoReturnSequenceState>();
+        private readonly Dictionary<ulong, ulong> _defaultSpeedMiningMineralByWorker = new Dictionary<ulong, ulong>();
+
+        private sealed class CargoReturnSequenceState
+        {
+            public Vector2Dto ReturnPoint { get; set; } = new Vector2Dto();
+            public ulong TownhallTag { get; set; }
+            public int CreatedFrame { get; set; }
+        }
         private readonly Dictionary<ulong, JitWorkerState> _jitWorkerStates = new Dictionary<ulong, JitWorkerState>();
         private Dictionary<ulong, PinkWorkerState> _pinkWorkerStates = new();
         private bool _speedMiningActive = false;
@@ -197,10 +211,26 @@ namespace BabySharkBot.Managers
             _workerInstructionDrawCount = 0;
             _initialMiningManeuvers = true;
             _openingFrame = -1;
+            _cargoReturnDebugBreakTriggered = false;
+            _lastReachabilityConsoleFrame = -999999;
+            _lastCargoEvaluationConsoleFrame = -999999;
         }
 
         public void OnStart(ResponseGameInfo gameInfo, ResponseData data, ResponsePing pingResponse, ResponseObservation observation, uint playerId, String opponentId)
         {
+            _currentFrame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
+            var snapshot = Globals.CurrentObservation;
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            if (_mapData == null || snapshot == null || startIndex < 0)
+            {
+                return;
+            }
+
+            var liveWorkers = snapshot.SelfUnits.Values
+                .Where(worker => worker != null && worker.Position != null && WorkerTypes.Contains((UnitTypes)worker.UnitType))
+                .ToList();
+
+            Console.WriteLine($"BabySharkMiningManager: OnStart observed starting workers at frame {_currentFrame}; liveWorkers={liveWorkers.Count}. Labels are owned by BabySharkBuildManager.");
         }
 
         private void DrawMineralTargetPoints()
@@ -223,7 +253,12 @@ namespace BabySharkBot.Managers
                     foreach (var mineral in orderedList)
                     {
                         if (mineral?.Position == null || mineral.HarvestPoint == null || mineral.ReturnPoint == null) continue;
-                        var color = mineral.Index switch { 1 or 2 => new Color { R = 0, G = 255, B = 255 }, 3 or 4 => new Color { R = 255, G = 0, B = 255 }, 5 or 6 => new Color { R = 0, G = 0, B = 255 }, 7 or 8 => new Color { R = 255, G = 255, B = 0 }, _ => new Color { R = 255, G = 255, B = 255 } };
+                        var finalLabel = !string.IsNullOrWhiteSpace(mineral.FinalLabel)
+                            ? mineral.FinalLabel
+                            : mineral.Label;
+                        var color = !string.IsNullOrWhiteSpace(finalLabel)
+                            ? ProcessVisableUnits.GetFinalLabelColor(finalLabel)
+                            : new Color { R = 255, G = 255, B = 255 };
                         DrawCircle(mineral.Position, 1.0f, color, debugHeight);
                         ManagerDebugService.DrawText("h", new Point { X = mineral.HarvestPoint.X, Y = mineral.HarvestPoint.Y, Z = debugHeight }, color, 10);
                         ManagerDebugService.DrawText("r", new Point { X = mineral.ReturnPoint.X, Y = mineral.ReturnPoint.Y, Z = debugHeight }, color, 10);
@@ -247,33 +282,96 @@ namespace BabySharkBot.Managers
             }
         }
 
-        private void DrawWorkerLabels(ResponseObservation observation)
+        private void DrawAllUnitLabels(ResponseObservation observation)
         {
+            if (_workerLabelService == null) return;
+
             var snapshot = Globals.CurrentObservation;
-            if (_workerLabelService == null || snapshot == null) return;
-            
             var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
             var storedWorkers = GetStoredWorkersForStart(startIndex);
-            var fallbackByPosition = BuildWorkerLabelFallbackMap(storedWorkers);
-            var finalLabelByTag = BuildWorkerFinalLabelMap(storedWorkers);
+            var labelsByTag = new Dictionary<ulong, string>();
 
-            foreach (var kvp in snapshot.SelfUnits)
+            // Start with the complete registered label set. Do not iterate only visible units:
+            // a label must be redrawn every frame even when its unit is temporarily absent from
+            // the current observation snapshot.
+            foreach (var label in _workerLabelService.GetAllLabels())
             {
-                var tag = kvp.Key;
-                var entry = kvp.Value;
-                var ut = (UnitTypes)entry.UnitType;
-                if (!WorkerTypes.Contains(ut)) continue;
-
-                var label = _workerLabelService.GetLabel(tag);
-                if (string.IsNullOrWhiteSpace(label) || IsLegacyWorkerLabelForDebugBreak(label)) label = ResolveWorkerFinalLabelByTag(tag, finalLabelByTag);
-                if (string.IsNullOrWhiteSpace(label)) label = ResolveWorkerLabelByPosition(entry.Position.X, entry.Position.Y, fallbackByPosition);
-                
-                if (!string.IsNullOrWhiteSpace(label))
+                if (label.Value != 0 && !string.IsNullOrWhiteSpace(label.Key))
                 {
-                    var color = ProcessVisableUnits.GetFinalLabelColor(label);
-                    ManagerDebugService.DrawText(label, new Point { X = entry.Position.X, Y = entry.Position.Y, Z = entry.Position.Z + 0.5f }, color, 12);
+                    labelsByTag[label.Value] = label.Key;
                 }
             }
+
+            // Persisted final labels are also part of the label set and may be registered after
+            // the current frame's unit snapshot was built.
+            foreach (var worker in storedWorkers ?? new List<WorkerEntryDto>())
+            {
+                if (worker == null || worker.UnitTag == 0) continue;
+                var label = worker.FinalLabel ?? worker.Label ?? worker.StartLabel;
+                if (!string.IsNullOrWhiteSpace(label))
+                {
+                    labelsByTag[worker.UnitTag] = label;
+                }
+            }
+
+            foreach (var labelByTag in labelsByTag)
+            {
+                var tag = labelByTag.Key;
+                var label = labelByTag.Value;
+                var workerEntry = storedWorkers?.FirstOrDefault(worker => worker != null && worker.UnitTag == tag);
+                var displayLabel = FormatWorkerDisplayLabel(workerEntry, label, storedWorkers);
+                Vector2Dto position = null;
+
+                if (snapshot?.SelfUnits != null && snapshot.SelfUnits.TryGetValue(tag, out var entry))
+                {
+                    position = entry?.Position;
+                }
+
+
+                if (position == null)
+                {
+                    position = storedWorkers?.FirstOrDefault(w => w != null && w.UnitTag == tag)?.Position;
+                }
+
+                if (position == null) continue;
+
+                ManagerDebugService.DrawText(displayLabel, new Point
+                {
+                    X = position.X,
+                    Y = position.Y,
+                    Z = position.Z + 0.5f
+                }, ProcessVisableUnits.GetFinalLabelColor(label), 12);
+            }
+        }
+
+        private static string FormatWorkerDisplayLabel(WorkerEntryDto worker, string finalLabel, List<WorkerEntryDto> storedWorkers)
+        {
+            if (worker == null || string.IsNullOrWhiteSpace(finalLabel))
+            {
+                return finalLabel ?? string.Empty;
+            }
+
+            var workerIndex = ParseWorkerIndex(worker.StartLabel ?? worker.Label);
+            if (workerIndex <= 0 && storedWorkers != null)
+            {
+                workerIndex = storedWorkers
+                    .Where(candidate => candidate != null)
+                    .OrderBy(candidate => ParseWorkerIndex(candidate.StartLabel ?? candidate.Label))
+                    .ToList()
+                    .FindIndex(candidate => candidate.UnitTag == worker.UnitTag) + 1;
+            }
+
+            return workerIndex > 0 ? $"{workerIndex}-{finalLabel}" : finalLabel;
+        }
+
+        private static int ParseWorkerIndex(string label)
+        {
+            if (string.IsNullOrWhiteSpace(label) || label.Length < 2 || label[0] != 'W')
+            {
+                return 0;
+            }
+
+            return int.TryParse(label.Substring(1), out var index) ? index : 0;
         }
 
         private void DrawWorkerInstructions(ResponseObservation observation)
@@ -326,31 +424,44 @@ namespace BabySharkBot.Managers
         public IEnumerable<SC2Action> OnFrame(ResponseObservation observation)
         {
             _currentFrame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
+            var relativeFrame = Settings.GetRelativeFrame(_currentFrame);
             var snapshot = Globals.CurrentObservation;
-            if (snapshot == null) return Array.Empty<SC2Action>();
+            if (_currentFrame - _lastReachabilityConsoleFrame >= 25)
+            {
+                _lastReachabilityConsoleFrame = _currentFrame;
+                Console.WriteLine($"[MINING REACH] OnFrame frame={_currentFrame} relative={relativeFrame} snapshot={snapshot != null} mapData={_mapData != null} cca={Settings.ccaMining} simulated={Settings.SimulatedStartActive} buildOwns={Settings.BuildOwnsWorkerCommands} availableWorkers={Settings.AvailableWorker.Count} workerCount={Settings.WorkerCount}");
+            }
+
+            if (snapshot == null)
+            {
+                Console.WriteLine($"[MINING REACH] skipped frame={_currentFrame}: Globals.CurrentObservation is null");
+                return Array.Empty<SC2Action>();
+            }
 
             ProcessFrameObservation(observation);
 
-            if (!_handoffBreakTriggered && !Settings.ccaMining && _currentFrame >= 35)
+            if (!_handoffBreakTriggered && !Settings.ccaMining && relativeFrame >= 35)
             {
                 _handoffBreakTriggered = true;
                 Console.WriteLine($"BabySharkMiningManager: Steady-state JIT verified at frame {_currentFrame}");
             }
 
             var actions = new List<SC2Action>();
+            if (Settings.SimulatedStartActive || Settings.BuildOwnsWorkerCommands)
+            {
+                Console.WriteLine($"[MINING REACH] commands skipped frame={_currentFrame}: simulated={Settings.SimulatedStartActive} buildOwns={Settings.BuildOwnsWorkerCommands}");
+                return actions;
+            }
 
             // Update phase state (Speed Mining) based on current functional drone count
             var droneCount = snapshot.SelfUnits.Values.Count(u => u != null && u.UnitType == (uint)UnitTypes.ZERG_DRONE && u.IsCompleted);
             UpdatePhaseState(droneCount);
 
-            // >>> CRITICAL: During CCA phase we emit ZERO unit commands. <<<
-            // CcaManager owns frames 0-35 exclusively.
+            // CCA owns frames 0-35 exclusively; steady-state executes only build assignments.
             if (!Settings.ccaMining)
             {
                 actions.AddRange(ExecuteJustInTimeMining(observation));
-                
-                // Phase 4: Add Idle-Fallback in Manager
-                actions.AddRange(HandleIdleWorkerFallback(observation));
+
             }
 
             UpdateScoutedMinerals(observation);
@@ -361,52 +472,104 @@ namespace BabySharkBot.Managers
             return actions;
         }
 
-        private IEnumerable<SC2Action> HandleIdleWorkerFallback(ResponseObservation observation)
+        private void AssignStartingTeams(int startIndex, List<WorkerEntryDto> liveWorkers)
         {
-            var actions = new List<SC2Action>();
-            var snapshot = Globals.CurrentObservation;
-            if (snapshot == null) return actions;
-
-            foreach (var tag in snapshot.SelfUnits.Keys)
+            if (_startingTeamsAssigned || _mapData == null || liveWorkers == null || liveWorkers.Count == 0)
             {
-                if (snapshot.SelfUnits.TryGetValue(tag, out var entry))
-                {
-                    var ut = (UnitTypes)entry.UnitType;
-                    if (!WorkerTypes.Contains(ut)) continue;
-
-                    // Get actual unit for orders check
-                    if (_activeUnitData.SelfUnits.TryGetValue(tag, out var unitCalculation))
-                    {
-                        var worker = unitCalculation.Unit;
-                        if (worker.Orders.Count == 0)
-                        {
-                            _workerIdleFrames.TryGetValue(tag, out var idleCount);
-                            _workerIdleFrames[tag] = idleCount + 1;
-
-                            if (_workerIdleFrames[tag] > 30)
-                            {
-                                // Emergency reassign to nearest unmined mineral
-                                if (_jitWorkerStates.TryGetValue(tag, out var state))
-                                {
-                                    var mineral = ResolveMineralTag(observation, state.CurrentMineralPos);
-                                    if (mineral != 0)
-                                    {
-                                        actions.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { tag }, TargetUnitTag = mineral } } });
-                                        Console.WriteLine($"[IDLE FALLBACK] Worker {tag} idle for {_workerIdleFrames[tag]} frames, forcing SMART to mineral {mineral}");
-                                    }
-                                }
-                                _workerIdleFrames[tag] = 0; // Reset counter after action
-                            }
-                        }
-                        else
-                        {
-                            _workerIdleFrames[tag] = 0;
-                        }
-                    }
-                }
+                return;
             }
 
-            return actions;
+            if (Settings.WorkerCount != 8 && Settings.WorkerCount != 12)
+            {
+                return;
+            }
+
+            var orderedMinerals = _mapData.SecondaryOrderedMainMinerals != null
+                && _mapData.SecondaryOrderedMainMinerals.Count > startIndex
+                && _mapData.SecondaryOrderedMainMinerals[startIndex] != null
+                && _mapData.SecondaryOrderedMainMinerals[startIndex].Count > 0
+                ? _mapData.SecondaryOrderedMainMinerals[startIndex]
+                : (_mapData.OrderedMainMinerals != null && _mapData.OrderedMainMinerals.Count > startIndex
+                    ? _mapData.OrderedMainMinerals[startIndex]
+                    : null);
+
+            var mineralCom = _mapData.SecondaryMineralCenterOfMass != null
+                && _mapData.SecondaryMineralCenterOfMass.Count > startIndex
+                && _mapData.SecondaryMineralCenterOfMass[startIndex] != null
+                ? _mapData.SecondaryMineralCenterOfMass[startIndex]
+                : (_mapData.MineralCenterOfMass != null && _mapData.MineralCenterOfMass.Count > startIndex
+                    ? _mapData.MineralCenterOfMass[startIndex]
+                    : null);
+
+            if (orderedMinerals == null || mineralCom == null)
+            {
+                return;
+            }
+
+            var workerTuples = liveWorkers
+                .Where(w => w?.Position != null && w.UnitTag != 0)
+                .Select(w => (w.UnitTag, w.Position.X, w.Position.Y, w.Position.Z, w.UnitType))
+                .ToList();
+            var startingWorkers = WorkerLabelChainHelper.BuildGreedyWorkerEntries(workerTuples, mineralCom, _workerLabelService);
+            if (startingWorkers.Count != Settings.WorkerCount)
+            {
+                return;
+            }
+
+            var assignments = TeamLabelRegistrationHelper.EnsureTeamLabelsForStart(
+                _mapData,
+                startIndex,
+                orderedMinerals,
+                startingWorkers,
+                mineralCom,
+                _workerLabelService,
+                _mapData.TeamPatchAssignments);
+
+            if (assignments.Count > 0)
+            {
+                _startingTeamsAssigned = true;
+                Console.WriteLine($"BabySharkMiningManager: Assigned {assignments.Count} starting teams for start {startIndex} with {startingWorkers.Count} workers.");
+            }
+        }
+
+        private void RegisterCurrentSpawnLabels(int startIndex, List<WorkerEntryDto> liveWorkers)
+        {
+            if (_mapData == null || startIndex < 0)
+            {
+                return;
+            }
+
+            AssignStartingTeams(startIndex, liveWorkers);
+
+            var storedWorkers = GetStoredWorkersForStart(startIndex);
+            foreach (var storedWorker in storedWorkers ?? new List<WorkerEntryDto>())
+            {
+                if (storedWorker?.Position == null) continue;
+                var label = storedWorker.FinalLabel ?? storedWorker.Label ?? storedWorker.StartLabel;
+                if (string.IsNullOrWhiteSpace(label)) continue;
+
+                var liveWorker = liveWorkers?.Where(w => w?.Position != null)
+                    .OrderBy(w => DistanceSquared(w.Position, storedWorker.Position))
+                    .FirstOrDefault();
+                if (liveWorker == null || liveWorker.UnitTag == 0) continue;
+
+                _workerLabelService.SetLabel(label, liveWorker.UnitTag);
+            }
+
+            MapLabelRegistrationHelper.RegisterLabels(
+                _mapData,
+                startIndex,
+                _mineralLabelService,
+                _vespeneLabelService,
+                _spawningPoolPlacementService);
+        }
+
+        private static float DistanceSquared(Vector2Dto first, Vector2Dto second)
+        {
+            if (first == null || second == null) return float.MaxValue;
+            var dx = first.X - second.X;
+            var dy = first.Y - second.Y;
+            return dx * dx + dy * dy;
         }
 
         public void DrawDebugVisuals(ResponseObservation observation)
@@ -414,7 +577,7 @@ namespace BabySharkBot.Managers
             if (!ManagerDebugService.IsDebugEnabled) return;
 
             DrawMineralTargetPoints();
-            DrawWorkerLabels(observation);
+            DrawAllUnitLabels(observation);
             DrawWorkerInstructions(observation);
             DrawCenterOfMassLocations();
             DrawExpansionCOMCrosshairs();
@@ -432,14 +595,28 @@ namespace BabySharkBot.Managers
             var snapshot = Globals.CurrentObservation;
             if (snapshot == null) return;
 
-            var workerEntries = ProcessVisableUnits.ProcessVisibleUnits(observation, _workerLabelService, _mineralLabelService, _vespeneLabelService, _spawningPoolPlacementService);
             if (_mapData == null) return;
-            var currentStartIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-            var currentAssignments = OngoingMapData.ResolveTeamAssignments(_mapData, currentStartIndex);
-            
-            if (_currentFrame % 100 == 0)
+            if (!TryResolveObservedSpawn(out var currentStartIndex, out _))
             {
-                Console.WriteLine($"BabySharkMiningManager.ProcessFrameObservation: Frame={_currentFrame}, StartIndex={currentStartIndex}, AssignmentsFound={currentAssignments.Count}");
+                Console.WriteLine($"[MINING TARGET] ProcessFrameObservation suppressed frame={_currentFrame}: observed self town hall does not match cached starts.");
+                return;
+            }
+
+            var workerEntries = snapshot.SelfUnits.Values
+                .Where(worker => worker != null && WorkerTypes.Contains((UnitTypes)worker.UnitType) && worker.UnitTag != 0)
+                .ToList();
+            var liveWorkers = snapshot.SelfUnits.Values
+                .Where(worker => worker != null && WorkerTypes.Contains((UnitTypes)worker.UnitType) && worker.UnitTag != 0)
+                .Select(worker => ToObservedUnit(worker))
+                .ToList();
+            var buildAssignments = ResolveBuildGreedyAssignments(currentStartIndex);
+            RefreshBuildPlanLiveTags(buildAssignments, liveWorkers, currentStartIndex);
+            var currentAssignments = ResolveBuildGreedyAssignments(currentStartIndex);
+            var relativeFrame = Settings.GetRelativeFrame(_currentFrame);
+            
+            if (relativeFrame % 100 == 0)
+            {
+                Console.WriteLine($"BabySharkMiningManager.ProcessFrameObservation: Frame={_currentFrame} (relative {relativeFrame}), StartIndex={currentStartIndex}, AssignmentsFound={currentAssignments.Count}");
             }
 
             _ccaMiningService.RecordSpawnObservation(_mapData, currentStartIndex, new List<List<TeamPatchAssignmentDto>> { currentAssignments }, _workerLabelService, workerEntries: workerEntries);
@@ -597,49 +774,140 @@ namespace BabySharkBot.Managers
             }
         }
 
+        private void UpdateAssignedWorkerObservationState(int startIndex, ObservationSnapshotDto snapshot)
+        {
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
+            if (assignedWorkers == null)
+            {
+                return;
+            }
+
+            foreach (var assignedWorker in assignedWorkers)
+            {
+                if (!snapshot.SelfUnits.TryGetValue(assignedWorker.UnitID, out var observedWorker))
+                {
+                    continue;
+                }
+
+                assignedWorker.CurrentXY = observedWorker.Position;
+                assignedWorker.CurrentTargetUnitID = observedWorker.TargetUnitTag;
+                assignedWorker.CurrentAbilityID = (uint)(observedWorker.OrderAbilityIds?.FirstOrDefault() ?? 0);
+                assignedWorker.IsCarrying = observedWorker.IsCarrying;
+
+                if (assignedWorker.MiningTargets.Count <= 1)
+                {
+                    assignedWorker.Mti = 0;
+                    continue;
+                }
+
+                if (observedWorker.WasCarrying && !observedWorker.IsCarrying)
+                {
+                    var oldIndex = assignedWorker.Mti;
+                    var oldCount = assignedWorker.MiningTargets.Count;
+                    AdvanceAssignedWorkerTarget(assignedWorker);
+                    Console.WriteLine($"[ASSIGNED TARGET] worker={assignedWorker.UnitID} cargo-return mti={oldIndex}->{assignedWorker.Mti} targets={oldCount}->{assignedWorker.MiningTargets.Count} current={(assignedWorker.MiningTargets.ElementAtOrDefault(assignedWorker.Mti)?.ToResourceLabel ?? "<none>")}");
+                }
+            }
+        }
+
+        private static void AdvanceAssignedWorkerTarget(AssignedWorkerDto assignedWorker)
+        {
+            if (assignedWorker.MiningTargets.Count <= 1)
+            {
+                assignedWorker.Mti = 0;
+                return;
+            }
+
+            if (assignedWorker.Mti < assignedWorker.MiningTargets.Count - 1)
+            {
+                assignedWorker.Mti++;
+                return;
+            }
+
+            var switchTargets = assignedWorker.MiningTargets
+                .Where(target => target.IsABSwitch)
+                .ToList();
+            if (switchTargets.Count == 0)
+            {
+                assignedWorker.Mti = assignedWorker.MiningTargets.Count - 1;
+                return;
+            }
+
+            assignedWorker.MiningTargets = switchTargets;
+            assignedWorker.Mti = 0;
+        }
+
+        private List<TeamPatchAssignmentDto> ResolveBuildGreedyAssignments(int startIndex)
+        {
+            if (_mapData?.TeamPatchAssignments == null
+                || startIndex < 0
+                || startIndex >= _mapData.TeamPatchAssignments.Count)
+            {
+                return new List<TeamPatchAssignmentDto>();
+            }
+
+            return _mapData.TeamPatchAssignments[startIndex]
+                ?.Where(assignment => assignment != null)
+                .ToList()
+                ?? new List<TeamPatchAssignmentDto>();
+        }
+
         private List<SC2Action> ExecuteJustInTimeMining(ResponseObservation observation)
         {
             var actions = new List<SC2Action>();
             var snapshot = Globals.CurrentObservation;
-            if (snapshot == null) return actions;
-
-            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-            var teamAssignments = ResolveTeamAssignments(startIndex);
-            
-            if (teamAssignments.Count == 0)
+            if (snapshot == null)
             {
-                if (_currentFrame % 100 == 0) Console.WriteLine($"BabySharkMiningManager: [WARN] No team assignments resolved for startIndex {startIndex} at frame {_currentFrame}. WorkerCount={Settings.WorkerCount}");
+                Console.WriteLine($"[MINING REACH] JIT skipped frame={_currentFrame}: snapshot is null");
                 return actions;
             }
 
-            // Use self units from snapshot
-            var selfUnits = snapshot.SelfUnits;
-            var liveWorkers = new List<Unit>();
-            foreach (var tag in snapshot.SelfUnits.Keys)
+            if (!TryResolveObservedSpawn(out var startIndex, out var townhallPosition))
             {
-                if (_activeUnitData.SelfUnits.TryGetValue(tag, out var unitCalculation))
-                {
-                    var unit = unitCalculation.Unit;
-                    var ut = (UnitTypes)unit.UnitType;
-                    if (WorkerTypes.Contains(ut))
-                    {
-                        liveWorkers.Add(unit);
-                    }
-                }
+                Console.WriteLine($"[MINING TARGET] JIT suppressed frame={_currentFrame}: observed self town hall does not match cached starts.");
+                return actions;
             }
 
-            if (liveWorkers.Count == 0) return actions;
+            var rawTeamAssignments = ResolveBuildGreedyAssignments(startIndex);
+            UpdateAssignedWorkerObservationState(startIndex, snapshot);
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?? new List<AssignedWorkerDto>();
+            var liveWorkers = snapshot.SelfUnits.Values
+                .Where(worker => worker != null && WorkerTypes.Contains((UnitTypes)worker.UnitType) && worker.UnitTag != 0)
+                .Select(worker => ToObservedUnit(worker))
+                .ToList();
+            RefreshBuildPlanLiveTags(rawTeamAssignments, liveWorkers, startIndex);
 
-            var townhall = _mapData?.StartingTownHall[startIndex];
-            if (townhall == null) return actions;
-            
-            // Find townhall unit for SMART target
-            var townhallUnit = _activeUnitData.SelfUnits.Values.FirstOrDefault(u =>
-                (u.Unit.UnitType == (uint)UnitTypes.ZERG_HATCHERY ||
-                 u.Unit.UnitType == (uint)UnitTypes.TERRAN_COMMANDCENTER ||
-                 u.Unit.UnitType == (uint)UnitTypes.PROTOSS_NEXUS) &&
-                Math.Abs(u.Unit.Pos.X - townhall.X) < 1.0f &&
-                Math.Abs(u.Unit.Pos.Y - townhall.Y) < 1.0f)?.Unit;
+            var teamAssignments = rawTeamAssignments;
+            if (_currentFrame % 25 == 0)
+            {
+                var directCount = _mapData?.TeamPatchAssignments?.ElementAtOrDefault(startIndex)?.Count ?? 0;
+                Console.WriteLine($"[MINING ASSIGNMENTS] frame={_currentFrame} source=BuildGreedyMineralChain startIndex={startIndex} raw={rawTeamAssignments.Count} validated={teamAssignments.Count} direct={directCount} workerCount={Settings.WorkerCount}");
+            }
+
+            if (liveWorkers.Count == 0)
+            {
+                Console.WriteLine($"[MINING REACH] JIT skipped frame={_currentFrame}: liveWorkers=0 startIndex={startIndex} snapshotWorkers={snapshot.SelfUnits.Count} availableWorkers={snapshot.AvailableWorkers.Count}");
+                return actions;
+            }
+
+            // Find the current-game town hall for the assigned return route.
+            var townhallEntry = snapshot.CurrentTownHalls.Values
+                .FirstOrDefault(unit => unit != null
+                    && unit.Position != null
+                    && Math.Abs(unit.Position.X - townhallPosition.X) < 1.0f
+                    && Math.Abs(unit.Position.Y - townhallPosition.Y) < 1.0f);
+            var townhallUnit = townhallEntry == null ? null : ToObservedUnit(townhallEntry);
+
+            if (_currentFrame - _lastCargoEvaluationConsoleFrame >= 25)
+            {
+                _lastCargoEvaluationConsoleFrame = _currentFrame;
+                var carryingWorkers = liveWorkers.Count(worker => worker.BuffIds.Any(b => b == 271 || b == 272));
+                var previousCarryingWorkers = liveWorkers.Count(worker => _previousCarryingState.TryGetValue(worker.Tag, out var wasCarrying) && wasCarrying);
+                Console.WriteLine($"[MINING REACH] cargo-eval frame={_currentFrame} liveWorkers={liveWorkers.Count} carrying={carryingWorkers} previousCarrying={previousCarryingWorkers} teamAssignments={teamAssignments.Count} townhallTag={townhallUnit?.Tag ?? 0} source=raw-observation");
+            }
+
+            return ExecuteAssignedWorkerTargets(assignedWorkers, liveWorkers, townhallUnit);
 
             foreach (var assignment in teamAssignments)
             {
@@ -667,40 +935,37 @@ namespace BabySharkBot.Managers
                     {
                         OnWorkerCargoReturned(worker.Tag);
                     }
+
+                    // A queued return sequence is complete once the worker is observed without cargo.
+                    if (!carrying)
+                    {
+                        _cargoReturnSequenceActive.Remove(worker.Tag);
+                    }
+
                     _previousCarryingState[worker.Tag] = carrying;
 
-                    // Pink Worker Check
-                    if (!_speedMiningActive && state != null)
+                    // A cargo pickup is a one-frame transition. Stop the current gather order, then
+                    // queue the geometry-specific return MOVE and the town-hall SMART handoff.
+                    // The queued commands preserve the MOVE -> SMART speed-mining cue while making
+                    // the return point explicit for both A/B-switch and speed-mining workers.
+                    if (carrying && !wasCarrying && townhallUnit != null && !_cargoReturnSequenceActive.Contains(worker.Tag))
                     {
-                        var pinkMineral = ResolvePinkMineral(label, teamAssignments, state, carrying);
-                        if (pinkMineral != null)
+                        var cargoReturnPoint = ResolveCargoReturnPoint(
+                            assignment,
+                            state,
+                            null,
+                            isJitTeam);
+
+                        if (cargoReturnPoint != null && IssueCargoReturnSequence(actions, worker.Tag, cargoReturnPoint, townhallUnit.Tag))
                         {
-                            if (carrying && townhallUnit != null)
-                            {
-                                var returnPos = new Point2D { X = pinkMineral.ReturnPoint.X, Y = pinkMineral.ReturnPoint.Y };
-                                if (Distance(worker.Pos.ToPoint2D(), returnPos) < 0.15f)
-                                {
-                                    AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { worker.Tag }, TargetUnitTag = townhallUnit.Tag } } });
-                                }
-                                else
-                                {
-                                    AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = returnPos } } });
-                                }
-                            }
-                            else if (!carrying)
-                            {
-                                var harvestPos = new Point2D { X = pinkMineral.HarvestPoint.X, Y = pinkMineral.HarvestPoint.Y };
-                                if (Distance(worker.Pos.ToPoint2D(), harvestPos) < 0.15f)
-                                {
-                                    AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.HARVEST_GATHER, UnitTags = { worker.Tag }, TargetUnitTag = pinkMineral.UnitTag } } });
-                                }
-                                else
-                                {
-                                    AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = harvestPos } } });
-                                }
-                            }
+                            _cargoReturnSequenceActive.Add(worker.Tag);
                             continue;
                         }
+                    }
+
+                    if (carrying && _cargoReturnSequenceActive.Contains(worker.Tag))
+                    {
+                        continue;
                     }
 
                     if (isJitTeam)
@@ -748,11 +1013,6 @@ namespace BabySharkBot.Managers
                                     AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = harvestPos } } });
                                 }
                             }
-                            else
-                            {
-                                var waitPos = new Point2D { X = assignment.JitWaitPoint.X, Y = assignment.JitWaitPoint.Y };
-                                AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = waitPos } } });
-                            }
                         }
                     }
                     else // Speed Mining for 2-worker teams
@@ -762,6 +1022,20 @@ namespace BabySharkBot.Managers
                             var mineral = ResolveMineralForWorker(assignment, state);
                             if (mineral != null)
                             {
+                                if (carrying && townhallUnit != null && mineral.UnitTag != 0 && HasNonZeroPoint(mineral.ReturnPoint))
+                                {
+                                    var returnPos = new Point2D { X = mineral.ReturnPoint.X, Y = mineral.ReturnPoint.Y };
+                                    if (Distance(worker.Pos.ToPoint2D(), returnPos) < 0.15f)
+                                    {
+                                        AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { worker.Tag }, TargetUnitTag = townhallUnit.Tag } } });
+                                    }
+                                    else
+                                    {
+                                        AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = returnPos } } });
+                                    }
+                                    continue;
+                                }
+
                                 var harvestPos = new Point2D { X = mineral.HarvestPoint.X, Y = mineral.HarvestPoint.Y };
                                 if (Distance(worker.Pos.ToPoint2D(), harvestPos) < 0.15f)
                                 {
@@ -788,47 +1062,491 @@ namespace BabySharkBot.Managers
                                     AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = harvestPos } } });
                                 }
                             }
-                            else
-                            {
-                                var waitPos = new Point2D { X = assignment.JitWaitPoint.X, Y = assignment.JitWaitPoint.Y };
-                                AddAction(actions, new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = waitPos } } });
-                            }
                         }
                     }
                 }
             }
+
             return actions;
+        }
+
+        private sealed class SnapshotUnit
+        {
+            public ulong Tag { get; init; }
+            public uint UnitType { get; init; }
+            public Point Pos { get; init; }
+            public List<uint> BuffIds { get; init; } = new();
+        }
+
+        private static SnapshotUnit ToObservedUnit(WorkerEntryDto worker)
+        {
+            return new SnapshotUnit
+            {
+                Tag = worker.UnitTag,
+                UnitType = worker.UnitType,
+                Pos = new Point { X = worker.Position.X, Y = worker.Position.Y, Z = worker.Position.Z },
+                BuffIds = worker.IsCarrying ? new List<uint> { 271 } : new List<uint>()
+            };
+        }
+
+        private bool TryResolveObservedSpawn(out int startIndex, out Vector2Dto townhall)
+        {
+            startIndex = -1;
+            townhall = null;
+            if (_mapData?.StartingTownHall == null || Globals.CurrentObservation?.CurrentTownHalls == null)
+            {
+                return false;
+            }
+
+            var observedTownhall = Globals.CurrentObservation.CurrentTownHalls.Values.FirstOrDefault();
+            if (observedTownhall == null || observedTownhall.Position == null)
+            {
+                return false;
+            }
+
+            var closestDistance = float.MaxValue;
+            for (var index = 0; index < _mapData.StartingTownHall.Length; index++)
+            {
+                var candidate = _mapData.StartingTownHall[index];
+                if (candidate == null) continue;
+
+                var distance = DistanceSquared(
+                    observedTownhall.Position,
+                    candidate);
+                if (distance < closestDistance)
+                {
+                    closestDistance = distance;
+                    startIndex = index;
+                    townhall = candidate;
+                }
+            }
+
+            if (startIndex < 0 || closestDistance > 9f)
+            {
+                startIndex = -1;
+                townhall = null;
+                return false;
+            }
+
+            if (Globals.CurrentStartIndex != startIndex || Settings.CurrentSpawnIndex != startIndex)
+            {
+                Console.WriteLine($"[MINING TARGET] corrected current spawn to startIndex={startIndex} townhall=({townhall.X:F2},{townhall.Y:F2}) frame={_currentFrame}");
+                Globals.CurrentStartIndex = startIndex;
+                Settings.CurrentSpawnIndex = startIndex;
+            }
+
+            return true;
+        }
+
+        private bool IsCurrentSpawnPoint(Vector2Dto point, Vector2Dto townhall)
+        {
+            if (point == null || townhall == null)
+            {
+                return false;
+            }
+
+            // Main-base mineral coordinates must be close to the observed town hall;
+            // this rejects cached coordinates from the opposite start location.
+            return DistanceSquared(point, townhall) < 400f;
+        }
+
+        private static bool HasNonZeroPoint(Vector2Dto point)
+        {
+            return point != null && (point.X != 0f || point.Y != 0f);
+        }
+
+        private static Vector2Dto? ResolveNonZeroPoint(Vector2Dto preferred, Vector2Dto fallback)
+        {
+            return preferred != null && (preferred.X != 0f || preferred.Y != 0f)
+                ? preferred
+                : fallback != null && (fallback.X != 0f || fallback.Y != 0f)
+                    ? fallback
+                    : null;
+        }
+
+        private List<SC2Action> ExecuteAssignedWorkerTargets(
+            List<AssignedWorkerDto> assignedWorkers,
+            List<SnapshotUnit> liveWorkers,
+            SnapshotUnit townhallUnit)
+        {
+            var actions = new List<SC2Action>();
+            foreach (var assignedWorker in assignedWorkers)
+            {
+                var worker = liveWorkers.FirstOrDefault(candidate => candidate.Tag == assignedWorker.UnitID);
+                if (worker == null || assignedWorker.MiningTargets.Count == 0)
+                {
+                    continue;
+                }
+
+                var target = assignedWorker.MiningTargets[assignedWorker.Mti];
+                if (worker.BuffIds.Any(buff => buff == 271 || buff == 272))
+                {
+                    var returnPoint = target.ReturnPoint;
+                    if (Distance(worker.Pos.ToPoint2D(), new Point2D { X = returnPoint.X, Y = returnPoint.Y }) < 0.15f)
+                    {
+                        AddAction(actions, new SC2Action
+                        {
+                            ActionRaw = new ActionRaw
+                            {
+                                UnitCommand = new ActionRawUnitCommand
+                                {
+                                    AbilityId = (int)Abilities.SMART,
+                                    UnitTags = { worker.Tag },
+                                    TargetUnitTag = townhallUnit.Tag
+                                }
+                            }
+                        });
+                    }
+                    else
+                    {
+                        AddAction(actions, IssueMoveToPoint(worker, new Vector2Dto(returnPoint.X, returnPoint.Y, 0f)));
+                    }
+
+                    continue;
+                }
+
+                var harvestPoint = target.HarvestPoint;
+                if (Distance(worker.Pos.ToPoint2D(), new Point2D { X = harvestPoint.X, Y = harvestPoint.Y }) < 0.15f)
+                {
+                    AddAction(actions, new SC2Action
+                    {
+                        ActionRaw = new ActionRaw
+                        {
+                            UnitCommand = new ActionRawUnitCommand
+                            {
+                                AbilityId = (int)Abilities.HARVEST_GATHER,
+                                UnitTags = { worker.Tag },
+                                TargetUnitTag = target.ResourceUnitId
+                            }
+                        }
+                    });
+                }
+                else
+                {
+                    AddAction(actions, IssueMoveToPoint(worker, new Vector2Dto(harvestPoint.X, harvestPoint.Y, 0f)));
+                }
+            }
+
+            return actions;
+        }
+
+        private List<SC2Action> ExecuteCargoPickupTransitions(
+            List<SnapshotUnit> liveWorkers,
+            List<TeamPatchAssignmentDto> teamAssignments,
+            SnapshotUnit? townhallUnit,
+            int startIndex)
+        {
+            var actions = new List<SC2Action>();
+            if (liveWorkers == null || liveWorkers.Count == 0)
+            {
+                return actions;
+            }
+
+            var defaultMinerals = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
+                ?.Where(mineral => mineral != null
+                    && mineral.UnitTag != 0
+                    && IsCurrentSpawnPoint(mineral.Position, _mapData?.StartingTownHall?.ElementAtOrDefault(startIndex)))
+                .ToList() ?? new List<OrderedMineral>();
+
+            for (var workerIndex = 0; workerIndex < liveWorkers.Count; workerIndex++)
+            {
+                var worker = liveWorkers[workerIndex];
+                var carrying = worker.BuffIds.Any(b => b == 271 || b == 272);
+                _previousCarryingState.TryGetValue(worker.Tag, out var wasCarrying);
+
+                if (!carrying)
+                {
+                    _cargoReturnSequenceActive.Remove(worker.Tag);
+                    _pendingCargoReturnSequences.Remove(worker.Tag);
+                }
+
+                if (carrying
+                    && _pendingCargoReturnSequences.TryGetValue(worker.Tag, out var pendingSequence)
+                    && pendingSequence.CreatedFrame < _currentFrame)
+                {
+                    IssueQueuedCargoReturnContinuation(actions, worker.Tag, pendingSequence);
+                    Console.WriteLine($"[MINING CARGO] frame={_currentFrame} worker={worker.Tag} observedWorkers={liveWorkers.Count} configuredWorkers={Settings.WorkerCount} townhall={pendingSequence.TownhallTag} stage=MOVE queued=false; stage=SMART queued=true");
+                    _pendingCargoReturnSequences.Remove(worker.Tag);
+                    _previousCarryingState[worker.Tag] = carrying;
+                    continue;
+                }
+
+                if (carrying && !wasCarrying && townhallUnit != null && !_cargoReturnSequenceActive.Contains(worker.Tag))
+                {
+                    var assignment = teamAssignments
+                        .FirstOrDefault(team => team?.Workers?.Any(candidate => candidate.UnitTag == worker.Tag) == true);
+                    if (assignment == null)
+                    {
+                        continue;
+                    }
+
+                    var state = _jitWorkerStates.TryGetValue(worker.Tag, out var jitState) ? jitState : null;
+                    var assignedMineral = assignment.Workers.Count >= 3 || state == null
+                        ? null
+                        : ResolveMineralForWorker(assignment, state);
+                    var returnPoint = assignment.Workers.Count >= 3
+                        ? assignment.JitReturnPoint
+                        : assignedMineral?.ReturnPoint;
+
+                    if (returnPoint != null && HasNonZeroPoint(returnPoint) && IssueCargoReturnSequence(actions, worker.Tag, returnPoint, townhallUnit.Tag))
+                    {
+                        _cargoReturnSequenceActive.Add(worker.Tag);
+                        Console.WriteLine($"[MINING CARGO] frame={_currentFrame} worker={worker.Tag} observedWorkers={liveWorkers.Count} configuredWorkers={Settings.WorkerCount} townhall={townhallUnit.Tag} stage=STOP queued=false; stage=MOVE queued=true");
+                        if (!_cargoReturnDebugBreakTriggered)
+                        {
+                            _cargoReturnDebugBreakTriggered = true;
+                            System.Diagnostics.Debugger.Break();
+                        }
+                        _pendingCargoReturnSequences[worker.Tag] = new CargoReturnSequenceState
+                        {
+                            ReturnPoint = returnPoint,
+                            TownhallTag = townhallUnit.Tag,
+                            CreatedFrame = _currentFrame
+                        };
+                    }
+                }
+
+                _previousCarryingState[worker.Tag] = carrying;
+            }
+
+            return actions;
+        }
+
+        private List<SC2Action> ExecuteDefaultSpeedMining(
+            List<SnapshotUnit> liveWorkers,
+            SnapshotUnit? townhallUnit,
+            int startIndex)
+        {
+            var actions = new List<SC2Action>();
+            var minerals = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
+                ?.Where(mineral => mineral != null
+                    && mineral.UnitTag != 0
+                    && IsCurrentSpawnPoint(mineral.Position, _mapData?.StartingTownHall?.ElementAtOrDefault(startIndex)))
+                .ToList() ?? new List<OrderedMineral>();
+
+            if (minerals.Count == 0)
+            {
+                return actions;
+            }
+
+            for (var workerIndex = 0; workerIndex < liveWorkers.Count; workerIndex++)
+            {
+                var worker = liveWorkers[workerIndex];
+                var mineral = ResolveDefaultSpeedMiningMineral(worker.Tag, minerals, workerIndex);
+                if (mineral == null) continue;
+
+                var carrying = worker.BuffIds.Any(b => b == 271 || b == 272);
+                _previousCarryingState.TryGetValue(worker.Tag, out var wasCarrying);
+
+                if (!carrying)
+                {
+                    _cargoReturnSequenceActive.Remove(worker.Tag);
+                    _pendingCargoReturnSequences.Remove(worker.Tag);
+                }
+
+                if (carrying
+                    && _pendingCargoReturnSequences.TryGetValue(worker.Tag, out var pendingSequence)
+                    && pendingSequence.CreatedFrame < _currentFrame)
+                {
+                    IssueQueuedCargoReturnContinuation(actions, worker.Tag, pendingSequence);
+                    Console.WriteLine($"[MINING CARGO] frame={_currentFrame} worker={worker.Tag} observedWorkers={liveWorkers.Count} configuredWorkers={Settings.WorkerCount} townhall={pendingSequence.TownhallTag} stage=MOVE queued=false; stage=SMART queued=true");
+                    _pendingCargoReturnSequences.Remove(worker.Tag);
+                    _previousCarryingState[worker.Tag] = carrying;
+                    continue;
+                }
+
+                if (carrying && !wasCarrying && townhallUnit != null && !_cargoReturnSequenceActive.Contains(worker.Tag))
+                {
+                    var returnPoint = ResolveNonZeroPoint(mineral.SmReturnPoint, mineral.ReturnPoint);
+                    if (returnPoint != null && IssueCargoReturnSequence(actions, worker.Tag, returnPoint, townhallUnit.Tag))
+                    {
+                        _cargoReturnSequenceActive.Add(worker.Tag);
+                        Console.WriteLine($"[MINING CARGO] frame={_currentFrame} worker={worker.Tag} observedWorkers={liveWorkers.Count} configuredWorkers={Settings.WorkerCount} townhall={townhallUnit.Tag} stage=STOP queued=false; stage=MOVE queued=true");
+                        if (!_cargoReturnDebugBreakTriggered)
+                        {
+                            _cargoReturnDebugBreakTriggered = true;
+                            System.Diagnostics.Debugger.Break();
+                        }
+                        _pendingCargoReturnSequences[worker.Tag] = new CargoReturnSequenceState
+                        {
+                            ReturnPoint = returnPoint,
+                            TownhallTag = townhallUnit.Tag,
+                            CreatedFrame = _currentFrame
+                        };
+                        _previousCarryingState[worker.Tag] = carrying;
+                        continue;
+                    }
+                }
+
+                _previousCarryingState[worker.Tag] = carrying;
+                if (carrying && _cargoReturnSequenceActive.Contains(worker.Tag))
+                {
+                    continue;
+                }
+
+                if (carrying && townhallUnit != null)
+                {
+                    var returnPoint = ResolveNonZeroPoint(mineral.SmReturnPoint, mineral.ReturnPoint);
+                    if (returnPoint != null)
+                    {
+                        AddAction(actions, IssueMoveToPoint(worker, returnPoint));
+                    }
+                    continue;
+                }
+
+                if (!carrying && mineral.HarvestPoint != null)
+                {
+                    var harvestPointDto = ResolveNonZeroPoint(mineral.SmHarvestPoint, mineral.HarvestPoint);
+                    if (harvestPointDto == null)
+                    {
+                        continue;
+                    }
+
+                    var harvestPoint = new Point2D { X = harvestPointDto.X, Y = harvestPointDto.Y };
+                    if (Distance(worker.Pos.ToPoint2D(), harvestPoint) < 0.15f)
+                    {
+                        actions.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { worker.Tag }, TargetUnitTag = mineral.UnitTag } } });
+                    }
+                    else
+                    {
+                        AddAction(actions, IssueMoveToPoint(worker, new Vector2Dto(harvestPoint.X, harvestPoint.Y)));
+                    }
+                }
+            }
+
+            return actions;
+        }
+
+        private OrderedMineral? ResolveDefaultSpeedMiningMineral(ulong workerTag, List<OrderedMineral> minerals, int workerIndex)
+        {
+            if (_defaultSpeedMiningMineralByWorker.TryGetValue(workerTag, out var mineralTag))
+            {
+                var existing = minerals.FirstOrDefault(mineral => mineral.UnitTag == mineralTag);
+                if (existing != null) return existing;
+            }
+
+            var selected = minerals[workerIndex % minerals.Count];
+            _defaultSpeedMiningMineralByWorker[workerTag] = selected.UnitTag;
+            return selected;
+        }
+
+        private Vector2Dto? ResolveCargoReturnPoint(
+            TeamPatchAssignmentDto assignment,
+            JitWorkerState? state,
+            OrderedMineral? pinkMineral,
+            bool isJitTeam)
+        {
+                    if (pinkMineral != null && pinkMineral.UnitTag != 0 && HasNonZeroPoint(pinkMineral.HarvestPoint) && HasNonZeroPoint(pinkMineral.ReturnPoint))
+
+            {
+                var pinkReturnPoint = ResolveNonZeroPoint(pinkMineral.SmReturnPoint, pinkMineral.ReturnPoint);
+                if (pinkReturnPoint != null)
+                {
+                    return pinkReturnPoint;
+                }
+            }
+
+            if (isJitTeam && assignment != null)
+            {
+                var jitReturnPoint = ResolveNonZeroPoint(assignment.JitReturnPoint, null);
+                if (jitReturnPoint != null)
+                {
+                    return jitReturnPoint;
+                }
+            }
+
+            var speedMiningMineral = state == null ? null : ResolveMineralForWorker(assignment, state);
+            return speedMiningMineral == null || speedMiningMineral.UnitTag == 0
+                ? null
+                : ResolveNonZeroPoint(speedMiningMineral.SmReturnPoint, speedMiningMineral.ReturnPoint);
+        }
+
+        private static bool IssueCargoReturnSequence(
+            List<SC2Action> actions,
+            ulong workerTag,
+            Vector2Dto returnPoint,
+            ulong townhallTag)
+        {
+            if (actions == null || workerTag == 0 || townhallTag == 0 || returnPoint == null)
+            {
+                return false;
+            }
+
+            // GameConnection/MicroManager allow only one unqueued action per worker per frame.
+            // Send STOP now and queue MOVE; the next frame sends MOVE followed by queued SMART.
+            actions.Add(new SC2Action
+            {
+                ActionRaw = new ActionRaw
+                {
+                    UnitCommand = new ActionRawUnitCommand
+                    {
+                        AbilityId = (int)Abilities.STOP,
+                        UnitTags = { workerTag },
+                        QueueCommand = false
+                    }
+                }
+            });
+            actions.Add(new SC2Action
+            {
+                ActionRaw = new ActionRaw
+                {
+                    UnitCommand = new ActionRawUnitCommand
+                    {
+                        AbilityId = (int)Abilities.MOVE,
+                        UnitTags = { workerTag },
+                        TargetWorldSpacePos = new Point2D { X = returnPoint.X, Y = returnPoint.Y },
+                        QueueCommand = true
+                    }
+                }
+            });
+            return true;
+        }
+
+        private static void IssueQueuedCargoReturnContinuation(
+            List<SC2Action> actions,
+            ulong workerTag,
+            CargoReturnSequenceState sequence)
+        {
+            actions.Add(new SC2Action
+            {
+                ActionRaw = new ActionRaw
+                {
+                    UnitCommand = new ActionRawUnitCommand
+                    {
+                        AbilityId = (int)Abilities.MOVE,
+                        UnitTags = { workerTag },
+                        TargetWorldSpacePos = new Point2D { X = sequence.ReturnPoint.X, Y = sequence.ReturnPoint.Y },
+                        QueueCommand = false
+                    }
+                }
+            });
+            actions.Add(new SC2Action
+            {
+                ActionRaw = new ActionRaw
+                {
+                    UnitCommand = new ActionRawUnitCommand
+                    {
+                        AbilityId = (int)Abilities.SMART,
+                        UnitTags = { workerTag },
+                        TargetUnitTag = sequence.TownhallTag,
+                        QueueCommand = true
+                    }
+                }
+            });
         }
 
         private OrderedMineral? ResolveMineralForWorker(TeamPatchAssignmentDto assignment, JitWorkerState state)
         {
             if (assignment == null || state == null) return null;
 
-            // Primary: match by UnitTag
-            var mineral = assignment.Minerals.FirstOrDefault(m => m.UnitTag == state.CurrentMineralTag);
-            if (mineral != null) return mineral;
+            if (state.CurrentMineralTag == 0)
+            {
+                return null;
+            }
 
-            // Fallback 1: match by position proximity
-            mineral = assignment.Minerals.FirstOrDefault(m =>
-                m.Position != null &&
-                Math.Abs(m.Position.X - state.CurrentMineralPos.X) < 0.5f &&
-                Math.Abs(m.Position.Y - state.CurrentMineralPos.Y) < 0.5f);
-            if (mineral != null) return mineral;
-
-            // Fallback 2: match by label
-            var targetLabel = state.CurrentMineralPos == (assignment.Minerals.FirstOrDefault(m => m.IsNear)?.Position ?? state.CurrentMineralPos)
-                 ? assignment.NearLabel
-                 : assignment.FarLabel;
-            mineral = assignment.Minerals.FirstOrDefault(m =>
-                string.Equals(m.Label, targetLabel, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(m.FinalLabel, targetLabel, StringComparison.OrdinalIgnoreCase));
-            if (mineral != null) return mineral;
-
-            // Fallback 3: nearest mineral to last known position
-            return assignment.Minerals
-                .Where(m => m.Position != null)
-                .OrderBy(m => Math.Pow(m.Position.X - state.CurrentMineralPos.X, 2) + Math.Pow(m.Position.Y - state.CurrentMineralPos.Y, 2))
-                .FirstOrDefault();
+            return assignment.Minerals.FirstOrDefault(mineral =>
+                mineral.UnitTag != 0
+                && mineral.UnitTag == state.CurrentMineralTag);
         }
 
         private void OnWorkerCargoReturned(ulong workerTag)
@@ -847,13 +1565,12 @@ namespace BabySharkBot.Managers
 
         private List<TeamPatchAssignmentDto> ResolveTeamAssignments(int startIndex) => OngoingMapData.ResolveTeamAssignments(_mapData, startIndex);
 
-        private List<Unit> ResolveCurrentWorkersForTeamRaw(List<Unit> allWorkers, List<WorkerEntryDto> teamAssignments)
+        private List<SnapshotUnit> ResolveCurrentWorkersForTeamRaw(List<SnapshotUnit> allWorkers, List<WorkerEntryDto> teamAssignments)
         {
-            var result = new List<Unit>();
+            var result = new List<SnapshotUnit>();
             if (allWorkers == null || teamAssignments == null) return result;
             foreach (var assignment in teamAssignments)
             {
-                // First attempt: match by UnitTag for high reliability if tag is known
                 if (assignment.UnitTag != 0)
                 {
                     var workerByTag = allWorkers.FirstOrDefault(u => u != null && u.Tag == assignment.UnitTag);
@@ -864,28 +1581,7 @@ namespace BabySharkBot.Managers
                     }
                 }
 
-                // Second attempt: match by label strings
-                var worker = allWorkers.FirstOrDefault(u => u != null && (string.Equals(_workerLabelService?.GetLabel(u.Tag), assignment.FinalLabel, StringComparison.OrdinalIgnoreCase) || string.Equals(_workerLabelService?.GetLabel(u.Tag), assignment.StartLabel, StringComparison.OrdinalIgnoreCase) || string.Equals(_workerLabelService?.GetLabel(u.Tag), assignment.Label, StringComparison.OrdinalIgnoreCase)));
-                if (worker != null)
-                {
-                    result.Add(worker);
-                    continue;
-                }
 
-                // Fallback: nearest unassigned worker
-                var assignedTags = new HashSet<ulong>(result.Select(u => u.Tag));
-                var unassigned = allWorkers.Where(u => !assignedTags.Contains(u.Tag)).ToList();
-                if (unassigned.Count > 0 && assignment.Position != null)
-                {
-                    var nearest = unassigned.OrderBy(u =>
-                        Math.Pow(u.Pos.X - assignment.Position.X, 2) +
-                        Math.Pow(u.Pos.Y - assignment.Position.Y, 2)).FirstOrDefault();
-                    if (nearest != null)
-                    {
-                        result.Add(nearest);
-                        Console.WriteLine($"[FALLBACK] Assigned worker {nearest.Tag} to team by proximity (label {assignment.Label} had no match)");
-                    }
-                }
             }
             return result;
         }
@@ -906,14 +1602,10 @@ namespace BabySharkBot.Managers
 
         private string GetTeamPrefix(int teamNumber)
         {
-            if (Settings.WorkerCount == 12)
-            {
-                return teamNumber switch { 1 => "Y", 2 => "B", 3 => "S", 4 => "T", _ => string.Empty };
-            }
-            return teamNumber switch { 1 => "O", 2 => "R", 3 => "P", 4 => "G", _ => string.Empty };
+            return teamNumber switch { 1 => "T", 2 => "S", 3 => "B", 4 => "Y", _ => string.Empty };
         }
 
-        private SC2Action? IssueMoveToPoint(Unit worker, Vector2Dto point)
+        private SC2Action? IssueMoveToPoint(SnapshotUnit worker, Vector2Dto point)
         {
             if (worker?.Tag == 0 || point == null) return null;
             return new SC2Action { ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { worker.Tag }, TargetWorldSpacePos = new Point2D { X = point.X, Y = point.Y } } } };
@@ -921,11 +1613,191 @@ namespace BabySharkBot.Managers
 
         private static void AddAction(List<SC2Action> actions, SC2Action? action) { if (action != null) actions.Add(action); }
 
-        private ulong ResolveMineralTag(ResponseObservation observation, Vector2Dto position)
+        private ulong ResolveMineralTag(Vector2Dto position)
         {
-            if (observation?.Observation?.RawData?.Units == null || position == null) return 0;
-            var nearest = observation.Observation.RawData.Units.Where(u => u != null && IsMineralType((UnitTypes)u.UnitType)).Select(u => new { Unit = u, Distance = Math.Pow(u.Pos.X - position.X, 2) + Math.Pow(u.Pos.Y - position.Y, 2) }).OrderBy(v => v.Distance).FirstOrDefault();
-            return (nearest == null || nearest.Distance >= 4) ? 0 : nearest.Unit.Tag;
+            if (Globals.CurrentObservation?.Minerals == null || position == null) return 0;
+            var nearest = Globals.CurrentObservation.Minerals.Values
+                .Where(mineral => mineral != null && mineral.Position != null && mineral.UnitTag != 0)
+                .Select(mineral => new { Mineral = mineral, Distance = Math.Pow(mineral.Position.X - position.X, 2) + Math.Pow(mineral.Position.Y - position.Y, 2) })
+                .OrderBy(value => value.Distance)
+                .FirstOrDefault();
+            return nearest == null || nearest.Distance >= 4 ? 0 : nearest.Mineral.UnitTag;
+        }
+
+        private void SynchronizeVisibleKnownMinerals(int startIndex)
+        {
+            if (_mapData == null
+                || Globals.CurrentObservation?.Minerals == null
+                || startIndex < 0
+                || _mapData.StartingTownHall == null
+                || startIndex >= _mapData.StartingTownHall.Length)
+            {
+                return;
+            }
+
+            var townhall = _mapData.StartingTownHall[startIndex];
+            if (townhall == null)
+            {
+                return;
+            }
+
+            var visibleMinerals = Globals.CurrentObservation.Minerals.Values
+                .Where(mineral => mineral != null && mineral.Position != null && mineral.UnitTag != 0)
+                .Select(mineral => new Unit { Tag = mineral.UnitTag, UnitType = mineral.UnitType, Pos = new Point { X = mineral.Position.X, Y = mineral.Position.Y, Z = mineral.Position.Z } })
+                .ToList();
+            var knownMinerals = _mapData.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
+                ?.Where(mineral => mineral?.Position != null)
+                .ToList() ?? new List<OrderedMineral>();
+
+            var visibleNearHatchery = visibleMinerals
+                .Where(unit => DistanceSquared(new Vector2Dto(unit.Pos.X, unit.Pos.Y), townhall) <= 25f)
+                .ToList();
+            var matchedCount = 0;
+
+            foreach (var knownMineral in knownMinerals)
+            {
+                var match = visibleMinerals
+                    .Select(unit => new
+                    {
+                        Unit = unit,
+                        Distance = DistanceSquared(
+                            new Vector2Dto(unit.Pos.X, unit.Pos.Y),
+                            knownMineral.Position)
+                    })
+                    .Where(candidate => candidate.Distance <= 0.25f)
+                    .OrderBy(candidate => candidate.Distance)
+                    .FirstOrDefault();
+
+                if (match == null)
+                {
+                    continue;
+                }
+
+                knownMineral.UnitTag = match.Unit.Tag;
+                matchedCount++;
+            }
+
+            var currentAssignments = ResolveTeamAssignments(startIndex);
+            foreach (var assignment in currentAssignments)
+            {
+                foreach (var assignedMineral in assignment?.Minerals ?? new List<OrderedMineral>())
+                {
+                    var knownMatch = knownMinerals.FirstOrDefault(mineral =>
+                        mineral.Position != null
+                        && assignedMineral?.Position != null
+                        && DistanceSquared(mineral.Position, assignedMineral.Position) <= 0.01f);
+                    if (knownMatch != null)
+                    {
+                        assignedMineral.UnitTag = knownMatch.UnitTag;
+                    }
+                }
+            }
+
+            if (_currentFrame % 25 == 0)
+            {
+                Console.WriteLine($"[MINERAL SYNC] frame={_currentFrame} startIndex={startIndex} visible={visibleMinerals.Count} visibleWithin5={visibleNearHatchery.Count} known={knownMinerals.Count} matched={matchedCount} assignments={currentAssignments.Count} hatchery=({townhall.X:F2},{townhall.Y:F2})");
+            }
+        }
+
+        private void RefreshBuildPlanLiveTags(
+            List<TeamPatchAssignmentDto> assignments,
+            List<SnapshotUnit> liveWorkers,
+            int startIndex)
+        {
+            if (assignments == null || liveWorkers == null || Globals.CurrentObservation?.Minerals == null)
+            {
+                return;
+            }
+
+            var visibleMinerals = Globals.CurrentObservation.Minerals.Values
+                .Where(mineral => mineral != null && mineral.UnitTag != 0 && mineral.Position != null)
+                .Select(mineral => new Unit
+                {
+                    Tag = mineral.UnitTag,
+                    UnitType = mineral.UnitType,
+                    Pos = new Point { X = mineral.Position.X, Y = mineral.Position.Y, Z = mineral.Position.Z }
+                })
+                .ToList();
+            var currentTownhall = _mapData?.StartingTownHall?.ElementAtOrDefault(startIndex);
+            var visibleByPosition = visibleMinerals
+                .Where(unit => currentTownhall == null
+                    || DistanceSquared(new Vector2Dto(unit.Pos.X, unit.Pos.Y), currentTownhall) <= 400f)
+                .ToList();
+
+            var assignedWorkerTags = new HashSet<ulong>();
+            var assignedMineralTags = new HashSet<ulong>();
+            var refreshedMinerals = 0;
+            var refreshedWorkers = 0;
+
+            foreach (var assignment in assignments)
+            {
+                foreach (var workerPlan in assignment?.Workers ?? new List<WorkerEntryDto>())
+                {
+                    var liveWorker = ResolveLiveWorkerForPlan(workerPlan, liveWorkers, assignedWorkerTags);
+                    if (liveWorker == null)
+                    {
+                        continue;
+                    }
+
+                    assignedWorkerTags.Add(liveWorker.Tag);
+                    workerPlan.UnitTag = liveWorker.Tag;
+                    workerPlan.Position = new Vector2Dto(liveWorker.Pos.X, liveWorker.Pos.Y, liveWorker.Pos.Z);
+                    workerPlan.UnitType = liveWorker.UnitType;
+                    workerPlan.IsCarrying = liveWorker.BuffIds.Any(b => b == 271 || b == 272);
+                    refreshedWorkers++;
+                }
+
+                foreach (var mineralPlan in assignment?.Minerals ?? new List<OrderedMineral>())
+                {
+                    if (mineralPlan?.Position == null)
+                    {
+                        continue;
+                    }
+
+                    var liveMineral = visibleByPosition
+                        .Where(unit => !assignedMineralTags.Contains(unit.Tag))
+                        .Select(unit => new
+                        {
+                            Unit = unit,
+                            Distance = DistanceSquared(new Vector2Dto(unit.Pos.X, unit.Pos.Y), mineralPlan.Position)
+                        })
+                        .Where(candidate => candidate.Distance <= 0.25f)
+                        .OrderBy(candidate => candidate.Distance)
+                        .FirstOrDefault();
+                    if (liveMineral == null)
+                    {
+                        mineralPlan.UnitTag = 0;
+                        continue;
+                    }
+
+                    assignedMineralTags.Add(liveMineral.Unit.Tag);
+                    mineralPlan.UnitTag = liveMineral.Unit.Tag;
+                    refreshedMinerals++;
+                }
+            }
+
+            if (_currentFrame % 25 == 0)
+            {
+                Console.WriteLine($"[MINING LIVE TAGS] frame={_currentFrame} startIndex={startIndex} workers={refreshedWorkers}/{liveWorkers.Count} minerals={refreshedMinerals} visibleMinerals={visibleByPosition.Count} assignments={assignments.Count}");
+            }
+        }
+
+        private SnapshotUnit? ResolveLiveWorkerForPlan(
+            WorkerEntryDto workerPlan,
+            List<SnapshotUnit> liveWorkers,
+            HashSet<ulong> assignedWorkerTags)
+        {
+            if (workerPlan == null)
+            {
+                return null;
+            }
+
+            var liveWorker = workerPlan.UnitTag != 0
+                ? liveWorkers.FirstOrDefault(worker => worker.Tag == workerPlan.UnitTag)
+                : null;
+            return liveWorker != null && !assignedWorkerTags.Contains(liveWorker.Tag)
+                ? liveWorker
+                : null;
         }
 
         private void UpdateScoutedMinerals(ResponseObservation observation)
@@ -1046,7 +1918,44 @@ namespace BabySharkBot.Managers
 
         private void DrawMineralLabels()
         {
-            if (_mineralLabelService != null) foreach (var kvp in _mineralLabelService.GetAllMineralLabels()) ManagerDebugService.DrawText(kvp.Value.Label, new Point { X = kvp.Value.Position.X, Y = kvp.Value.Position.Y, Z = kvp.Value.Position.Z + 0.5f }, kvp.Value.Color, 10);
+            if (_mineralLabelService == null)
+            {
+                return;
+            }
+
+            var orderedMinerals = _mapData?.OrderedMainMinerals?
+                .SelectMany(minerals => minerals ?? new List<OrderedMineral>())
+                .Where(mineral => mineral != null)
+                .ToList() ?? new List<OrderedMineral>();
+
+            foreach (var kvp in _mineralLabelService.GetAllMineralLabels())
+            {
+                var data = kvp.Value;
+                var mineral = orderedMinerals.FirstOrDefault(candidate =>
+                    (data.Tag != 0 && candidate.UnitTag == data.Tag)
+                    || (candidate.Position != null
+                        && Math.Abs(candidate.Position.X - data.Position.X) < 0.1f
+                        && Math.Abs(candidate.Position.Y - data.Position.Y) < 0.1f));
+                var displayLabel = FormatMineralDisplayLabel(mineral, data.Label);
+
+                ManagerDebugService.DrawText(displayLabel, new Point
+                {
+                    X = data.Position.X,
+                    Y = data.Position.Y,
+                    Z = data.Position.Z + 0.5f
+                }, data.Color, 10);
+            }
+        }
+
+        private static string FormatMineralDisplayLabel(OrderedMineral mineral, string finalLabel)
+        {
+            if (mineral == null || string.IsNullOrWhiteSpace(finalLabel))
+            {
+                return finalLabel ?? string.Empty;
+            }
+
+            var displayIndex = mineral.Index - 1;
+            return displayIndex >= 0 ? $"{displayIndex}-{finalLabel}" : finalLabel;
         }
 
         private void DrawExpansionMineralLabels()
@@ -1105,11 +2014,22 @@ namespace BabySharkBot.Managers
 
         private static bool IsLegacyWorkerLabelForDebugBreak(string label) => string.Equals(label, "W12", StringComparison.OrdinalIgnoreCase) || label.StartsWith("W", StringComparison.OrdinalIgnoreCase);
 
-        private int GetActiveStartIndex(ResponseObservation observation)
+        private int GetActiveStartIndex()
         {
-            if (_mapData?.StartingTownHall == null) return -1;
-            var selfTownhalls = observation.Observation.RawData.Units.Where(u => u.Alliance == Alliance.Self && (u.UnitType == (uint)UnitTypes.ZERG_HATCHERY || u.UnitType == (uint)UnitTypes.TERRAN_COMMANDCENTER || u.UnitType == (uint)UnitTypes.PROTOSS_NEXUS));
-            foreach (var townhall in selfTownhalls) for (int i = 0; i < _mapData.StartingTownHall.Length; i++) if (Math.Abs(townhall.Pos.X - _mapData.StartingTownHall[i].X) < 1.0f && Math.Abs(townhall.Pos.Y - _mapData.StartingTownHall[i].Y) < 1.0f) return i;
+            if (_mapData?.StartingTownHall == null || Globals.CurrentObservation?.CurrentTownHalls == null) return -1;
+            foreach (var townhall in Globals.CurrentObservation.CurrentTownHalls.Values)
+            {
+                if (townhall?.Position == null) continue;
+                for (var i = 0; i < _mapData.StartingTownHall.Length; i++)
+                {
+                    if (Math.Abs(townhall.Position.X - _mapData.StartingTownHall[i].X) < 1.0f
+                        && Math.Abs(townhall.Position.Y - _mapData.StartingTownHall[i].Y) < 1.0f)
+                    {
+                        return i;
+                    }
+                }
+            }
+
             return -1;
         }
 
@@ -1235,17 +2155,11 @@ namespace BabySharkBot.Managers
             return false;
         }
 
-        private List<WorkerEntryDto> GetLiveWorkers(ResponseObservation observation, int startIndex)
+        private List<WorkerEntryDto> GetLiveWorkers(int startIndex)
         {
-            var results = new List<WorkerEntryDto>();
-            var units = observation?.Observation?.RawData?.Units;
-            if (units == null) return results;
-            foreach (var u in units.Where(u => u != null && u.Alliance == Alliance.Self && (u.UnitType == (uint)UnitTypes.ZERG_DRONE || u.UnitType == (uint)UnitTypes.TERRAN_SCV || u.UnitType == (uint)UnitTypes.PROTOSS_PROBE)))
-            {
-                var label = _workerLabelService.GetLabel(u.Tag) ?? "";
-                results.Add(new WorkerEntryDto { UnitTag = u.Tag, UnitType = u.UnitType, Position = new Vector2Dto(u.Pos.X, u.Pos.Y, u.Pos.Z), Label = label, StartLabel = label, FinalLabel = label });
-            }
-            return results;
+            return Globals.CurrentObservation?.SelfUnits.Values
+                .Where(worker => worker != null && WorkerTypes.Contains((UnitTypes)worker.UnitType) && worker.UnitTag != 0)
+                .ToList() ?? new List<WorkerEntryDto>();
         }
 
         public void OnEnd(ResponseObservation observation, Result result)

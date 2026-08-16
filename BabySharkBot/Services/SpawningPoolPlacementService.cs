@@ -51,16 +51,16 @@ namespace BabySharkBot.Services
 
             var hatchery = mapData.StartingTownHall[startIndex];
             var mineralCom = mapData.MineralCenterOfMass[startIndex];
-            var vespeneV2 = mapData.OrderedMainVespene[startIndex].FirstOrDefault(v => v != null && v.Label == "V2")?.Position
+            var vespeneVb = mapData.OrderedMainVespene[startIndex].FirstOrDefault(v => v != null && v.Label == "VB")?.Position
                 ?? mapData.OrderedMainVespene[startIndex].Skip(1).FirstOrDefault()?.Position
                 ?? mapData.OrderedMainVespene[startIndex].First().Position;
 
-            if (hatchery == null || mineralCom == null || vespeneV2 == null)
+            if (hatchery == null || mineralCom == null || vespeneVb == null)
             {
                 return null;
             }
 
-            var placement = CalculateSpawningPoolPlacement(hatchery, mineralCom, vespeneV2);
+            var placement = CalculateSpawningPoolPlacement(hatchery, mineralCom, vespeneVb);
             _lastPlacement = placement;
             return placement;
         }

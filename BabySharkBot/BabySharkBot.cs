@@ -69,18 +69,25 @@ namespace BabySharkBot
             _defaultBot.MicroTaskData.Clear();
             Console.WriteLine("BabySharkAI: DefaultSharkyBot managers and microtasks cleared; starting with minimal set.");
 
-            // Essential managers - DebugManager is required for the first 15 frames
-            DebugManager = _defaultBot.DebugManager;
-            Managers.Add(DebugManager);
-
             // Essential services
+            DebugManager = _defaultBot.DebugManager;
             DebugService = _defaultBot.DebugService;
 
-            // 1. ObservationManager - Runs first every frame to populate shared DTO state
-            var observationManager = new ObservationManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.BaseData, _defaultBot.MapDataService, _defaultBot.UnitDataService);
+            // Build the shared CCA service before ObservationManager so startup uses one instance.
+            var ccaService = new BabySharkBot.Services.chrisCrossAppleSause();
+
+            // ObservationManager runs first so every later manager consumes the same frame snapshot.
+            var observationManager = new ObservationManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.BaseData, _defaultBot.MapDataService, _defaultBot.UnitDataService, ccaService);
             Managers.Add(observationManager);
 
-            // 2. ScoutingManager - Takes priority for labeling newly discovered units (e.g. Overlords)
+            // BuildManager runs second and selects the 8/12-worker build at frame zero.
+            var buildManager = new BabySharkBuildManager(_defaultBot);
+            buildManager.SetBuild(new BabySharkBot.Builds.BuildTest12WorkerStart(_defaultBot));
+            Managers.Add(buildManager);
+
+            // Scouting consumes the observation prepared by the first manager.
+            // DebugManager is not registered here because StartupAwareSharkyBot owns the
+            // single draw/spawn request send after all label-producing managers finish.
             var scoutingManager = new ScoutingManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData);
             Managers.Add(scoutingManager);
 
@@ -123,28 +130,25 @@ namespace BabySharkBot
             // Get MapDataService from DefaultSharkyBot for terrain height queries
             var mapDataService = _defaultBot.MapDataService;
 
-            // Initialize CCA service early to share across managers
-            var ccaService = new BabySharkBot.Services.chrisCrossAppleSause();
-
-            // Create build manager
-            var buildManager = new BabySharkBuildManager(_defaultBot);
-            // Optionally set an initial build:
-            buildManager.SetBuild(new BabySharkBot.Builds.BuildIne(_defaultBot));
-
             // Register only the necessary microtasks
             RegisterRequiredMicroTasks();
             InstallRlMicroControllerWrappers();
 
             // Create BabySharkMiningManager with shared CCA service instance
             _miningManager = new BabySharkMiningManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, workerLabelService, crosshairService, mineralLabelService, vespeneLabelService, expansionCOMService, expansionPointService, expansionPointDrawService, provisionalExpansionService, MineralReturnRateTrackerService, FrameToTimeConverter, mapDataService, SpawningPoolPlacementService, ccaService);
-            Console.WriteLine("BabySharkAI: Created BabySharkMiningManager with shared CCA service instance");
+            buildManager.ConfigureLabelServices(workerLabelService, mineralLabelService, vespeneLabelService);
+            Console.WriteLine("BabySharkAI: Created BabySharkMiningManager and configured BuildManager label ownership");
+
+            // Register the mining manager so current-run labels and map assignments are refreshed every frame.
+            Managers.Add(_miningManager);
+            Console.WriteLine("BabySharkAI: Registered BabySharkMiningManager for per-frame label registration and mining updates.");
 
             // Create and register CCA manager to run bump/order logic in the manager lifecycle.
             try
             {
                 var ccaManager = new CcaManager(ccaService, _miningManager);
                 Managers.Add(ccaManager);
-                Console.WriteLine($"BabySharkAI: Registered CcaManager. Total managers: {Managers.Count}");
+                Console.WriteLine($"BabySharkAI: Registered CcaManager. Per-frame drawing runs in StartupAwareSharkyBot.");
             }
             catch (Exception ex)
             {
@@ -250,15 +254,27 @@ namespace BabySharkBot
                     var initialMapData = new InitialMapData();
 
                     var mapData = initialMapData.GetNewMiningData(gameInfo, data, observation, null, _miningManager.CrosshairService, ExpansionCOMService, _miningManager.ExpansionPointService, _miningManager.ExpansionPointDrawService, ProvisionalExpansionService, _defaultBot.MapDataService, _miningManager.WorkerLabelService);
-                    _miningManager.SetCurrentMapData(mapData);
-                    Globals.CurrentMapData = mapData;
-                    Settings.CurrentSpawnIndex = 0;
-                    Globals.CurrentStartIndex = 0;
-                    Settings.CurrentSpawnLocation = mapData?.StartingTownHall != null && mapData.StartingTownHall.Length > 0 && mapData.StartingTownHall[0] != null
-                        ? mapData.StartingTownHall[0]
+                     Console.WriteLine($"[MAP HANDOFF 01] InitialMapData returned map={(mapData != null)} startLists={(mapData?.StartingMinerals?.Count ?? 0)} orderedLists={(mapData?.OrderedMainMinerals?.Count ?? 0)} start1Starting={(mapData?.StartingMinerals?.Count > 1 ? mapData.StartingMinerals[1]?.Count ?? 0 : -1)} start1Ordered={(mapData?.OrderedMainMinerals?.Count > 1 ? mapData.OrderedMainMinerals[1]?.Count ?? 0 : -1)}");
+                     _miningManager.SetCurrentMapData(mapData);
+                     Globals.CurrentMapData = mapData;
+                     Console.WriteLine($"[MAP HANDOFF 02] Globals.CurrentMapData assigned start1Starting={(Globals.CurrentMapData?.StartingMinerals?.Count > 1 ? Globals.CurrentMapData.StartingMinerals[1]?.Count ?? 0 : -1)} start1Ordered={(Globals.CurrentMapData?.OrderedMainMinerals?.Count > 1 ? Globals.CurrentMapData.OrderedMainMinerals[1]?.Count ?? 0 : -1)}");
+
+                    var currentStartIndex = mapData == null
+                        ? -1
+                        : GetApiLocAndCOM.ResolveCurrentSpawnIndex(gameInfo, mapData, observation);
+                    Settings.CurrentSpawnIndex = currentStartIndex;
+                    Globals.CurrentStartIndex = currentStartIndex;
+                    Settings.CurrentSpawnLocation = mapData?.StartingTownHall != null
+                        && currentStartIndex >= 0
+                        && currentStartIndex < mapData.StartingTownHall.Length
+                        && mapData.StartingTownHall[currentStartIndex] != null
+                        ? mapData.StartingTownHall[currentStartIndex]
                         : new Vector2Dto();
-                    Settings.CurrentSpawnCOM = mapData?.MineralCenterOfMass != null && mapData.MineralCenterOfMass.Count > 0 && mapData.MineralCenterOfMass[0] != null
-                        ? mapData.MineralCenterOfMass[0]
+                    Settings.CurrentSpawnCOM = mapData?.MineralCenterOfMass != null
+                        && currentStartIndex >= 0
+                        && currentStartIndex < mapData.MineralCenterOfMass.Count
+                        && mapData.MineralCenterOfMass[currentStartIndex] != null
+                        ? mapData.MineralCenterOfMass[currentStartIndex]
                         : new Vector2Dto();
                     Settings.CurrentBaseHasBeenPlayed = false;
                     Settings.MapDataLoaded = true;
@@ -299,8 +315,6 @@ namespace BabySharkBot
                     else if (Settings.WorkerCount == 12) Settings.CurrentBaseHasBeenPlayed12 = Settings.CurrentBaseHasBeenPlayed;
                 }
             }
-
-            _miningManager.ProcessFrameObservation(observation);
 
             foreach (var playerInfo in gameInfo.PlayerInfo)
             {
@@ -349,8 +363,13 @@ namespace BabySharkBot
 
                 try
                 {
-                    foreach (var manager in _owner.Managers)
+                    foreach (var manager in _owner.Managers.ToList())
                     {
+                        if (observation?.Observation != null && observation.Observation.GameLoop % 25 == 0)
+                        {
+                            Console.WriteLine($"[MANAGER LOOP] frame={observation.Observation.GameLoop} manager={manager.GetType().Name} skip={manager.SkipFrame} neverSkip={manager.NeverSkip}");
+                        }
+
                         if (!manager.NeverSkip && manager.SkipFrame)
                         {
                             manager.SkipFrame = false;
@@ -401,6 +420,11 @@ namespace BabySharkBot
                         }
                     }
 
+                    // Draw labels once on every game-loop frame after all observation and assignment
+                    // managers have updated the shared snapshot. This is intentionally outside the
+                    // manager skip logic so rendering cannot be skipped by performance throttling.
+                    _owner._miningManager?.DrawDebugVisuals(observation);
+
                     var end = System.Diagnostics.Stopwatch.GetTimestamp();
                     var endTime = (end - begin) / (double)System.Diagnostics.Stopwatch.Frequency * 1000.0;
                     _owner._defaultBot.PerformanceData.TotalFrameCalculationTime += endTime;
@@ -434,6 +458,7 @@ namespace BabySharkBot
                                 _owner._gameConnection.SendRequest(drawReq).GetAwaiter().GetResult();
                                 Console.WriteLine("StartupAwareSharkyBot: DrawRequest sent");
                                 debugService.ResetDrawRequest();
+                                     System.Diagnostics.Debugger.Break();
                             }
 
                             if (hasSpawns)

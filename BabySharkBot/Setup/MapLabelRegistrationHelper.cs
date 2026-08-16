@@ -83,6 +83,7 @@ namespace BabySharkBot.Setup
                     continue;
                 }
 
+                vespene.Label = label;
                 mapData.VespeneFinalLabelsByPosition ??= new Dictionary<string, string>();
                 mapData.VespeneFinalLabelsByPosition[$"{vespene.Position.X:F2},{vespene.Position.Y:F2}"] = label;
 
@@ -110,13 +111,13 @@ namespace BabySharkBot.Setup
 
             if (mapData?.OrderedMainVespene != null && mapData.OrderedMainVespene.Count > startIndex)
             {
-                var v2 = mapData.OrderedMainVespene[startIndex].FirstOrDefault(v => v != null && v.Label == "V2")?.Position;
-                if (v2 != null)
+                var vb = mapData.OrderedMainVespene[startIndex].FirstOrDefault(v => v != null && v.Label == "VB")?.Position;
+                if (vb != null)
                 {
-                    var dx = placement.X - v2.X;
-                    var dy = placement.Y - v2.Y;
+                    var dx = placement.X - vb.X;
+                    var dy = placement.Y - vb.Y;
                     var dist = Math.Sqrt(dx * dx + dy * dy);
-                    Console.WriteLine($"MapLabelRegistrationHelper: SpawningPool to V2 distance={dist:F2}");
+                    Console.WriteLine($"MapLabelRegistrationHelper: SpawningPool to VB distance={dist:F2}");
                 }
             }
 
@@ -186,12 +187,13 @@ namespace BabySharkBot.Setup
                 return string.Empty;
             }
 
-            if (!string.IsNullOrWhiteSpace(vespene.Label))
+            // Runtime spawn labels are stable role labels, not cached numeric labels.
+            return vespene.Index switch
             {
-                return vespene.Label;
-            }
-
-            return $"V{vespene.Index}";
+                1 => "VA",
+                2 => "VB",
+                _ => $"V{vespene.Index}"
+            };
         }
 
         private static float DistanceSquared(float x1, float y1, float x2, float y2)

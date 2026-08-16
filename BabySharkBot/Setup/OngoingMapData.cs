@@ -117,6 +117,25 @@ namespace BabySharkBot.Setup
                 }
             }
 
+            // Runtime-generated assignments are stored by BabySharkBuildManager in the
+            // current-spawn TeamPatchAssignments list, not in the serialized worker-count
+            // index. Resolve that exact spawn before allowing any fallback mining path.
+            if (mapData.TeamPatchAssignments != null
+                && mapData.TeamPatchAssignments.Count > startIndex
+                && mapData.TeamPatchAssignments[startIndex] != null
+                && mapData.TeamPatchAssignments[startIndex].Count > 0)
+            {
+                return mapData.TeamPatchAssignments[startIndex];
+            }
+
+            if (mapData.SecondaryTeamPatchAssignments != null
+                && mapData.SecondaryTeamPatchAssignments.Count > startIndex
+                && mapData.SecondaryTeamPatchAssignments[startIndex] != null
+                && mapData.SecondaryTeamPatchAssignments[startIndex].Count > 0)
+            {
+                return mapData.SecondaryTeamPatchAssignments[startIndex];
+            }
+
             return new List<TeamPatchAssignmentDto>();
         }
 

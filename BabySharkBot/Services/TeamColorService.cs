@@ -10,13 +10,7 @@ namespace BabySharkBot.Services
     /// </summary>
     public static class TeamColorService
     {
-        // --- 8-worker start colors ---
-        public static readonly Color Green  = new Color { R = 0,   G = 255, B = 0   };
-        public static readonly Color Purple = new Color { R = 128, G = 0,   B = 128 };
-        public static readonly Color Red    = new Color { R = 255, G = 0,   B = 0   };
-        public static readonly Color Orange = new Color { R = 255, G = 165, B = 0   };
-
-        // --- 12-worker start colors ---
+        // Stable mineral-team colors for all worker counts.
         public static readonly Color Teal   = new Color { R = 0,   G = 255, B = 255 };
         public static readonly Color Salmon = new Color { R = 255, G = 128, B = 128 };
         public static readonly Color Blue   = new Color { R = 0,   G = 0,   B = 255 };
@@ -31,10 +25,10 @@ namespace BabySharkBot.Services
         {
             return pairIndex switch
             {
-                0 => ("G", "T", Green,  Teal),
-                1 => ("P", "S", Purple, Salmon),
-                2 => ("R", "B", Red,    Blue),
-                3 => ("O", "Y", Orange, Yellow),
+                0 => ("T", "T", Teal,   Teal),
+                1 => ("S", "S", Salmon, Salmon),
+                2 => ("B", "B", Blue,   Blue),
+                3 => ("Y", "Y", Yellow, Yellow),
                 _ => ("W", "W", new Color { R = 255, G = 255, B = 255 }, new Color { R = 255, G = 255, B = 255 })
             };
         }
@@ -43,10 +37,10 @@ namespace BabySharkBot.Services
         {
             return prefix switch
             {
-                "G" => Green,  "T" => Teal,
-                "P" => Purple, "S" => Salmon,
-                "R" => Red,    "B" => Blue,
-                "O" => Orange, "Y" => Yellow,
+                "T" => Teal,
+                "S" => Salmon,
+                "B" => Blue,
+                "Y" => Yellow,
                 "Pink" => Pink,
                 _ => new Color { R = 255, G = 255, B = 255 }
             };

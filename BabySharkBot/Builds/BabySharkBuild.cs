@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using SC2APIProtocol;
 using Sharky;
 using Sharky.DefaultBot;
+using BabySharkBot.Setup;
 
 namespace BabySharkBot.Builds
 {
@@ -16,6 +17,7 @@ namespace BabySharkBot.Builds
         protected MacroData MacroData => DefaultBot.MacroData;
         protected ActiveUnitData ActiveUnitData => DefaultBot.ActiveUnitData;
         protected UnitCountService UnitCountService => DefaultBot.UnitCountService;
+        protected WorkerLabelService WorkerLabelService { get; private set; }
 
         public string BuildName { get; protected set; }
         public bool IsComplete { get; protected set; }
@@ -37,6 +39,11 @@ namespace BabySharkBot.Builds
         public virtual bool ShouldTransition(int frame)
         {
             return false;
+        }
+
+        public void ConfigureWorkerLabelService(WorkerLabelService workerLabelService)
+        {
+            WorkerLabelService = workerLabelService;
         }
 
         // Convenience helpers for manipulating MacroData desires

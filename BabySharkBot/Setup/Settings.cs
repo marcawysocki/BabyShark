@@ -15,7 +15,7 @@ namespace BabySharkBot.Setup
         public static string MiningCycleScorePath = "RLIntegration/data/mining_cycle_scores.jsonl";
 
         // Speed/mining/data schema version (semantic string). Update when heavy-generation or JSON schema changes.
-            public const string SpeedMiningVersion = "0.01";
+            public const string SpeedMiningVersion = "0.07";
 
             // Debug mode: enables console logging and debug prints. Can be true even in Release builds if needed.
             public static bool DebugMode = true;
@@ -44,8 +44,23 @@ namespace BabySharkBot.Setup
         public static bool CurrentBaseHasBeenPlayed = false;
         public static bool CurrentBaseHasBeenPlayed8 = false;
         public static bool CurrentBaseHasBeenPlayed12 = false;
+
+        // Current-frame unit availability populated by ObservationManager before other managers run.
+        public static List<ulong> AvailableLarva { get; } = new List<ulong>();
+        public static List<ulong> AvailableWorker { get; } = new List<ulong>();
+        public static List<ulong> AvailableOverLord { get; } = new List<ulong>();
+        public static List<ulong> AvailableQueen { get; } = new List<ulong>();
+
         public static bool ccaMining = true;
+        public static bool SimulatedStartActive = false;
+        public static bool BuildOwnsWorkerCommands = false;
+        public static int StartFrame = 0;
         public static bool CreateWorkerFrameZero = true;
+
+        public static int GetRelativeFrame(int currentFrame)
+        {
+            return currentFrame - StartFrame;
+        }
         /// <summary>
         /// Set to true once the BabySharkMiningManager has been created and registered with the bot.
         /// Used as a lightweight indicator that the mining manager is (or should be) running.

@@ -11,130 +11,54 @@ namespace BabySharkBot.Services
 {
     public sealed class chrisCrossAppleSause
     {
-        public enum TestPhase { Idle, AssigningWorkers, AcceleratingWorkerOne, AlignAtMineralA, CancelAndReturnHome }
-
-        private static volatile TestPhase _phase = TestPhase.Idle;
-        private readonly Dictionary<string, CcaSpawnLearningState> _states = new Dictionary<string, CcaSpawnLearningState>(StringComparer.OrdinalIgnoreCase);
-
-        public TestPhase CurrentPhase => _phase;
-
-        public CcaSpawnLearningState GetOrCreateCurrentSpawnState(MawBaseLocationData mapData, int startIndex)
-        {
-            var key = BuildSpawnKey(mapData, startIndex);
-            if (!_states.TryGetValue(key, out var state))
-            {
-                state = new CcaSpawnLearningState
-                {
-                    SpawnKey = key,
-                    StartIndex = startIndex,
-                    TealM1IsFar = startIndex >= 0 && mapData?.M1IsFar != null && startIndex < mapData.M1IsFar.Length && mapData.M1IsFar[startIndex],
-                    YellowM8IsFar = startIndex >= 0 && mapData?.M8IsFar != null && startIndex < mapData.M8IsFar.Length && mapData.M8IsFar[startIndex]
-                };
-                _states[key] = state;
-            }
-            return state;
-        }
-
-        public CcaSpawnLearningState GetCurrentSpawnState(MawBaseLocationData mapData, int startIndex)
-        {
-            return GetOrCreateCurrentSpawnState(mapData, startIndex);
-        }
-
-        public void SetPhase(TestPhase phase)
-        {
-            if (_phase == phase) return;
-            _phase = phase;
-            Console.WriteLine($"chrisCrossAppleSause: Phase changed to {_phase}");
-        }
-
         public void EnableCcaMiningForCurrentSpawn(MawBaseLocationData mapData, int startIndex)
         {
-            var state = GetOrCreateCurrentSpawnState(mapData, startIndex);
-            state.CcaMining = true;
             Settings.ccaMining = true;
-
-            if (_phase == TestPhase.Idle)
-            {
-                SetPhase(TestPhase.AssigningWorkers);
-            }
         }
 
         public IEnumerable<SC2APIProtocol.Action> BuildBumpOrders(int frame, MawBaseLocationData mapData, int startIndex, IReadOnlyList<WorkerEntryDto> workerEntries)
         {
             var commands = new List<SC2APIProtocol.Action>();
+            var relativeFrame = Settings.GetRelativeFrame(frame);
 
             if (!Settings.ccaMining || mapData == null || workerEntries == null || workerEntries.Count == 0)
             {
                 return commands;
             }
 
-            // Logic runs every 5 frames as per prompt
-            if (frame % 5 != 0)
+            if (workerEntries.Count == 8 || Settings.WorkerCount == 8)
+            {
+                 return relativeFrame == 0
+                     ? BuildFrame0EightWorkerSpeedMine(mapData, startIndex, workerEntries).ToList()
+                     : commands;
+            }
+
+
+            if (relativeFrame < 0 || relativeFrame % 5 != 0 || Settings.AvailableWorker.Count == 0)
             {
                 return commands;
             }
 
-            var state = GetOrCreateCurrentSpawnState(mapData, startIndex);
-
-            // Fallback: If current start index has no assignments, try to find ANY valid assignments in mapData
-            if (!state.TeamAssignments.Any() && mapData.TeamPatchAssignments != null)
+            var teamAssignments = mapData.TeamPatchAssignments != null
+                && startIndex >= 0
+                && startIndex < mapData.TeamPatchAssignments.Count
+                ? mapData.TeamPatchAssignments[startIndex]
+                : null;
+            if (teamAssignments == null || teamAssignments.Count == 0)
             {
-                var firstValid = mapData.TeamPatchAssignments.FirstOrDefault(a => a != null && a.Any());
-                if (firstValid != null)
-                {
-                    state.TeamAssignments = firstValid;
-                }
+                return commands;
             }
 
-            // Execute state machine transitions immediately until we hit a commanded phase
-            bool stateChanged = true;
-            while (stateChanged)
-            {
-                stateChanged = false;
-                switch (_phase)
-                {
-                    case TestPhase.Idle:
-                        if (state.TeamAssignments.Any())
-                        {
-                            SetPhase(TestPhase.AssigningWorkers);
-                            stateChanged = true;
-                        }
-                        else
-                        {
-                            return commands;
-                        }
-                        break;
-
-                    case TestPhase.AssigningWorkers:
-                        if (state.TeamAssignments.Any())
-                        {
-                            SetPhase(TestPhase.AcceleratingWorkerOne);
-                            stateChanged = true;
-                        }
-                        break;
-
-                    case TestPhase.AcceleratingWorkerOne:
-                        commands.AddRange(HandleAcceleratingWorkerOne(frame, mapData, state, workerEntries));
-                        return commands;
-
-                    case TestPhase.AlignAtMineralA:
-                        commands.AddRange(HandleAlignAtMineralA(frame, mapData, state, workerEntries));
-                        return commands;
-
-                    case TestPhase.CancelAndReturnHome:
-                        return commands;
-                }
-            }
-
+            commands.AddRange(HandleAcceleratingWorkerOne(frame, mapData, teamAssignments, workerEntries));
+            commands.AddRange(HandleAlignAtMineralA(frame, mapData, startIndex, teamAssignments, workerEntries));
             return commands;
         }
 
-        private IEnumerable<SC2APIProtocol.Action> HandleAcceleratingWorkerOne(int frame, MawBaseLocationData mapData, CcaSpawnLearningState state, IReadOnlyList<WorkerEntryDto> workerEntries)
+        private IEnumerable<SC2APIProtocol.Action> HandleAcceleratingWorkerOne(int frame, MawBaseLocationData mapData, IReadOnlyList<TeamPatchAssignmentDto> teamAssignments, IReadOnlyList<WorkerEntryDto> workerEntries)
         {
             var commands = new List<SC2APIProtocol.Action>();
-            bool allAtA = true;
 
-            foreach (var team in state.TeamAssignments)
+            foreach (var team in teamAssignments)
             {
                 var logicalWorkers = team.Workers;
                 var minerals = team.Minerals;
@@ -155,8 +79,6 @@ namespace BabySharkBot.Services
                 var distToA = Distance(w1.Position, aMineral.Position);
                 if (distToA > 1.5f)
                 {
-                    allAtA = false;
-
                     WorkerEntryDto bumper = null;
                     if (team.TeamNumber == 1) bumper = w3;
                     else if (team.TeamNumber == 2) bumper = w2;
@@ -194,26 +116,21 @@ namespace BabySharkBot.Services
                 }
             }
 
-            if (allAtA && state.TeamAssignments.Any())
-            {
-                SetPhase(TestPhase.AlignAtMineralA);
-            }
-
             return commands;
         }
 
-        private IEnumerable<SC2APIProtocol.Action> HandleAlignAtMineralA(int frame, MawBaseLocationData mapData, CcaSpawnLearningState state, IReadOnlyList<WorkerEntryDto> workerEntries)
+        private IEnumerable<SC2APIProtocol.Action> HandleAlignAtMineralA(int frame, MawBaseLocationData mapData, int startIndex, IReadOnlyList<TeamPatchAssignmentDto> teamAssignments, IReadOnlyList<WorkerEntryDto> workerEntries)
         {
             var commands = new List<SC2APIProtocol.Action>();
 
-            foreach (var team in state.TeamAssignments)
+            foreach (var team in teamAssignments)
             {
                 var logicalWorkers = team.Workers;
                 var minerals = team.Minerals;
                 if (logicalWorkers.Count == 0 || minerals.Count == 0) continue;
 
                 var aMineral = minerals.FirstOrDefault(m => m.IsNear) ?? minerals[0];
-                var hatcheryPos = mapData.StartingTownHall[state.StartIndex];
+                var hatcheryPos = mapData.StartingTownHall[startIndex];
 
                 var w1 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "1");
                 var w3 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "3");
@@ -272,66 +189,274 @@ namespace BabySharkBot.Services
             return MathF.Sqrt(dx * dx + dy * dy);
         }
 
-        private static string BuildSpawnKey(MawBaseLocationData mapData, int startIndex)
-        {
-            var location = (mapData?.StartingTownHall != null && startIndex >= 0 && startIndex < mapData.StartingTownHall.Length)
-                ? mapData.StartingTownHall[startIndex] : null;
-            return location == null ? $"spawn-{startIndex}" : $"spawn-{startIndex}-{location.X:F2}-{location.Y:F2}";
-        }
-
         public void RecordSpawnObservation(MawBaseLocationData mapData, int startIndex, List<List<TeamPatchAssignmentDto>> teamAssignmentsByStart, WorkerLabelService workerLabelService = null, int frame = -1, IReadOnlyList<WorkerEntryDto> workerEntries = null)
         {
-            var state = GetOrCreateCurrentSpawnState(mapData, startIndex);
-            state.TeamAssignments = (teamAssignmentsByStart != null && startIndex >= 0 && startIndex < teamAssignmentsByStart.Count)
-                ? teamAssignmentsByStart[startIndex] : new List<TeamPatchAssignmentDto>();
+            // Team assignments are read directly from mapData during BuildBumpOrders.
+            // This compatibility hook intentionally retains no CCA state.
+        }
 
-            // Sync tags from live workers using labels
-            if (workerEntries != null)
+        /// <summary>
+        /// Frame-0 speed-mining setup for 8-worker starts.
+        ///
+        /// Each worker is given one MOVE (harvest point) followed by a SMART (mineral tag) cue.
+        /// The MOVE shapes the worker's approach angle so the SMART cue fires the gather from the optimal
+        /// position instead of letting SC2's default behavior pile all workers onto the closest mineral.
+        ///
+        /// Live data comes from the Observation snapshot (Globals.CurrentObservation) populated by
+        /// ObservationManager. Workers and minerals are paired by closest unassigned mineral, so this
+        /// runs without depending on TeamPatchAssignments being populated.
+        /// </summary>
+        private IEnumerable<SC2APIProtocol.Action> BuildFrame0EightWorkerSpeedMine(
+            MawBaseLocationData mapData,
+            int startIndex,
+            IReadOnlyList<WorkerEntryDto> workerEntries)
+        {
+            var commands = new List<SC2APIProtocol.Action>();
+
+            Console.WriteLine($"[CCA Frame0] Entered. mapData!=null:{mapData!=null} startIndex={startIndex} Settings.WorkerCount={Settings.WorkerCount}");
+
+            if (mapData == null || startIndex < 0) return commands;
+
+            var townhall = ResolveTownhall(mapData, startIndex);
+            Console.WriteLine($"[CCA Frame0] townhall={(townhall!=null ? $"({townhall.X:F2},{townhall.Y:F2})" : "null")}");
+            if (townhall == null) return commands;
+
+            var snapshot = Globals.CurrentObservation;
+            Console.WriteLine($"[CCA Frame0] snapshot={(snapshot!=null ? "ok" : "null")} SelfUnits={snapshot?.SelfUnits?.Count ?? 0} AvailableWorkers={snapshot?.AvailableWorkers?.Count ?? 0} Minerals={snapshot?.Minerals?.Count ?? 0}");
+            if (snapshot == null) return commands;
+
+            // AvailableWorkers is the single source of truth for live, controllable workers.
+            // SelfUnits supplies only the current position for each authoritative tag.
+            var liveWorkers = (workerEntries ?? Array.Empty<WorkerEntryDto>())
+                .Where(entry => entry != null && entry.UnitTag != 0 && entry.Position != null)
+                .Select(entry => (Tag: entry.UnitTag, Position: entry.Position))
+                .ToList();
+
+            Console.WriteLine($"[CCA Frame0] liveWorkers.Count={liveWorkers.Count}");
+            if (liveWorkers.Count == 0) return commands;
+
+            // Use only the mineral set stored for this start index. Do not select the
+            // first non-empty start: that can send workers to another spawn's mineral line.
+            var persistedMinerals = mapData.StartingMinerals != null
+                && startIndex >= 0
+                && startIndex < mapData.StartingMinerals.Count
+                ? mapData.StartingMinerals[startIndex]
+                : null;
+            if (persistedMinerals == null || persistedMinerals.Count == 0)
             {
-                foreach (var team in state.TeamAssignments)
-                {
-                    foreach (var logicalWorker in team.Workers)
-                    {
-                        var label = logicalWorker.FinalLabel ?? logicalWorker.Label ?? logicalWorker.StartLabel;
-                        if (string.IsNullOrWhiteSpace(label)) continue;
+                // Backward-compatible reads of older map data are safe only when the
+                // corresponding ordered list has the same valid start index.
+                persistedMinerals = mapData.OrderedMainMinerals != null
+                    && startIndex >= 0
+                    && startIndex < mapData.OrderedMainMinerals.Count
+                    ? mapData.OrderedMainMinerals[startIndex]
+                    : null;
+            }
+            var mineralsByIndex = persistedMinerals?
+                .Where(m => m != null && m.Position != null)
+                .OrderBy(m => m.Index)
+                .ToList() ?? new List<OrderedMineral>();
 
-                        var liveWorker = workerEntries.FirstOrDefault(w =>
-                            string.Equals(w.Label, label, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(w.FinalLabel, label, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(w.StartLabel, label, StringComparison.OrdinalIgnoreCase));
+            Console.WriteLine($"[CCA Frame0] Persisted greedy minerals={mineralsByIndex.Count}; expected 8 for 8-worker start.");
+            for (int mi = 0; mi < mineralsByIndex.Count; mi++)
+            {
+                var mineral = mineralsByIndex[mi];
+                Console.WriteLine($"  M[{mi}] (stored Index={mineral.Index}) position=({mineral.Position.X:F2},{mineral.Position.Y:F2}) cachedTag={mineral.UnitTag}");
+            }
+            if (mineralsByIndex.Count < liveWorkers.Count) return commands;
 
-                        if (liveWorker != null)
-                        {
-                            logicalWorker.UnitTag = liveWorker.UnitTag;
-                        }
-                    }
-                }
+            // 1.0 mineral radius + 0.5 worker standoff = worker center sits 1.5u from mineral center.
+            const float mineralOffset = 1.5f;
+
+            // Greedy worker chain: anchor at the stored mineral COM, then chain to the closest
+            // unvisited worker. The first worker is W8 and the last worker is W1.
+            var mineralCom = mapData.MineralCenterOfMass != null
+                && startIndex >= 0
+                && startIndex < mapData.MineralCenterOfMass.Count
+                ? mapData.MineralCenterOfMass[startIndex]
+                : null;
+            if (mineralCom == null) return commands;
+
+            var remaining = new List<(ulong Tag, Vector2Dto Position)>(liveWorkers);
+            var greedyOrder = new List<(ulong Tag, Vector2Dto Position)>();
+            var current = remaining.OrderByDescending(w =>
+                (w.Position.X - mineralCom.X) * (w.Position.X - mineralCom.X)
+                + (w.Position.Y - mineralCom.Y) * (w.Position.Y - mineralCom.Y)).FirstOrDefault();
+            while (current.Tag != 0 && remaining.Count > 0)
+            {
+                greedyOrder.Add(current);
+                remaining.RemoveAll(w => w.Tag == current.Tag);
+                if (remaining.Count == 0) break;
+                current = remaining.OrderBy(w =>
+                    (w.Position.X - current.Position.X) * (w.Position.X - current.Position.X)
+                    + (w.Position.Y - current.Position.Y) * (w.Position.Y - current.Position.Y)).FirstOrDefault();
             }
 
-            if (workerLabelService != null)
+            Console.WriteLine("[CCA Frame0] Greedy worker chain and required targets:");
+            for (int wi = 0; wi < greedyOrder.Count && wi < mineralsByIndex.Count; wi++)
             {
-                foreach (var team in state.TeamAssignments)
+                var workerNumber = greedyOrder.Count - wi;
+                var targetIndex = mineralsByIndex.Count - 1 - wi;
+                var targetMineral = mineralsByIndex[targetIndex];
+                var worker = greedyOrder[wi];
+                var mineralTag = ResolveLiveMineralTag(targetMineral, snapshot);
+                var returnPoint = targetMineral.ReturnPoint != null
+                    && (targetMineral.ReturnPoint.X != 0f || targetMineral.ReturnPoint.Y != 0f)
+                    ? targetMineral.ReturnPoint
+                    : ComputeReturnCargoPoint(townhall, targetMineral.Position);
+                var harvestPoint = CalculateFrame0HarvestPoint(
+                    worker.Position,
+                    returnPoint,
+                    targetMineral.Position,
+                    mineralOffset);
+
+                var targetFinalLabel = targetMineral.FinalLabel ?? string.Empty;
+                var workerFinalLabel = targetFinalLabel.EndsWith("A", StringComparison.OrdinalIgnoreCase)
+                    ? $"{targetFinalLabel.Substring(0, targetFinalLabel.Length - 1)}1"
+                    : targetFinalLabel.EndsWith("B", StringComparison.OrdinalIgnoreCase)
+                        ? $"{targetFinalLabel.Substring(0, targetFinalLabel.Length - 1)}2"
+                        : $"W{workerNumber}";
+                var workerDisplayLabel = $"{workerNumber}-{workerFinalLabel}";
+                var mineralDisplayLabel = $"{targetIndex}-{targetFinalLabel}";
+                Console.WriteLine($"  {workerDisplayLabel} tag={worker.Tag} -> {mineralDisplayLabel} storedIndex={targetMineral.Index} mineralTag={mineralTag} position=({targetMineral.Position.X:F2},{targetMineral.Position.Y:F2})");
+                if (mineralTag == 0) continue;
+
+                commands.AddRange(Stop(worker.Tag));
+                commands.AddRange(MoveTo(worker.Tag, harvestPoint));
+                commands.AddRange(SmartTo(worker.Tag, mineralTag));
+            }
+
+            Console.WriteLine($"[CCA Frame0] Issued {commands.Count} actions total.");
+            return commands;
+        }
+        private static IEnumerable<SC2APIProtocol.Action> Stop(ulong tag)
+        {
+            if (tag == 0) return Array.Empty<SC2APIProtocol.Action>();
+
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.STOP
+            };
+            command.UnitTags.Add(tag);
+
+            return new List<SC2APIProtocol.Action>
+    {
+        new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = command } }
+    };
+        }
+
+        private static Vector2Dto ResolveTownhall(MawBaseLocationData mapData, int startIndex)
+        {
+            if (mapData?.StartingTownHall == null) return null;
+            if (startIndex < 0 || startIndex >= mapData.StartingTownHall.Length) return null;
+            return mapData.StartingTownHall[startIndex];
+        }
+
+        private static Vector2Dto ComputeReturnCargoPoint(Vector2Dto townhall, Vector2Dto mineral)
+        {
+            if (mineral == null) return townhall;
+            var dx = mineral.X - townhall.X;
+            var dy = mineral.Y - townhall.Y;
+            var dist = MathF.Sqrt(dx * dx + dy * dy);
+            if (dist <= 0.0001f) return new Vector2Dto(townhall.X + 2.75f, townhall.Y);
+            return new Vector2Dto(
+                townhall.X + (dx / dist) * 2.75f,
+                townhall.Y + (dy / dist) * 2.75f);
+        }
+
+        private static ulong ResolveLiveMineralTag(OrderedMineral mineral, ObservationSnapshotDto snapshot)
+        {
+            if (mineral == null || mineral.Position == null) return 0;
+
+            if (snapshot?.Minerals != null)
+            {
+                ulong bestTag = 0;
+                var bestDistanceSquared = float.MaxValue;
+                foreach (var liveMineral in snapshot.Minerals.Values)
                 {
-                    foreach (var worker in team.Workers)
+                    if (liveMineral == null || liveMineral.UnitTag == 0 || liveMineral.Position == null) continue;
+                    var dx = liveMineral.Position.X - mineral.Position.X;
+                    var dy = liveMineral.Position.Y - mineral.Position.Y;
+                    var distanceSquared = dx * dx + dy * dy;
+                    if (distanceSquared < bestDistanceSquared)
                     {
-                        var label = worker.FinalLabel ?? worker.Label ?? worker.StartLabel;
-                        if (!string.IsNullOrWhiteSpace(label) && worker.UnitTag != 0)
-                        {
-                            workerLabelService.SetLabel(label, worker.UnitTag);
-                        }
+                        bestDistanceSquared = distanceSquared;
+                        bestTag = liveMineral.UnitTag;
                     }
                 }
+
+                if (bestTag != 0 && bestDistanceSquared < 4f) return bestTag;
             }
+
+            return mineral.UnitTag;
+        }
+
+        /// <summary>
+        /// Compute the frame-0 harvest point on the mineral circle using the user's geometric construction:
+        /// the worker-facing intersection of the line from midpoint(worker, returnCargoPoint) to mineralCenter.
+        /// Reusable for RL Matrix mineral-target optimization.
+        /// </summary>
+        /// <param name="workerPosition">Worker's current X/Y (typically its starting position).</param>
+        /// <param name="returnCargoPoint">Mineral's ReturnPoint (already mapped by InitialMapData).</param>
+        /// <param name="mineralPosition">Mineral's center X/Y.</param>
+        /// <param name="mineralOffset">Distance from mineral center at which the worker stands
+        /// (1.0 mineral radius + 0.5 worker standoff = 1.5 for normal minerals).</param>
+        internal static Point2D CalculateFrame0HarvestPoint(
+            Vector2Dto workerPosition,
+            Vector2Dto returnCargoPoint,
+            Vector2Dto mineralPosition,
+            float mineralOffset)
+        {
+            // Midpoint of (worker, return cargo point).
+            var midX = (workerPosition.X + returnCargoPoint.X) * 0.5f;
+            var midY = (workerPosition.Y + returnCargoPoint.Y) * 0.5f;
+
+            // Direction from midpoint toward mineral center.
+            var dirX = mineralPosition.X - midX;
+            var dirY = mineralPosition.Y - midY;
+            var dirLen = MathF.Sqrt(dirX * dirX + dirY * dirY);
+
+            if (dirLen <= 0.0001f)
+            {
+                // Degenerate: midpoint coincides with mineral center.
+                // Fall back to a position on +X so the worker has somewhere to walk.
+                return new Point2D
+                {
+                    X = mineralPosition.X + mineralOffset,
+                    Y = mineralPosition.Y
+                };
+            }
+
+            var unitX = dirX / dirLen;
+            var unitY = dirY / dirLen;
+
+            // Worker-facing intersection of the line (midpoint -> mineral) with the mineral circle.
+            return new Point2D
+            {
+                X = mineralPosition.X - unitX * mineralOffset,
+                Y = mineralPosition.Y - unitY * mineralOffset
+            };
+        }
+
+        private static IEnumerable<SC2APIProtocol.Action> SmartTo(ulong tag, ulong targetTag)
+        {
+            if (tag == 0 || targetTag == 0) return Array.Empty<SC2APIProtocol.Action>();
+
+            // Sharky speed-mining pattern: GATHER/SMART is QUEUED so MOVE can run first and shape
+            // the worker's approach angle. See Sharky/MicroTasks/Mining/MineralMiner.cs:73-77 and
+            // UnitCommander.Order at Sharky/Unit/UnitCommander.cs:78-147 (QueueCommand=true).
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.SMART,
+                TargetUnitTag = targetTag,
+                QueueCommand = true
+            };
+            command.UnitTags.Add(tag);
+            return new List<SC2APIProtocol.Action>
+            {
+                new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = command } }
+            };
         }
     }
 
-    public sealed class CcaSpawnLearningState
-    {
-        public string SpawnKey { get; set; } = string.Empty;
-        public int StartIndex { get; set; } = -1;
-        public bool CcaMining { get; set; }
-        public bool TealM1IsFar { get; set; }
-        public bool YellowM8IsFar { get; set; }
-        public List<TeamPatchAssignmentDto> TeamAssignments { get; set; } = new List<TeamPatchAssignmentDto>();
-    }
 }

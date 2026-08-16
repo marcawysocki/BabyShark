@@ -78,14 +78,12 @@ namespace BabySharkBot.Setup
 
             var startLocations = new List<Vector2Dto>();
             var startLocationMineralCenters = new List<Vector2Dto>();
-            int startLocationIndex = 0;
+            int startLocationIndex = -1;
 
 
-            // Use only the first API start location for processing. Do not iterate over
-            // multiple start entries from the API. We will always ensure the serialized
-            // record contains `ExpectedStartLocations` entries by appending zeroed
-            // placeholders if needed, but processing (unit assignment / labeling)
-            // uses the single real start location (index 0).
+            // Use the API start locations as the stable coordinate index for every
+            // per-start collection. The observed town hall only identifies the current
+            // index; it must not reorder the map's start slots.
             var apiStarts = gameInfo?.StartRaw?.StartLocations;
             var apiLoc = observation?.Observation?.RawData?.Units?.FirstOrDefault(u => u != null && u.Alliance == Alliance.Self && (u.UnitType == (uint)Sharky.UnitTypes.ZERG_HATCHERY || u.UnitType == (uint)Sharky.UnitTypes.TERRAN_COMMANDCENTER || u.UnitType == (uint)Sharky.UnitTypes.PROTOSS_NEXUS))?.Pos;
             try
@@ -113,28 +111,39 @@ namespace BabySharkBot.Setup
                 }
                 catch { }
 
-                // Build startLocations so that apiLoc (observed base) is location 0 if present,
-                // and API-provided start locations follow as locations 1,2,... (excluding duplicates).
-                const float tol = 0.01f;
-                if (apiLoc != null)
+                // Preserve the API start ordering. Per-start mineral data and the runtime
+                // spawn index must use the same coordinate-indexed slots.
+                const float tol = 3f;
+                if (apiStarts != null && apiStarts.Count > 0)
                 {
-                    startLocations.Add(new Vector2Dto(apiLoc.X, apiLoc.Y));
-                    startLocationIndex = 0; // apiLoc is now slot 0
-
-                    if (apiStarts != null)
+                    for (int i = 0; i < apiStarts.Count; i++)
                     {
-                        for (int i = 0; i < apiStarts.Count; i++)
+                        var s = apiStarts[i];
+                        startLocations.Add(new Vector2Dto(s.X, s.Y));
+
+                        if (apiLoc != null
+                            && Math.Abs(s.X - apiLoc.X) <= tol
+                            && Math.Abs(s.Y - apiLoc.Y) <= tol)
                         {
-                            var s = apiStarts[i];
-                            if (Math.Abs(s.X - apiLoc.X) < tol && Math.Abs(s.Y - apiLoc.Y) < tol) continue; // skip duplicate
-                            startLocations.Add(new Vector2Dto(s.X, s.Y));
+                            startLocationIndex = i;
                         }
                     }
+
+                    // Some responses expose only the other player's API start. Keep the
+                    // observed self start as the next stable slot instead of silently
+                    // treating it as API index 0.
+                    if (apiLoc != null && startLocationIndex < 0)
+                    {
+                        startLocationIndex = startLocations.Count;
+                        startLocations.Add(new Vector2Dto(apiLoc.X, apiLoc.Y));
+                    }
                 }
-                else if (apiStarts != null && apiStarts.Count > 0)
+                else if (apiLoc != null)
                 {
-                    // No observed base unit; use API starts in order (first is slot 0)
-                    foreach (var s in apiStarts) startLocations.Add(new Vector2Dto(s.X, s.Y));
+                    // The API normally supplies starts, but retain a single observed slot
+                    // when that response is unavailable.
+                    startLocations.Add(new Vector2Dto(apiLoc.X, apiLoc.Y));
+                    startLocationIndex = 0;
                 }
 
             }
@@ -462,6 +471,21 @@ namespace BabySharkBot.Setup
 
             //Console.WriteLine($"InitialMapData: mineral categories wall={wallMineralsList.Count}, small={smallMineralsList.Count}, large={largeMineralsList.Count}");
 
+            // The observed self workers are the authoritative current-start workers for
+            // the initial greedy chain. Populate the matching start slot before ordering.
+            if (startLocationIndex >= 0 && startLocationIndex < multiStartingUnits.Count)
+            {
+                multiStartingUnits[startLocationIndex] = workerList
+                    .Select(worker => new WorkerEntryDto
+                    {
+                        UnitTag = worker.Tag,
+                        UnitType = worker.UnitType,
+                        Position = new Vector2Dto(worker.X, worker.Y, worker.Z)
+                    })
+                    .ToList();
+                Console.WriteLine($"InitialMapData: Start[{startLocationIndex}] observed workers assigned for greedy anchor count={multiStartingUnits[startLocationIndex].Count}");
+            }
+
             // Calculate center of mass for minerals at each start location
             // Also track average distance for near and far mineral patches
             // Populate multiMineralCenterOfMass with COM for each start location
@@ -486,27 +510,27 @@ namespace BabySharkBot.Setup
                         // Worker Chain building removed from InitialMapData.
                         // CCA (chrisCrossAppleSause) now owns W1-W12/W8 chain establishment on Frame Zero.
 
-                        // Classify minerals into near/far lists based on avgDistance
-                        // This happens after worker labeling so that worker positions are established first
-                        if (multiMainMinerals.Count > si && multiMainMinerals[si] != null)
+                        // Mineral size/resource class is the primary Near/Far rule. Distance is
+                        // diagnostic only: map layouts can place small and large minerals at similar
+                        // town-hall distances, so distance alone must not assign mineral roles.
+                        if (si < multiMineralResources.Count && multiMineralResources[si] != null)
                         {
-                            foreach (var mineral in multiMainMinerals[si])
+                            var contents = multiMineralResources[si];
+                            var largeContents = contents.Count > 0 ? contents.Max() : 0;
+                            foreach (var mineralContents in contents)
                             {
-                                var dist = Vector2.Distance(new Vector2(mineral.X, mineral.Y),
-                                                           new Vector2(comVector.X, comVector.Y));
-
-                                if (dist < avgDistance)
+                                if (mineralContents >= largeContents && largeContents > 0)
                                 {
-                                    nearMineralDistanceByStart[si].Add(dist);
+                                    nearMineralDistanceByStart[si].Add(0f);
                                 }
                                 else
                                 {
-                                    farMineralDistanceByStart[si].Add(dist);
+                                    farMineralDistanceByStart[si].Add(0f);
                                 }
                             }
                         }
 
-                        Console.WriteLine($"InitialMapData: Start[{si}] classified minerals - near={nearMineralDistanceByStart[si].Count} far={farMineralDistanceByStart[si].Count}");
+                        Console.WriteLine($"InitialMapData: Start[{si}] found {nodeCountByStart[si]} minerals; size/resource class counts near={nearMineralDistanceByStart[si].Count} far={farMineralDistanceByStart[si].Count}");
 
                         // Register COM with CrosshairService for visualization
                         if (crosshairService != null)
@@ -542,6 +566,9 @@ namespace BabySharkBot.Setup
             {
                 Console.WriteLine($"InitialMapData: Failed to calculate start location COMs: {ex.Message}");
             }
+
+            // Worker state is owned by ObservationManager and BuildManager. InitialMapData
+            // records only static map/resource geometry for later runtime assignment.
 
             // Serialize the mineral and vespene lists into Globals.currentMapMineralsFullMap (but do not write to disk yet)
             try
@@ -895,103 +922,14 @@ namespace BabySharkBot.Setup
                 Console.WriteLine($"InitialMapData: Failed to populate expansion townhalls: {ex.Message}");
             }
 
-            // Calculate greedy mineral ordering for each start location.
-            // InitialMapData runs only for a new map the first time it is played.
-            // The temporary chain is built from the furthest mineral back to the nearest mineral.
-            // The furthest mineral becomes the new anchor for the remaining minerals.
+            // InitialMapData stores the unordered mineral geometry. The runtime BuildManager
+            // constructs the greedy chain from ObservationManager state after game start.
             var orderedMainMinerals = new List<List<OrderedMineral>>();
-            try
+            for (int si = 0; si < numStartLocations; si++)
             {
-
-                for (int si = 0; si < numStartLocations; si++)
-                {
-                    var orderedList = new List<OrderedMineral>();
-                    var townhallPosition = startingTownHalls[si];
-
-                    // Get W1 position (furthest worker from COM) for this start
-                    Vector2Dto w1Position = null;
-                    if (multiStartingUnits.Count > si && multiStartingUnits[si].Count > 0)
-                    {
-                        w1Position = multiStartingUnits[si][0].Position;
-                    }
-
-                    // Get COM and minerals for this start
-                    Vector2Dto com = null;
-                    if (multiMineralCenterOfMass.Count > si)
-                    {
-                        com = multiMineralCenterOfMass[si];
-                    }
-                    List<Vector2Dto> minerals = null;
-                    if (multiMainMinerals.Count > si)
-                    {
-                        minerals = multiMainMinerals[si];
-                    }
-
-                    if (w1Position != null && minerals != null && minerals.Count > 0)
-                    {
-                        // Get resource amounts for this start's minerals
-                        List<uint> resources = null;
-                        if (multiMineralResources.Count > si)
-                        {
-                            resources = multiMineralResources[si];
-                        }
-
-                        if (resources != null && resources.Count > 0)
-                        {
-                            var distinctResourceCount = resources.Distinct().Count();
-                            Console.WriteLine($"InitialMapData: Start[{si}] resource markers detected: {distinctResourceCount} distinct value(s)");
-
-                            if (distinctResourceCount <= 1 || resources.All(r => r == 0u))
-                            {
-                                resources = BuildMineralResourceMarkersByDistance(minerals, townhallPosition);
-                                Console.WriteLine($"InitialMapData: Start[{si}] rebuilt resource markers from distance ordering ({resources.Count} entries)");
-                            }
-                        }
-                        else
-                        {
-                            resources = BuildMineralResourceMarkersByDistance(minerals, townhallPosition);
-                            Console.WriteLine($"InitialMapData: Start[{si}] created distance-based resource markers ({resources.Count} entries)");
-                        }
-
-                        // Perform greedy ordering using W12 as the anchor for the initial closest-mineral pick.
-                        // If W12 is unavailable, fall back to the last observed worker for that start.
-                        // SecondaryMapData should mirror this same greedy-chain logic when a new start location
-                        // is encountered for the first time on an already known map.
-                        var anchorPosition = w1Position;
-                        if (multiStartingUnits.Count > si && multiStartingUnits[si].Count > 0)
-                        {
-                            var workersForStart = multiStartingUnits[si];
-                            var workerCount = workersForStart.Count;
-
-                            // Use dynamic anchor logic based on worker count: W3 for 8-workers, W4 for 12-workers
-                            var anchorLabel = workerCount == 8 ? "W3" : "W4";
-                            var anchorWorker = workersForStart.FirstOrDefault(w => w.Label == anchorLabel);
-                            if (anchorWorker != null)
-                            {
-                                anchorPosition = anchorWorker.Position;
-                                Console.WriteLine($"InitialMapData: Start[{si}] using {anchorLabel} as greedy anchor at ({anchorPosition.X:F2},{anchorPosition.Y:F2})");
-                            }
-                            else
-                            {
-                                anchorPosition = workersForStart[0].Position;
-                                Console.WriteLine($"InitialMapData: Start[{si}] {anchorLabel} not found; fallback to {workersForStart[0].Label} as greedy anchor");
-                            }
-                        }
-
-                        orderedList = GreedyOrderMinerals(minerals, anchorPosition, com, townhallPosition, si, resources, multiMainMineralTags[si]);
-                        Console.WriteLine($"InitialMapData: Start[{si}] ordered {orderedList.Count} minerals");
-                    }
-
-                    orderedMainMinerals.Add(orderedList);
-                }
-
-                tempBaseDto.OrderedMainMinerals = orderedMainMinerals;
-                Console.WriteLine($"InitialMapData: Calculated greedy mineral ordering for all start locations");
+                orderedMainMinerals.Add(new List<OrderedMineral>());
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"InitialMapData: Failed to calculate greedy mineral ordering: {ex.Message}");
-            }
+
 
             try
             {
@@ -1116,21 +1054,34 @@ namespace BabySharkBot.Setup
             try
             {
                 tempBaseDto.StartingTownHall = startingTownHalls;
+                for (var si = 0; si < numStartLocations; si++)
+                {
+                    var minerals = si < multiMainMinerals.Count ? multiMainMinerals[si] : new List<Vector2Dto>();
+                    var resources = si < multiMineralResources.Count ? multiMineralResources[si] : new List<uint>();
+                    var tags = si < multiMainMineralTags.Count ? multiMainMineralTags[si] : new List<ulong>();
+                    var townhall = si < startingTownHalls.Length ? startingTownHalls[si] : null;
+                    var com = si < multiMineralCenterOfMass.Count ? multiMineralCenterOfMass[si] : null;
+                    var anchor = si < multiStartingUnits.Count
+                        ? multiStartingUnits[si].FirstOrDefault(worker => worker?.Position != null)?.Position
+                        : null;
+                    orderedMainMinerals[si] = GreedyOrderMinerals(minerals, anchor, com, townhall, si, resources, tags);
+                    Console.WriteLine($"InitialMapData: Start[{si}] canonical greedy minerals={orderedMainMinerals[si].Count}");
+                }
+                tempBaseDto.OrderedMainMinerals = orderedMainMinerals;
+                tempBaseDto.StartingMinerals = orderedMainMinerals.Select(list => list.ToList()).ToList();
                 tempBaseDto.MainMinerals = multiMainMinerals;
                 tempBaseDto.MainVespene = multiMainVespene;
                 tempBaseDto.MineralCenterOfMass = multiMineralCenterOfMass;
                 tempBaseDto.StartingUnits = multiStartingUnits;
 
-                // Build initial team assignments so they are available for CCA/JIT mining immediately
-                TeamLabelRegistrationHelper.RegisterTeamLabels(tempBaseDto, orderedMainMinerals, multiStartingUnits, multiMineralCenterOfMass, workerLabelService, _teamPatchAssignments);
-
-                tempBaseDto.TeamPatchAssignments = _teamPatchAssignments;
+                // Team assignments are built by BabySharkBuildManager after it normalizes
+                // the live worker and mineral observations into the greedy chain.
+                tempBaseDto.TeamPatchAssignments = new List<List<TeamPatchAssignmentDto>>();
                 tempBaseDto.SpawningPoolPlacements = spawningPoolPlacements;
                 tempBaseDto.MacroHatcheryPlacements = macroHatcheryPlacements;
                 tempBaseDto.RoachWarrenPlacements = roachWarrenPlacements;
 
-                var workerCount = workerList?.Count ?? 12;
-                Settings.WorkerCount = workerCount;
+                var workerCount = workerList?.Count ?? 0;
 
                 tempBaseDto.BaseHasBeenPlayed = baseHasBeenPlayed;
                 tempBaseDto.BaseHasBeenPlayed8 = new bool[numStartLocations];
@@ -1145,18 +1096,14 @@ namespace BabySharkBot.Setup
                     Array.Copy(baseHasBeenPlayed, tempBaseDto.BaseHasBeenPlayed12, baseHasBeenPlayed.Length);
                 }
 
-                tempBaseDto.AssignmentsByWorkerCount[workerCount] = _teamPatchAssignments;
+                tempBaseDto.AssignmentsByWorkerCount[workerCount] = new List<List<TeamPatchAssignmentDto>>();
 
                 tempBaseDto.M1IsFar = new bool[numStartLocations];
                 tempBaseDto.M8IsFar = new bool[numStartLocations];
                 for (int i = 0; i < numStartLocations; i++)
                 {
-                    if (orderedMainMinerals.Count > i && orderedMainMinerals[i] != null)
-                    {
-                        var orderedList = orderedMainMinerals[i];
-                        tempBaseDto.M1IsFar[i] = orderedList.Any(m => m != null && m.Index == 1 && m.IsFar);
-                        tempBaseDto.M8IsFar[i] = orderedList.Any(m => m != null && m.Index == 8 && m.IsFar);
-                    }
+                    tempBaseDto.M1IsFar[i] = false;
+                    tempBaseDto.M8IsFar[i] = false;
                 }
                 Settings.M1IsFar = tempBaseDto.M1IsFar;
                 Settings.M8IsFar = tempBaseDto.M8IsFar;
@@ -1903,7 +1850,7 @@ namespace BabySharkBot.Setup
                 return;
             }
 
-            var phaseFourPrefixes = new[] { "T", "M", "B", "Y" };
+            var phaseFourPrefixes = new[] { "T", "S", "B", "Y" };
 
             for (int si = 0; si < multiStartingUnits.Count; si++)
             {
@@ -2018,7 +1965,7 @@ namespace BabySharkBot.Setup
                 return mineral.Index switch
                 {
                     1 or 2 => "T",
-                    3 or 4 => "M",
+                    3 or 4 => "S",
                     5 or 6 => "B",
                     7 or 8 => "Y",
                     _ => null
@@ -2028,7 +1975,7 @@ namespace BabySharkBot.Setup
             return mineral.Index switch
             {
                 1 or 2 => "T",
-                3 or 4 => "M",
+                3 or 4 => "S",
                 5 or 6 => "B",
                 7 or 8 => "Y",
                 _ => null
@@ -2145,10 +2092,12 @@ namespace BabySharkBot.Setup
                 currentAnchor = new Vector2(minerals[chosenIdx].X, minerals[chosenIdx].Y);
             }
 
-            var nearFarThreshold = townhallPosition != null
-                ? minerals.Average(m => Vector2.Distance(new Vector2(m.X, m.Y), new Vector2(townhallPosition.X, townhallPosition.Y)))
-                : float.MaxValue;
-            nearFarThreshold = nearFarThreshold > 0.25f ? nearFarThreshold - 0.25f : nearFarThreshold;
+            var orderedResourceValues = mineralResources?.Where(resource => resource > 0).Distinct().ToList() ?? new List<uint>();
+            var largeResourceValue = orderedResourceValues.Count > 1 ? orderedResourceValues.Max() : 0u;
+            if (largeResourceValue > 0)
+            {
+                Console.WriteLine($"InitialMapData.GreedyOrderMinerals: Start[{startIndex}] resource-class Near/Far uses large={largeResourceValue}; distance is diagnostic only.");
+            }
 
             for (int orderIndex = 0; orderIndex < orderedIndices.Count; orderIndex++)
             {
@@ -2174,10 +2123,10 @@ namespace BabySharkBot.Setup
                     OriginalIndex = mineralIndex,
                     DistanceFromCOM = distFromCom,
                     DistanceToTownhall = distanceToTownhall,
-                    IsNear = distanceToTownhall <= nearFarThreshold,
-                    IsLarge = distanceToTownhall <= nearFarThreshold || displayIndex == 3 || displayIndex == 4,
-                    IsFar = !(distanceToTownhall <= nearFarThreshold || displayIndex == 3 || displayIndex == 4),
                     Resources = mineralResources != null && mineralIndex < mineralResources.Count ? mineralResources[mineralIndex] : 0,
+                    IsNear = largeResourceValue > 0 && mineralResources != null && mineralIndex < mineralResources.Count && mineralResources[mineralIndex] == largeResourceValue,
+                    IsLarge = largeResourceValue > 0 && mineralResources != null && mineralIndex < mineralResources.Count && mineralResources[mineralIndex] == largeResourceValue,
+                    IsFar = largeResourceValue > 0 && mineralResources != null && mineralIndex < mineralResources.Count && mineralResources[mineralIndex] != largeResourceValue,
                     UnitTag = mineralTags != null && mineralIndex < mineralTags.Count ? mineralTags[mineralIndex] : 0
                 });
 
@@ -2279,9 +2228,10 @@ namespace BabySharkBot.Setup
                 // Classify based on which distribution the mineral belongs to
                 foreach (var ord in orderedMinerals)
                 {
-                var isLarge = ord.IsNear || ord.Index == 3 || ord.Index == 4;
+                var isLarge = ord.Resources == highResourceValue && highResourceValue > lowResourceValue;
                 ord.Size = isLarge ? MineralSize.Large : MineralSize.Normal;
                 ord.IsLarge = isLarge;
+                ord.IsNear = isLarge;
                 ord.IsFar = !isLarge;
                 if (isLarge)
                 {
@@ -2319,9 +2269,12 @@ namespace BabySharkBot.Setup
 
             foreach (var ord in orderedMinerals)
             {
-                var isLarge = ord.IsNear || ord.Index == 3 || ord.Index == 4;
+                var isLarge = ord.Resources > 0 && orderedMinerals.Max(candidate => candidate.Resources) > orderedMinerals.Min(candidate => candidate.Resources)
+                    ? ord.Resources == orderedMinerals.Max(candidate => candidate.Resources)
+                    : ord.IsNear;
                 ord.Size = isLarge ? MineralSize.Large : MineralSize.Normal;
                 ord.IsLarge = isLarge;
+                ord.IsNear = isLarge;
                 ord.IsFar = !isLarge;
                 if (isLarge)
                 {

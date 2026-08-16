@@ -160,10 +160,10 @@ namespace BabySharkBot.Setup
                 }
                 else
                 {
-                    // The 8-worker opening keeps the existing direct distance-based role assignment.
-                    var actualNearMineral = mineralPair[0].IsNear ? mineralPair[0] : mineralPair[1];
-                    var actualFarMineral = mineralPair[0].IsNear ? mineralPair[1] : mineralPair[0];
-                    ApplyWorkerFinalLabels(mapData, startIndex, GetTeamPrefix(teamNum, workers.Count), teamWorkers, actualNearMineral, actualFarMineral, workerLabelService);
+                    // The 8-worker opening keeps the greedy worker-to-mineral order.
+                    // Worker list order maps directly to mineral pair order; suffixes are
+                    // then derived from each target mineral's final A/B label.
+                    ApplyWorkerFinalLabels(mapData, startIndex, GetTeamPrefix(teamNum, workers.Count), teamWorkers, mineralPair[0], mineralPair[1], workerLabelService);
                 }
 
                 var hatcheryPos = mapData.StartingTownHall[startIndex];
@@ -218,17 +218,17 @@ namespace BabySharkBot.Setup
 
             Console.WriteLine($"TeamLabelRegistrationHelper: Building layouts for {workers?.Count ?? 0} workers and {minerals?.Count ?? 0} minerals.");
 
-            // If we have a full 12-worker spawn, use the correct mapping from architecture docs:
+            // Full 12-worker mapping follows the shared color order:
+            // Teal: M[0], M[1] -> W2, W3, W4
+            // Salmon: M[2], M[3] -> W5, W6, W1
+            // Blue: M[4], M[5] -> W7, W8, W12
+            // Yellow: M[6], M[7] -> W9, W10, W11
             if (workers != null && workers.Count == 12)
             {
-                // Team 1: Y (M1, M2) -> W9, W10, W11
-                // Team 2: B (M3, M4) -> W7, W8, W12
-                // Team 3: S (M5, M6) -> W5, W6, W1
-                // Team 4: T (M7, M8) -> W2, W3, W4
-                AddTeamIfPossible(teams, minerals, workers, 7, 6, new[] { "W9", "W10", "W11" }, 1);
-                AddTeamIfPossible(teams, minerals, workers, 5, 4, new[] { "W7", "W8", "W12" }, 2);
-                AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W1" }, 3);
-                AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W2", "W3", "W4" }, 4);
+                AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W2", "W3", "W4" }, 1);
+                AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W1" }, 2);
+                AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W8", "W12" }, 3);
+                AddTeamIfPossible(teams, minerals, workers, 6, 7, new[] { "W9", "W10", "W11" }, 4);
             }
             else
             {
@@ -326,10 +326,10 @@ namespace BabySharkBot.Setup
 
                 var prefix = assignment.TeamNumber switch
                 {
-                    1 => "Y",
-                    2 => "B",
-                    3 => "S",
-                    4 => "T",
+                    1 => "T",
+                    2 => "S",
+                    3 => "B",
+                    4 => "Y",
                     _ => string.Empty
                 };
 
@@ -411,6 +411,8 @@ namespace BabySharkBot.Setup
 
             SetFinalLabel(nearMineral, $"{prefix}A");
             SetFinalLabel(farMineral, $"{prefix}B");
+            Console.WriteLine($"Assignment: {Math.Max(0, nearMineral.Index - 1)}-{nearMineral.FinalLabel} Unit ID={nearMineral.UnitTag}");
+            Console.WriteLine($"Assignment: {Math.Max(0, farMineral.Index - 1)}-{farMineral.FinalLabel} Unit ID={farMineral.UnitTag}");
             SetMineralIdentityFlags(mapData, startIndex, prefix, first, second, farMineral);
 
             mapData.MineralFinalLabelsByPosition ??= new Dictionary<string, string>();
@@ -581,6 +583,29 @@ namespace BabySharkBot.Setup
                 return;
             }
 
+            if (teamWorkers.Count == 2)
+            {
+                for (var i = 0; i < teamWorkers.Count && i < 2; i++)
+                {
+                    var target = i == 0 ? nearMineral : farMineral;
+                    var suffix = string.Equals(target?.FinalLabel, $"{prefix}A", StringComparison.OrdinalIgnoreCase)
+                        ? "1"
+                        : string.Equals(target?.FinalLabel, $"{prefix}B", StringComparison.OrdinalIgnoreCase)
+                            ? "2"
+                            : string.Empty;
+
+                    if (string.IsNullOrEmpty(suffix))
+                    {
+                        Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Cannot derive {prefix} suffix for {teamWorkers[i].StartLabel}; target mineral label={target?.FinalLabel}");
+                        continue;
+                    }
+
+                    AssignFinalLabel(teamWorkers[i], $"{prefix}{suffix}", workerLabelService);
+                }
+
+                return;
+            }
+
             if (prefix == "Y")
             {
                 var y2Source = "W4";
@@ -615,16 +640,14 @@ namespace BabySharkBot.Setup
                 AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "S3" }, new[] { "S1", "S2" }, workerLabelService);
                 SetNoPushFlag(mapData, "SalmonNoPush", teamWorkers, nearMineral, "S1", "S2");
             }
-            else if (prefix == "G" || prefix == "P" || prefix == "O" || prefix == "R")
+            else
             {
-                // 8 worker start logic: Linear 1-to-1 mapping based on greedy chain order (W1-W8).
-                // W1/W3/W5/W7 -> First mineral in team pair (A)
-                // W2/W4/W6/W8 -> Second mineral in team pair (B)
-                var w1 = teamWorkers.FirstOrDefault(w => w.Label != null && (w.Label.EndsWith("1") || w.Label.EndsWith("3") || w.Label.EndsWith("5") || w.Label.EndsWith("7")));
-                var w2 = teamWorkers.FirstOrDefault(w => w != w1);
-
-                if (w1 != null) AssignFinalLabel(w1, w1.Label, workerLabelService);
-                if (w2 != null) AssignFinalLabel(w2, w2.Label, workerLabelService);
+                // Every mineral team uses the same four prefixes, including 8-worker starts.
+                // The team layout already preserves the documented worker-to-mineral pairing.
+                for (var i = 0; i < teamWorkers.Count && i < 2; i++)
+                {
+                    AssignFinalLabel(teamWorkers[i], $"{prefix}{i + 1}", workerLabelService);
+                }
             }
         }
 
@@ -691,6 +714,20 @@ namespace BabySharkBot.Setup
             {
                 workerLabelService?.SetLabel(finalLabel, worker.UnitTag);
             }
+
+            var workerIndex = ParseWorkerIndex(worker.StartLabel ?? worker.Label);
+            var displayLabel = workerIndex > 0 ? $"{workerIndex}-{worker.FinalLabel}" : worker.FinalLabel;
+            Console.WriteLine($"Assignment: {displayLabel} Unit ID={worker.UnitTag}");
+        }
+
+        private static int ParseWorkerIndex(string label)
+        {
+            if (string.IsNullOrWhiteSpace(label) || label.Length < 2 || label[0] != 'W')
+            {
+                return 0;
+            }
+
+            return int.TryParse(label.Substring(1), out var index) ? index : 0;
         }
 
         private static void SetNoPushFlag(MawBaseLocationData mapData, string flagName, List<WorkerEntryDto> teamWorkers, OrderedMineral largeMineral, string worker1Label, string worker3Label)
@@ -733,25 +770,14 @@ namespace BabySharkBot.Setup
 
         private static string GetTeamPrefix(int teamNumber, int workerCount)
         {
-            if (workerCount == 12)
-            {
-                return teamNumber switch
-                {
-                    1 => "Y",
-                    2 => "B",
-                    3 => "S",
-                    4 => "T",
-                    _ => string.Empty
-                };
-            }
-
-            // 8 Workers or other non-standard starts
+            // Mineral teams always use the 12-worker color vocabulary. The mineral manager
+            // owns behavior after frame 35, so labels must remain stable across worker counts.
             return teamNumber switch
             {
-                1 => "O", // Orange
-                2 => "R", // Red
-                3 => "P", // Purple
-                4 => "G", // Green
+                1 => "T",
+                2 => "S",
+                3 => "B",
+                4 => "Y",
                 _ => string.Empty
             };
         }

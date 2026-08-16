@@ -98,16 +98,17 @@ namespace BabySharkBot.Setup
 
             if (finalLabel.StartsWith("V", System.StringComparison.OrdinalIgnoreCase))
             {
-                return string.Equals(finalLabel, "V1", System.StringComparison.OrdinalIgnoreCase) ? new Color { R = 0, G = 255, B = 0 }
-                    : string.Equals(finalLabel, "V2", System.StringComparison.OrdinalIgnoreCase) ? new Color { R = 0, G = 0, B = 255 }
-                    : new Color { R = 128, G = 0, B = 128 };
+                return string.Equals(finalLabel, "VA", System.StringComparison.OrdinalIgnoreCase) ? TeamColorService.Teal
+                    : string.Equals(finalLabel, "VB", System.StringComparison.OrdinalIgnoreCase) ? TeamColorService.Salmon
+                    : new Color { R = 255, G = 255, B = 255 };
             }
 
             return finalLabel[0] switch
             {
-                'T' => new Color { R = 0, G = 255, B = 255 },    // Teal
-                'S' or 'M' => new Color { R = 255, G = 0, B = 255 }, // Salmon/Magenta
-                'B' => new Color { R = 0, G = 0, B = 255 },     // Blue
+                'T' => TeamColorService.Teal,
+                'S' => TeamColorService.Salmon,
+                'M' => TeamColorService.Salmon,
+                'B' => TeamColorService.Blue,
                 'Y' => new Color { R = 255, G = 255, B = 0 },   // Yellow
                 'G' => new Color { R = 0, G = 255, B = 0 },     // Green
                 'P' => new Color { R = 128, G = 0, B = 128 },   // Purple

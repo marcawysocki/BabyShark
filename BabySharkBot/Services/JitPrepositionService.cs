@@ -104,7 +104,7 @@ namespace BabySharkBot.Services
         {
             var service = _miningManager.VespeneLabelService;
             var labels = service.GetAllVespeneLabels();
-            if (labels.TryGetValue("V2", out var data))
+            if (labels.TryGetValue("VB", out var data))
             {
                 return new Point2D { X = data.Position.X, Y = data.Position.Y };
             }

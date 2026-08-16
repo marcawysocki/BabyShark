@@ -57,6 +57,8 @@ namespace BabySharkBot.Setup
         public bool IsCarrying { get; set; }
         public bool WasCarrying { get; set; }
         public bool JustPickedUp { get; set; }
+        public List<int> OrderAbilityIds { get; set; } = new();
+        public ulong TargetUnitTag { get; set; }
     }
 
     /// <summary>
@@ -309,6 +311,56 @@ namespace BabySharkBot.Setup
         public TeamPatchAssignmentDto() { }
     }
 
+    /// <summary>
+    /// One exact resource route in a worker's build-owned mining plan.
+    /// Self routes are speed-mining geometry; non-self routes are A/B switches.
+    /// </summary>
+    [MemoryPackable]
+    public partial class MiningTargetDto
+    {
+        public string ResourceLabel { get; set; } = string.Empty;
+        public string FromResourceLabel { get; set; } = string.Empty;
+        public string ToResourceLabel { get; set; } = string.Empty;
+        public ulong ResourceUnitId { get; set; }
+        public ulong TownHallUnitId { get; set; }
+        public Vector2Dto ResourcePosition { get; set; } = new();
+        public Vector2Dto HarvestPoint { get; set; } = new();
+        public Vector2Dto ReturnPoint { get; set; } = new();
+        public bool IsSpeedMining { get; set; }
+        public bool IsABSwitch { get; set; }
+        public bool IsInitialMineralAssignment { get; set; }
+    }
+
+    /// <summary>
+    /// Cross-table of exact resource routes for one spawn.
+    /// Row/column identity is the canonical resource label, never an observation index.
+    /// </summary>
+    [MemoryPackable]
+    public partial class MiningTargetCrossTableDto
+    {
+        public int StartIndex { get; set; }
+        public bool Calculated { get; set; }
+        public List<string> ResourceLabels { get; set; } = new();
+        public List<List<MiningTargetDto>> Routes { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Exact build-owned worker assignment. No role or target may be inferred downstream.
+    /// </summary>
+    [MemoryPackable]
+    public partial class AssignedWorkerDto
+    {
+        public ulong UnitID { get; set; }
+        public Vector2Dto CurrentXY { get; set; } = new();
+        public string Role { get; set; } = string.Empty;
+        public ulong TownHallUnitID { get; set; }
+        public List<MiningTargetDto> MiningTargets { get; set; } = new();
+        public int Mti { get; set; }
+        public ulong CurrentTargetUnitID { get; set; }
+        public uint CurrentAbilityID { get; set; }
+        public bool IsCarrying { get; set; }
+    }
+
 
     [MemoryPackable]
     public partial class ExtractorTrickData
@@ -392,11 +444,16 @@ namespace BabySharkBot.Setup
         public Dictionary<ulong, Vector2Dto> WorkerPositions { get; set; } = new();
         public Dictionary<ulong, MineralDto> Minerals { get; set; } = new();
         public Dictionary<ulong, OrderedVespene> Vespene { get; set; } = new();
+        public Dictionary<ulong, WorkerEntryDto> CurrentTownHalls { get; set; } = new();
     }
 
     [MemoryPackable]
     public partial class MawBaseLocationData
     {
+        // MemoryPack schema policy: any BaseDtos serialized-shape change must increment
+        // this version past the decimal point and invalidate older cached data.
+        public string BaseDtosVersion { get; set; } = Settings.SpeedMiningVersion;
+
         public Vector2Dto[] StartingTownHall { get; set; } = new Vector2Dto[0];
         public List<Vector2Dto> ExpansionTownhalls { get; set; } = new List<Vector2Dto>();
         public MapLocationData MapLocationData { get; set; } = new MapLocationData();
@@ -405,6 +462,13 @@ namespace BabySharkBot.Setup
         public Dictionary<uint, int> MineralTypeMaxContents { get; set; } = new Dictionary<uint, int>();
         public Dictionary<uint, bool> MineralTypeContentsAreUniform { get; set; } = new Dictionary<uint, bool>();
         public bool MismatchedMinerals { get; set; } = false;
+        /// <summary>
+        /// Ordered starting minerals for each map start location.
+        /// StartingMinerals[startIndex] is the only mineral set valid for that start.
+        /// The list is aligned with StartingTownHall and OrderedMainMinerals.
+        /// </summary>
+        public List<List<OrderedMineral>> StartingMinerals { get; set; } = new List<List<OrderedMineral>>();
+
         public List<List<Vector2Dto>> MainMinerals { get; set; } = new List<List<Vector2Dto>>();
         public List<List<OrderedMineral>> OrderedMainMinerals { get; set; } = new List<List<OrderedMineral>>();
         public List<List<Vector2Dto>> MainVespene { get; set; } = new List<List<Vector2Dto>>();
@@ -443,6 +507,8 @@ namespace BabySharkBot.Setup
         public List<ExtractorTrickData> ExtractorTrickDataByStart { get; set; } = new();
         public List<TeamTransitionInfo> TeamTransitions { get; set; } = new();
         public List<PinkWorkerAssignment> PinkWorkerAssignments { get; set; } = new();
+        public List<List<AssignedWorkerDto>> AssignedWorkers { get; set; } = new();
+        public List<MiningTargetCrossTableDto> MiningTargetCrossTables { get; set; } = new();
     }
 
     public class WorkerLabelService

@@ -18,17 +18,18 @@ namespace BabySharkBot
         {
             ConsecrationofMyStarCraftIIBotProject.Invoke();
             Console.WriteLine("Starting BabySharkBot");
+            Console.WriteLine($"[BUILD ID] ROOT-20260813-SPAWN-FIX assembly={typeof(Program).Assembly.Location} base={AppContext.BaseDirectory}");
             ConfigureRlModes(args);
 
             var maps = new[]
             {
-               // "AbyssalReefAIE.SC2Map",
-               // "AcropolisAIE.SC2Map",
-                //"AutomatonAIE.SC2Map",
-              //  "EphemeronAIE.SC2Map",
-               // "IncorporealAIE_v4.SC2Map",
+                "AbyssalReefAIE.SC2Map",
+                "AcropolisAIE.SC2Map",
+                "AutomatonAIE.SC2Map",
+                "EphemeronAIE.SC2Map",
+                "IncorporealAIE_v4.SC2Map",
                 "InterloperAIE.SC2Map",
-               // "LastFantasyAIE.SC2Map",
+                "LastFantasyAIE.SC2Map",
                // "LeyLinesAIE_v3.SC2Map",
                // "MagannathaAIE_v2.SC2Map",
               //  "PersephoneAIE_v4.SC2Map",

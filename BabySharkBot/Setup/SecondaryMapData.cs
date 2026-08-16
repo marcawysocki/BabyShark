@@ -170,6 +170,7 @@ namespace BabySharkBot.Setup
                     continue;
                 }
 
+                vespene.Label = label;
                 vespeneLabelService.SetVespeneLabel(label, new Point
                 {
                     X = vespene.Position.X,
@@ -243,12 +244,12 @@ namespace BabySharkBot.Setup
                 return string.Empty;
             }
 
-            if (!string.IsNullOrWhiteSpace(vespene.Label))
+            return vespene.Index switch
             {
-                return vespene.Label;
-            }
-
-            return $"V{vespene.Index}";
+                1 => "VA",
+                2 => "VB",
+                _ => $"V{vespene.Index}"
+            };
         }
     }
 }

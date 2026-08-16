@@ -109,6 +109,10 @@ GetTag(string label)
 ## Serialization and persistence
 
 - `MawBaseLocationData` is serialized with MemoryPack.
+- `MawBaseLocationData.BaseDtosVersion` is the serialized DTO schema/build version. If the field is missing or differs from `Settings.SpeedMiningVersion`, the cached data is corrupt and `InitialMapData` must regenerate it.
+- **BaseDtos version rule:** every change to the serialized DTO shape in `BaseDtos.cs` must increment `Settings.SpeedMiningVersion` past the decimal point. Do not reuse an older version for a changed schema.
+- `MawBaseLocationData.AssignedWorkers` and `MiningTargetCrossTables` are populated by `BabySharkBuildManager` from the existing label/team assignments. Downstream mining must consume these exact assignments; it must not invent roles, substitute workers, or choose alternate targets.
+- Cross-table self entries are speed-mining routes. Non-self entries are A/B switch routes using the existing assigned resource geometry. Live SC2 UnitTags are refreshed from `ObservationManager` each game; labels and positions remain canonical.
 - Cached files use the versioned naming convention managed by `MapDataManager` and `Program`:
   `data/base/{sanitized-map-name}.Version{Settings.SpeedMiningVersion}.dat`.
 - Changes to serialized DTO shape or map-generation semantics require a version review and a plan for invalidating/regenerating incompatible cached data.

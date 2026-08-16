@@ -5,6 +5,7 @@ using SC2APIProtocol;
 using Sharky;
 using Sharky.Pathing;
 using BabySharkBot.Setup;
+using BabySharkBot.Services;
 
 namespace BabySharkBot.Managers
 {
@@ -19,6 +20,8 @@ namespace BabySharkBot.Managers
         private readonly BaseData _baseData;
         private readonly MapDataService _mapDataService;
         private readonly UnitDataService _unitDataService;
+        private readonly chrisCrossAppleSause _ccaService;
+        private bool _startupInitialized;
 
         private readonly HashSet<UnitTypes> WorkerTypes = new() { UnitTypes.ZERG_DRONE, UnitTypes.TERRAN_SCV, UnitTypes.PROTOSS_PROBE };
         private readonly HashSet<UnitTypes> MineralFieldTypes = new()
@@ -45,13 +48,15 @@ namespace BabySharkBot.Managers
             SharkyUnitData sharkyUnitData,
             BaseData baseData,
             MapDataService mapDataService,
-            UnitDataService unitDataService)
+            UnitDataService unitDataService,
+            chrisCrossAppleSause ccaService = null)
         {
             _activeUnitData = activeUnitData;
             _sharkyUnitData = sharkyUnitData;
             _baseData = baseData;
             _mapDataService = mapDataService;
             _unitDataService = unitDataService;
+            _ccaService = ccaService;
         }
 
         public override bool NeverSkip => true;
@@ -59,6 +64,24 @@ namespace BabySharkBot.Managers
         public override void OnStart(ResponseGameInfo gameInfo, ResponseData data, ResponsePing pingResponse, ResponseObservation observation, uint playerId, string opponentId)
         {
             ProcessObservation(observation);
+            InitializeStartupObservation();
+        }
+
+        private void InitializeStartupObservation()
+        {
+            if (_startupInitialized || Settings.WorkerCount == 8 || _ccaService == null || Globals.CurrentMapData == null)
+            {
+                return;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            if (startIndex < 0)
+            {
+                return;
+            }
+
+            _ccaService.EnableCcaMiningForCurrentSpawn(Globals.CurrentMapData, startIndex);
+            _startupInitialized = true;
         }
 
         public override IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
@@ -72,10 +95,11 @@ namespace BabySharkBot.Managers
             if (observation?.Observation?.RawData?.Units == null) return;
 
             var frame = (int)observation.Observation.GameLoop;
+            var relativeFrame = Settings.GetRelativeFrame(frame);
             
             // During the initialization phase, clear all Sharky Commanders to ensure 
             // CCA has absolute authority over the workers.
-            if (frame < 35)
+            if (relativeFrame < 35)
             {
                 _activeUnitData.Commanders.Clear();
             }
@@ -100,13 +124,14 @@ namespace BabySharkBot.Managers
             // Clear frame-specific dictionaries
             Globals.CurrentObservation.Minerals.Clear();
             Globals.CurrentObservation.Vespene.Clear();
+            Globals.CurrentObservation.CurrentTownHalls.Clear();
             
             var currentSelfUnits = new Dictionary<ulong, WorkerEntryDto>();
             var currentVisibleTags = new HashSet<ulong>();
 
-            if (frame % 5 == 0)
+            if (relativeFrame % 5 == 0)
             {
-                Console.WriteLine($"ObservationManager: Processing frame {frame}. RawUnitsCount={observation.Observation.RawData.Units.Count}");
+                 Console.WriteLine($"ObservationManager: Processing frame {frame} (relative {relativeFrame}). RawUnitsCount={observation.Observation.RawData.Units.Count}");
             }
 
             foreach (var unit in observation.Observation.RawData.Units)
@@ -125,6 +150,8 @@ namespace BabySharkBot.Managers
                     ClassifyNeutralUnit(unit);
                 }
             }
+
+            PublishAvailableUnits();
 
             _previousSelfUnits = currentSelfUnits;
             _previousVisibleTags = currentVisibleTags;
@@ -153,11 +180,21 @@ namespace BabySharkBot.Managers
             entry.BecameVisible = becameVisible;
             entry.IsMorphing = unit.BuildProgress < 1.0f && ut != UnitTypes.ZERG_LARVA;
             entry.IsCompleted = unit.BuildProgress >= 1.0f;
+            entry.OrderAbilityIds = unit.Orders?.Select(order => Convert.ToInt32(order.AbilityId)).ToList() ?? new List<int>();
+            entry.TargetUnitTag = unit.Orders?.FirstOrDefault()?.TargetUnitTag ?? 0;
+
+            if (unit.UnitType == (uint)UnitTypes.ZERG_HATCHERY
+                || unit.UnitType == (uint)UnitTypes.TERRAN_COMMANDCENTER
+                || unit.UnitType == (uint)UnitTypes.PROTOSS_NEXUS)
+            {
+                Globals.CurrentObservation.CurrentTownHalls[unit.Tag] = entry;
+            }
 
             // Explicitly expose X,Y coordinates for CCA service
             Globals.CurrentObservation.WorkerPositions[unit.Tag] = entry.Position;
+            var relativeUnitFrame = Settings.GetRelativeFrame(frame);
             
-            if (frame % 5 == 0 && ut == UnitTypes.ZERG_DRONE)
+            if (relativeUnitFrame % 5 == 0 && ut == UnitTypes.ZERG_DRONE)
             {
                 // Console.WriteLine($"ObservationManager: Tracked Drone {unit.Tag} at ({entry.Position.X:F2},{entry.Position.Y:F2})");
             }
@@ -214,6 +251,21 @@ namespace BabySharkBot.Managers
             {
                 Globals.CurrentObservation.ReadyForLabeling.Other.Add(unit.Tag);
             }
+        }
+
+        private static void PublishAvailableUnits()
+        {
+            Settings.AvailableLarva.Clear();
+            Settings.AvailableLarva.AddRange(Globals.CurrentObservation.AvailableLarva);
+
+            Settings.AvailableWorker.Clear();
+            Settings.AvailableWorker.AddRange(Globals.CurrentObservation.AvailableWorkers);
+
+            Settings.AvailableOverLord.Clear();
+            Settings.AvailableOverLord.AddRange(Globals.CurrentObservation.AvailableOverlords);
+
+            Settings.AvailableQueen.Clear();
+            Settings.AvailableQueen.AddRange(Globals.CurrentObservation.AvailableQueens);
         }
 
         private void ClassifyNeutralUnit(Unit unit)

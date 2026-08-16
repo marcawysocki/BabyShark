@@ -67,7 +67,7 @@
                     left = receiveBuf.Length - curPos;
                 }
                 WebSocketReceiveResult result = await clientSocket.ReceiveAsync(new ArraySegment<byte>(receiveBuf, curPos, left), token);
-                if (result.MessageType != WebSocketMessageType.Binary)
+                 if (result.MessageType != WebSocketMessageType.Binary)
                 {
                     throw new Exception("Expected Binary message type.");
                 }
