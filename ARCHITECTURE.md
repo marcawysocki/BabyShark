@@ -130,7 +130,9 @@ StartupAwareSharkyBot.OnFrame
 
 `OngoingMapData.ResolveTeamAssignments(mapData, startIndex)` is the runtime assignment resolver. Consumers must pass the current spawn index and must not search for the first non-empty assignment list across all starts.
 
-Mineral assignments are validated by position and, when available, resource unit tag. Worker assignments must reference live self-worker tags. If current-spawn data is missing or invalid, CCA fails closed instead of issuing commands against another start's resource line.
+Mineral assignments are validated by the current live mineral labels (`M[8]` through `M[1]`), position, and, when available, resource unit tag. Worker assignments must reference live self-worker tags. If current-spawn data is missing or invalid, CCA fails closed instead of issuing commands against another start's resource line.
+
+The correct 8-worker opening behavior is preserved. The 12-worker opening uses the same CCA assignment/movement choreography with bumping disabled. Its calculated mineral `MOVE` commands are scheduled at frames 0, 1, 5, 10, and 15; frame 1 repeats the initial movement command, and verified mineral-target `SMART` handoff occurs before the frame-35 transition, with exact queue timing owned by the live CCA implementation.
 
 ## Worker labels
 
@@ -152,13 +154,13 @@ The initial worker scan and all frame-level worker extraction are self-only. Sta
 
 ### CCA startup phase
 
-`CcaManager` owns the startup choreography while `Settings.ccaMining` is true. It calls `chrisCrossAppleSause.BuildBumpOrders()` using the current spawn's assignments and live worker entries.
+`CcaManager` owns the startup choreography while `Settings.ccaMining` is true. It calls `chrisCrossAppleSause.BuildBumpOrders()` using the current spawn's assignments and live worker entries. For the 12-worker opening, the same choreography runs with bumping disabled and calculated mineral `MOVE` commands at frames 0, 1, 5, 10, and 15; frame 1 repeats the initial movement command.
 
 `BabySharkMiningManager` deliberately emits no normal unit commands during this phase. `TeamPatchMiningTask` may issue high-priority JIT prepositioning commands, but CCA owns the worker bump/order choreography.
 
 ### Handoff
 
-At frame 35, `CcaManager` captures final CCA actions, signals `BabySharkMiningManager.SignalMiningStarted()`, unregisters itself, and adds `BabySharkBuildManager` to the manager list. `Settings.ccaMining` becomes false.
+At frame 35, `CcaManager` captures final CCA actions, including the verified mineral-target `SMART` handoff when required by the live CCA sequence, signals `BabySharkMiningManager.SignalMiningStarted()`, unregisters itself, and adds `BabySharkBuildManager` to the manager list. `Settings.ccaMining` becomes false.
 
 ### Steady-state mining
 

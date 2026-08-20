@@ -123,6 +123,7 @@ namespace BabySharkBot.Managers
 
             // Clear frame-specific dictionaries
             Globals.CurrentObservation.Minerals.Clear();
+            Globals.CurrentObservation.VisibleMinerals.Clear();
             Globals.CurrentObservation.Vespene.Clear();
             Globals.CurrentObservation.CurrentTownHalls.Clear();
             
@@ -273,13 +274,19 @@ namespace BabySharkBot.Managers
             var ut = (UnitTypes)unit.UnitType;
             if (MineralFieldTypes.Contains(ut))
             {
-                Globals.CurrentObservation.Minerals[unit.Tag] = new MineralDto
+                var mineral = new MineralDto
                 {
                     UnitTag = unit.Tag,
                     UnitType = unit.UnitType,
                     Position = new Vector2Dto(unit.Pos.X, unit.Pos.Y, unit.Pos.Z),
+                    IsVisible = unit.DisplayType == DisplayType.Visible,
                     MineralContents = unit.HasMineralContents ? unit.MineralContents : 0
                 };
+                Globals.CurrentObservation.Minerals[unit.Tag] = mineral;
+                if (mineral.IsVisible && mineral.MineralContents != 0)
+                {
+                    Globals.CurrentObservation.VisibleMinerals.Add(mineral);
+                }
             }
             else if (GasGeyserTypes.Contains(ut))
             {

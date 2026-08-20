@@ -25,7 +25,6 @@ namespace BabySharkBot.Builds
         private bool _initialPositionsRecorded;
         private bool _formationCommandsIssued;
         private bool _formationObservedComplete;
-        private bool _startupLabelsVerified;
         private int _formationCommandFrame = -1;
         private int _formationCompleteFrame = -1;
         private ulong _hatcheryTag;
@@ -45,7 +44,6 @@ namespace BabySharkBot.Builds
             _initialPositionsRecorded = false;
             _formationCommandsIssued = false;
             _formationObservedComplete = false;
-            _startupLabelsVerified = false;
             _formationCommandFrame = -1;
             _formationCompleteFrame = -1;
             _hatcheryTag = 0;
@@ -85,17 +83,10 @@ namespace BabySharkBot.Builds
             {
                 _formationObservedComplete = true;
                 _formationCompleteFrame = currentFrame;
-                Settings.StartFrame = currentFrame + 1;
-                Console.WriteLine($"BuildTest12WorkerStart: formation complete at frame {currentFrame}; relative startup begins at frame {Settings.StartFrame}.");
-            }
-            else if (_formationObservedComplete && !_startupLabelsVerified && relativeFrame == 0
-                && snapshot?.AvailableWorkers?.Count >= TargetWorkerCount)
-            {
-                VerifyTwelveWorkerStartupLabels(snapshot);
-                _startupLabelsVerified = true;
                 Settings.SimulatedStartActive = false;
                 Settings.BuildOwnsWorkerCommands = false;
-                Console.WriteLine($"BuildTest12WorkerStart: twelve-worker startup labels verified at frame {currentFrame}; CCA resumed at relative frame 0.");
+                Settings.StartFrame = currentFrame + 1;
+                Console.WriteLine($"BuildTest12WorkerStart: formation complete at frame {currentFrame}; BuildManager labels remain authoritative and CCA begins at relative frame 0 on frame {Settings.StartFrame}.");
             }
 
             return actions;
@@ -230,43 +221,6 @@ namespace BabySharkBot.Builds
             });
         }
 
-        private void VerifyTwelveWorkerStartupLabels(ObservationSnapshotDto snapshot)
-        {
-            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-            var mineralCom = ResolveMineralCenter(startIndex);
-            var orderedMinerals = ResolveOrderedMinerals(startIndex);
-            if (WorkerLabelService == null || mineralCom == null || orderedMinerals == null)
-            {
-                return;
-            }
-
-            var workers = snapshot.AvailableWorkers
-                .Where(tag => snapshot.SelfUnits.TryGetValue(tag, out var worker)
-                    && worker != null
-                    && worker.UnitTag != 0
-                    && worker.Position != null)
-                .Select(tag => snapshot.SelfUnits[tag])
-                .ToList();
-            var workerTuples = workers.Select(worker =>
-                (worker.UnitTag, worker.Position.X, worker.Position.Y, worker.Position.Z, worker.UnitType));
-            var startingWorkers = WorkerLabelChainHelper.BuildGreedyWorkerEntries(workerTuples, mineralCom, WorkerLabelService);
-            if (startingWorkers.Count != TargetWorkerCount)
-            {
-                Console.WriteLine($"BuildTest12WorkerStart: label verification skipped; observed {startingWorkers.Count} workers.");
-                return;
-            }
-
-            var assignments = TeamLabelRegistrationHelper.EnsureTeamLabelsForStart(
-                Globals.CurrentMapData,
-                startIndex,
-                orderedMinerals,
-                startingWorkers,
-                mineralCom,
-                WorkerLabelService,
-                Globals.CurrentMapData.TeamPatchAssignments);
-            Console.WriteLine($"BuildTest12WorkerStart: rebuilt positional W labels and {assignments.Count} twelve-worker team assignments.");
-        }
-
         private List<WorkerEntryDto> GetRecordedChain()
         {
             return Enumerable.Range(1, StartingWorkerCount)
@@ -338,6 +292,9 @@ namespace BabySharkBot.Builds
                 && startIndex >= 0
                 && startIndex < Globals.CurrentMapData.OrderedMainMinerals.Count
                 ? Globals.CurrentMapData.OrderedMainMinerals[startIndex]
+                    .Where(mineral => mineral != null)
+                    .OrderBy(mineral => mineral.Index)
+                    .ToList()
                 : null;
         }
 
@@ -361,8 +318,10 @@ namespace BabySharkBot.Builds
                 .FirstOrDefault() ?? 0;
         }
 
-        private static SC2APIProtocol.Action Stop(ulong tag)
+        private SC2APIProtocol.Action Stop(ulong tag)
         {
+            var workerLabel = WorkerLabelService?.GetLabel(tag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMANDb] phase=BuildTest12 worker={tag} Label={workerLabel} command=STOP queued=false");
             return new SC2APIProtocol.Action
             {
                 ActionRaw = new ActionRaw
@@ -376,8 +335,10 @@ namespace BabySharkBot.Builds
             };
         }
 
-        private static SC2APIProtocol.Action SmartToHatchery(ulong workerTag, ulong hatcheryTag)
+        private SC2APIProtocol.Action SmartToHatchery(ulong workerTag, ulong hatcheryTag)
         {
+            var workerLabel = WorkerLabelService?.GetLabel(workerTag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMANDc] phase=BuildTest12 worker={workerTag} Label={workerLabel} command=SMART targetTag={hatcheryTag} queued=false");
             return new SC2APIProtocol.Action
             {
                 ActionRaw = new ActionRaw
@@ -392,8 +353,10 @@ namespace BabySharkBot.Builds
             };
         }
 
-        private static SC2APIProtocol.Action QueuedStop(ulong tag)
+        private SC2APIProtocol.Action QueuedStop(ulong tag)
         {
+            var workerLabel = WorkerLabelService?.GetLabel(tag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMANDd] phase=BuildTest12 worker={tag} Label={workerLabel} command=STOP queued=true");
             return new SC2APIProtocol.Action
             {
                 ActionRaw = new ActionRaw
@@ -408,8 +371,10 @@ namespace BabySharkBot.Builds
             };
         }
 
-        private static SC2APIProtocol.Action RangeMove(ulong tag, Point2D target, bool queued)
+        private SC2APIProtocol.Action RangeMove(ulong tag, Point2D target, bool queued)
         {
+            var workerLabel = WorkerLabelService?.GetLabel(tag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMANDe] phase=BuildTest12 worker={tag} Label={workerLabel} command=MOVE pos=({target.X:F2},{target.Y:F2}) queued={queued.ToString().ToLowerInvariant()}");
             return new SC2APIProtocol.Action
             {
                 ActionRaw = new ActionRaw

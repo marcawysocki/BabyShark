@@ -30,8 +30,11 @@ namespace BabySharkBot.Setup
 
             for (var startIndex = 0; startIndex < orderedMainMinerals.Count; startIndex++)
             {
-                var minerals = orderedMainMinerals[startIndex];
-                var workers = multiStartingUnits.Count > startIndex ? multiStartingUnits[startIndex] : null;
+            var minerals = orderedMainMinerals[startIndex]?
+                .Where(mineral => mineral != null)
+                .OrderBy(mineral => mineral.Index)
+                .ToList();
+            var workers = multiStartingUnits.Count > startIndex ? multiStartingUnits[startIndex] : null;
                 var com = multiMineralCenterOfMass != null && multiMineralCenterOfMass.Count > startIndex
                     ? multiMineralCenterOfMass[startIndex]
                     : null;
@@ -140,7 +143,13 @@ namespace BabySharkBot.Setup
                 return result;
             }
 
-            var teamLayouts = BuildExplicitTeamLayouts(minerals, workers);
+            // Team membership is defined only from the canonical greedy mineral chain.
+            // Persisted Index 1..8 maps directly to M[1]..M[8]; caller/list enumeration order is not semantic.
+            var canonicalMinerals = minerals
+                .Where(mineral => mineral != null)
+                .OrderBy(mineral => mineral.Index)
+                .ToList();
+            var teamLayouts = BuildExplicitTeamLayouts(canonicalMinerals, workers);
 
             foreach (var layout in teamLayouts)
             {
@@ -219,10 +228,10 @@ namespace BabySharkBot.Setup
             Console.WriteLine($"TeamLabelRegistrationHelper: Building layouts for {workers?.Count ?? 0} workers and {minerals?.Count ?? 0} minerals.");
 
             // Full 12-worker mapping follows the shared color order:
-            // Teal: M[0], M[1] -> W2, W3, W4
-            // Salmon: M[2], M[3] -> W5, W6, W1
-            // Blue: M[4], M[5] -> W7, W8, W12
-            // Yellow: M[6], M[7] -> W9, W10, W11
+            // Teal: M[1], M[2] -> W2, W3, W4
+            // Salmon: M[3], M[4] -> W5, W6, W1
+            // Blue: M[5], M[6] -> W7, W8, W12
+            // Yellow: M[7], M[8] -> W9, W10, W11
             if (workers != null && workers.Count == 12)
             {
                 AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W2", "W3", "W4" }, 1);
@@ -370,62 +379,59 @@ namespace BabySharkBot.Setup
                 return;
             }
 
-            OrderedMineral nearMineral;
-            OrderedMineral farMineral;
-
-            if (first.IsNear && !second.IsNear)
+            // A/B are identical for every team and independent of the numeric greedy
+            // prefix and Near/Far classification: Large is always A, Small is always B.
+            var aMineral = first.Size == MineralSize.Large
+                ? first
+                : second.Size == MineralSize.Large
+                    ? second
+                    : null;
+            var bMineral = first.Size == MineralSize.Small
+                ? first
+                : second.Size == MineralSize.Small
+                    ? second
+                    : null;
+            if (aMineral == null || bMineral == null || aMineral == bMineral)
             {
-                nearMineral = first;
-                farMineral = second;
-            }
-            else if (second.IsNear && !first.IsNear)
-            {
-                nearMineral = second;
-                farMineral = first;
-            }
-            else
-            {
-                if (first.Size != second.Size)
-                {
-                    nearMineral = first.Size > second.Size ? first : second;
-                }
-                else if (first.Resources != second.Resources)
-                {
-                    nearMineral = first.Resources >= second.Resources ? first : second;
-                }
-                else
-                {
-                    // FIX: Changed >= to <= so the closer mineral is correctly labeled "near" (A)
-                    nearMineral = first.DistanceToTownhall <= second.DistanceToTownhall
-                        ? first
-                        : second;
-                }
-
-                farMineral = nearMineral == first ? second : first;
+                Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] {prefix} pair must contain one Large and one Small mineral; M[{first.Index}]={first.Size}, M[{second.Index}]={second.Size}");
+                return;
             }
 
-            nearMineral.IsNear = true;
-            nearMineral.IsFar = false;
-            farMineral.IsNear = false;
-            farMineral.IsFar = true;
-
-            SetFinalLabel(nearMineral, $"{prefix}A");
-            SetFinalLabel(farMineral, $"{prefix}B");
-            Console.WriteLine($"Assignment: {Math.Max(0, nearMineral.Index - 1)}-{nearMineral.FinalLabel} Unit ID={nearMineral.UnitTag}");
-            Console.WriteLine($"Assignment: {Math.Max(0, farMineral.Index - 1)}-{farMineral.FinalLabel} Unit ID={farMineral.UnitTag}");
+            var farMineral = ResolveFarMineralForFlags(first, second);
+            SetFinalLabel(aMineral, $"{prefix}A");
+            SetFinalLabel(bMineral, $"{prefix}B");
+            Console.WriteLine($"Assignment: {FormatMineralAssignmentLabel(aMineral)} Unit ID={aMineral.UnitTag}");
+            Console.WriteLine($"Assignment: {FormatMineralAssignmentLabel(bMineral)} Unit ID={bMineral.UnitTag}");
             SetMineralIdentityFlags(mapData, startIndex, prefix, first, second, farMineral);
 
             mapData.MineralFinalLabelsByPosition ??= new Dictionary<string, string>();
-            if (nearMineral.Position != null)
+            if (aMineral.Position != null)
             {
-                mapData.MineralFinalLabelsByPosition[$"{nearMineral.Position.X:F2},{nearMineral.Position.Y:F2}"] = $"{prefix}A";
+                mapData.MineralFinalLabelsByPosition[$"{aMineral.Position.X:F2},{aMineral.Position.Y:F2}"] = $"{prefix}A";
             }
 
-            if (farMineral.Position != null)
+            if (bMineral.Position != null)
             {
-                mapData.MineralFinalLabelsByPosition[$"{farMineral.Position.X:F2},{farMineral.Position.Y:F2}"] = $"{prefix}B";
+                mapData.MineralFinalLabelsByPosition[$"{bMineral.Position.X:F2},{bMineral.Position.Y:F2}"] = $"{prefix}B";
             }
 
+        }
+
+        private static string FormatMineralAssignmentLabel(OrderedMineral mineral)
+        {
+            if (mineral == null || string.IsNullOrWhiteSpace(mineral.FinalLabel))
+            {
+                return string.Empty;
+            }
+
+            return mineral.Index > 0 ? $"{mineral.Index}-{mineral.FinalLabel}" : mineral.FinalLabel;
+        }
+
+        private static OrderedMineral ResolveFarMineralForFlags(OrderedMineral first, OrderedMineral second)
+        {
+            if (first?.IsFar == true && second?.IsFar != true) return first;
+            if (second?.IsFar == true && first?.IsFar != true) return second;
+            return first?.DistanceToTownhall >= second?.DistanceToTownhall ? first : second;
         }
 
         private static void SetMineralIdentityFlags(MawBaseLocationData mapData, int startIndex, string prefix, OrderedMineral first, OrderedMineral second, OrderedMineral farMineral)
@@ -480,66 +486,147 @@ namespace BabySharkBot.Setup
             }
 
             var prefix = GetTeamPrefix(teamNumber, 12);
-            var nearMineral = mineralPair.FirstOrDefault(m => m.IsNear) ?? mineralPair[0];
-            var farMineral = mineralPair.FirstOrDefault(m => !m.IsNear && m != nearMineral) ?? mineralPair[1];
-            var remaining = teamWorkers.ToList();
-
-            if (teamNumber == 1 || teamNumber == 4)
+            var aMineral = mineralPair.FirstOrDefault(mineral =>
+                string.Equals(mineral?.FinalLabel, $"{prefix}A", StringComparison.OrdinalIgnoreCase));
+            var bMineral = mineralPair.FirstOrDefault(mineral =>
+                string.Equals(mineral?.FinalLabel, $"{prefix}B", StringComparison.OrdinalIgnoreCase));
+            if (aMineral?.Position == null || bMineral?.Position == null)
             {
-                // Teal and Yellow require an adjacent 1/3 pair for CCA push-repell.
-                var pair = FindClosestAdjacentPair(remaining);
-                if (pair != null)
-                {
-                    var primary = pair.Value.First;
-                    var support = pair.Value.Second;
-                    if (DistanceSquared(primary.Position, nearMineral.Position) > DistanceSquared(support.Position, nearMineral.Position))
-                    {
-                        (primary, support) = (support, primary);
-                    }
-
-                    AssignFinalLabel(primary, $"{prefix}1", workerLabelService);
-                    AssignFinalLabel(support, $"{prefix}3", workerLabelService);
-                    remaining.Remove(primary);
-                    remaining.Remove(support);
-                }
-
-                foreach (var worker in remaining)
-                {
-                    AssignFinalLabel(worker, $"{prefix}2", workerLabelService);
-                }
-
+                Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Missing {prefix}A/{prefix}B mineral labels for 12-worker assignment.");
                 return;
             }
 
-            // Salmon and Blue keep the fixed middle-chain targets. Their suffix is
-            // derived from whether that target is the team's A or B mineral.
-            foreach (var worker in teamWorkers)
+            if (teamNumber == 1)
             {
-                if (worker.StartLabel == "W1" || worker.StartLabel == "W12")
+                // M[1] is the Teal edge. The B/A identity of M[1] determines the
+                // fixed T2 worker and which two candidates compete for T1.
+                var m1 = mineralPair.FirstOrDefault(mineral => mineral.Index == 1);
+                var m1IsB = string.Equals(m1?.FinalLabel, "TB", StringComparison.OrdinalIgnoreCase);
+                var t2Source = m1IsB ? "W2" : "W4";
+                var t1Candidates = m1IsB ? new[] { "W3", "W4" } : new[] { "W2", "W3" };
+                var t1Target = m1IsB ? aMineral : m1;
+                var t2 = FindWorkerByStartLabel(teamWorkers, t2Source);
+                var t1 = FindClosestWorker(teamWorkers, t1Candidates, t1Target);
+                if (t2 == null || t1 == null || t1 == t2)
                 {
-                    AssignFinalLabel(worker, $"{prefix}3", workerLabelService);
-                    continue;
+                    Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Incomplete Teal conditional assignment for start[{startIndex}].");
+                    return;
                 }
 
-                var pairPosition = teamNumber switch
+                AssignFinalLabel(t2, "T2", workerLabelService);
+                AssignFinalLabel(t1, "T1", workerLabelService);
+                var t3 = teamWorkers.FirstOrDefault(worker => worker != t2 && worker != t1);
+                if (t3 != null)
                 {
-                    2 when worker.StartLabel == "W7" => 1,
-                    2 when worker.StartLabel == "W8" => 0,
-                    3 when worker.StartLabel == "W5" => 0,
-                    3 when worker.StartLabel == "W6" => 1,
-                    _ => -1
-                };
-
-                if (pairPosition < 0 || pairPosition >= mineralPair.Count)
-                {
-                    Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] No fixed middle-chain target for {worker.StartLabel} in team {prefix}");
-                    continue;
+                    AssignFinalLabel(t3, "T3", workerLabelService);
                 }
 
-                var target = mineralPair[pairPosition];
-                var suffix = target?.FinalLabel?.EndsWith("A", StringComparison.OrdinalIgnoreCase) == true ? "1" : "2";
-                AssignFinalLabel(worker, $"{prefix}{suffix}", workerLabelService);
+                SetNoPushFlag(mapData, startIndex, "TealNoPush");
+                return;
             }
+
+            if (teamNumber == 2)
+            {
+                // Salmon keeps the fixed M[3]/M[4] targets; W1 is the S3 A-mineral
+                // worker defined by the current 12-worker opening contract.
+                var s3 = FindWorkerByStartLabel(teamWorkers, "W1");
+                var w5 = FindWorkerByStartLabel(teamWorkers, "W5");
+                var w6 = FindWorkerByStartLabel(teamWorkers, "W6");
+                if (s3 == null || w5 == null || w6 == null)
+                {
+                    Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Incomplete Salmon fixed assignment for start[{startIndex}].");
+                    return;
+                }
+
+                AssignFinalLabel(s3, "S3", workerLabelService);
+                AssignFinalLabel(w5, MineralRoleSuffix(mineralPair.FirstOrDefault(mineral => mineral.Index == 3), "S"), workerLabelService);
+                AssignFinalLabel(w6, MineralRoleSuffix(mineralPair.FirstOrDefault(mineral => mineral.Index == 4), "S"), workerLabelService);
+                SetNoPushFlag(mapData, startIndex, "SalmonNoPush");
+                return;
+            }
+
+            if (teamNumber == 3)
+            {
+                // Blue keeps the fixed M[5]/M[6] targets; W12 is B3.
+                var b3 = FindWorkerByStartLabel(teamWorkers, "W12");
+                var w7 = FindWorkerByStartLabel(teamWorkers, "W7");
+                var w8 = FindWorkerByStartLabel(teamWorkers, "W8");
+                if (b3 == null || w7 == null || w8 == null)
+                {
+                    Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Incomplete Blue fixed assignment for start[{startIndex}].");
+                    return;
+                }
+
+                AssignFinalLabel(b3, "B3", workerLabelService);
+                AssignFinalLabel(w7, MineralRoleSuffix(mineralPair.FirstOrDefault(mineral => mineral.Index == 5), "B"), workerLabelService);
+                AssignFinalLabel(w8, MineralRoleSuffix(mineralPair.FirstOrDefault(mineral => mineral.Index == 6), "B"), workerLabelService);
+                SetNoPushFlag(mapData, startIndex, "BlueNoPush");
+                return;
+            }
+
+            if (teamNumber == 4)
+            {
+                // M[8] is the Yellow edge. If it is Yellow B, W11 is Y2;
+                // otherwise W9 is Y2. The nearest remaining worker to YA is Y1.
+                var m8 = mineralPair.FirstOrDefault(mineral => mineral.Index == 8);
+                var m8IsB = string.Equals(m8?.FinalLabel, "YB", StringComparison.OrdinalIgnoreCase);
+                var y2Source = m8IsB ? "W11" : "W9";
+                var y2 = FindWorkerByStartLabel(teamWorkers, y2Source);
+                var remaining = teamWorkers.Where(worker => worker != y2).ToList();
+                var y1 = FindClosestWorker(remaining, remaining.Select(worker => worker.StartLabel).ToArray(), aMineral);
+                if (y2 == null || y1 == null || y1 == y2)
+                {
+                    Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Incomplete Yellow conditional assignment for start[{startIndex}].");
+                    return;
+                }
+
+                AssignFinalLabel(y2, "Y2", workerLabelService);
+                AssignFinalLabel(y1, "Y1", workerLabelService);
+                var y3 = teamWorkers.FirstOrDefault(worker => worker != y2 && worker != y1);
+                if (y3 != null)
+                {
+                    AssignFinalLabel(y3, "Y3", workerLabelService);
+                }
+
+                SetNoPushFlag(mapData, startIndex, "YellowNoPush");
+            }
+        }
+
+        private static WorkerEntryDto? FindWorkerByStartLabel(IEnumerable<WorkerEntryDto> workers, string startLabel)
+        {
+            return workers?.FirstOrDefault(worker =>
+                string.Equals(worker?.StartLabel, startLabel, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static WorkerEntryDto? FindClosestWorker(
+            IEnumerable<WorkerEntryDto> workers,
+            IEnumerable<string> candidateLabels,
+            OrderedMineral target)
+        {
+            if (target?.Position == null)
+            {
+                return null;
+            }
+
+            var candidates = new HashSet<string>(candidateLabels ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            return workers?
+                .Where(worker => worker?.Position != null && candidates.Contains(worker.StartLabel))
+                .OrderBy(worker => DistanceSquared(worker.Position, target.Position))
+                .FirstOrDefault();
+        }
+
+        private static string MineralRoleSuffix(OrderedMineral mineral, string teamPrefix)
+        {
+            if (mineral == null || string.IsNullOrWhiteSpace(teamPrefix))
+            {
+                return string.Empty;
+            }
+
+            return string.Equals(mineral.FinalLabel, $"{teamPrefix}A", StringComparison.OrdinalIgnoreCase)
+                ? $"{teamPrefix}1"
+                : string.Equals(mineral.FinalLabel, $"{teamPrefix}B", StringComparison.OrdinalIgnoreCase)
+                    ? $"{teamPrefix}2"
+                    : string.Empty;
         }
 
         private static (WorkerEntryDto First, WorkerEntryDto Second)? FindClosestAdjacentPair(List<WorkerEntryDto> workers)
@@ -617,7 +704,7 @@ namespace BabySharkBot.Setup
                 }
                 AssignWorkerFinalLabel(teamWorkers, y2Source, "Y2", workerLabelService);
                 AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "Y2" }, new[] { "Y1", "Y3" }, workerLabelService);
-                SetNoPushFlag(mapData, "YellowNoPush", teamWorkers, nearMineral, "Y1", "Y3");
+                SetLegacyNoPushFlag(mapData, "YellowNoPush", teamWorkers, nearMineral, "Y1", "Y3");
             }
             else if (prefix == "T")
             {
@@ -626,19 +713,19 @@ namespace BabySharkBot.Setup
                     : "W9";
                 AssignWorkerFinalLabel(teamWorkers, t2Source, "T2", workerLabelService);
                 AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "T2" }, new[] { "T1", "T3" }, workerLabelService);
-                SetNoPushFlag(mapData, "TealNoPush", teamWorkers, nearMineral, "T1", "T3");
+                SetLegacyNoPushFlag(mapData, "TealNoPush", teamWorkers, nearMineral, "T1", "T3");
             }
             else if (prefix == "B")
             {
                 AssignWorkerFinalLabel(teamWorkers, "W1", "B3", workerLabelService);
                 AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "B3" }, new[] { "B1", "B2" }, workerLabelService);
-                SetNoPushFlag(mapData, "BlueNoPush", teamWorkers, nearMineral, "B1", "B2");
+                SetLegacyNoPushFlag(mapData, "BlueNoPush", teamWorkers, nearMineral, "B1", "B2");
             }
             else if (prefix == "S")
             {
                 AssignWorkerFinalLabel(teamWorkers, "W12", "S3", workerLabelService);
                 AssignRemainingByDistance(teamWorkers, nearMineral, new[] { "S3" }, new[] { "S1", "S2" }, workerLabelService);
-                SetNoPushFlag(mapData, "SalmonNoPush", teamWorkers, nearMineral, "S1", "S2");
+                SetLegacyNoPushFlag(mapData, "SalmonNoPush", teamWorkers, nearMineral, "S1", "S2");
             }
             else
             {
@@ -730,7 +817,13 @@ namespace BabySharkBot.Setup
             return int.TryParse(label.Substring(1), out var index) ? index : 0;
         }
 
-        private static void SetNoPushFlag(MawBaseLocationData mapData, string flagName, List<WorkerEntryDto> teamWorkers, OrderedMineral largeMineral, string worker1Label, string worker3Label)
+        private static void SetLegacyNoPushFlag(
+            MawBaseLocationData mapData,
+            string flagName,
+            List<WorkerEntryDto> teamWorkers,
+            OrderedMineral largeMineral,
+            string worker1Label,
+            string worker3Label)
         {
             if (mapData == null || largeMineral?.Position == null)
             {
@@ -756,6 +849,22 @@ namespace BabySharkBot.Setup
             flags[flagName] = (d3 - d1) > 0.5f;
         }
 
+        private static void SetNoPushFlag(MawBaseLocationData mapData, int startIndex, string flagName)
+        {
+            if (mapData == null || string.IsNullOrWhiteSpace(flagName) || startIndex < 0)
+            {
+                return;
+            }
+
+            if (!mapData.AssignmentFlagsByStart.TryGetValue(startIndex, out var flags))
+            {
+                flags = new Dictionary<string, bool>();
+                mapData.AssignmentFlagsByStart[startIndex] = flags;
+            }
+
+            flags[flagName] = true;
+        }
+
         private static void SetFinalLabel(OrderedMineral mineral, string label)
         {
             if (mineral == null || string.IsNullOrWhiteSpace(label))
@@ -764,7 +873,7 @@ namespace BabySharkBot.Setup
             }
 
             mineral.FinalLabel = label;
-            mineral.Label = label;
+            mineral.Label = $"{mineral.Index}-{label}";
             mineral.TeamLabel = label;
         }
 

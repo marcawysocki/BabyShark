@@ -32,13 +32,6 @@ namespace BabySharkBot.Services
                 return null;
             }
 
-            if (mapData.SpawningPoolPlacements != null && mapData.SpawningPoolPlacements.Count > startIndex && mapData.SpawningPoolPlacements[startIndex] != null)
-            {
-                var storedPlacement = mapData.SpawningPoolPlacements[startIndex];
-                _lastPlacement = new Point2D { X = storedPlacement.X, Y = storedPlacement.Y };
-                return _lastPlacement;
-            }
-
             if (mapData.MineralCenterOfMass.Count <= startIndex || mapData.MineralCenterOfMass[startIndex] == null)
             {
                 return null;
@@ -51,9 +44,7 @@ namespace BabySharkBot.Services
 
             var hatchery = mapData.StartingTownHall[startIndex];
             var mineralCom = mapData.MineralCenterOfMass[startIndex];
-            var vespeneVb = mapData.OrderedMainVespene[startIndex].FirstOrDefault(v => v != null && v.Label == "VB")?.Position
-                ?? mapData.OrderedMainVespene[startIndex].Skip(1).FirstOrDefault()?.Position
-                ?? mapData.OrderedMainVespene[startIndex].First().Position;
+            var vespeneVb = mapData.OrderedMainVespene[startIndex].FirstOrDefault(v => v != null && v.Label == "VB")?.Position;
 
             if (hatchery == null || mineralCom == null || vespeneVb == null)
             {

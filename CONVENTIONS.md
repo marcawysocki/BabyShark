@@ -96,7 +96,9 @@ GetTag(string label)
 - Keep CCA command ownership in `CcaManager`/`chrisCrossAppleSause` and steady-state JIT ownership in `BabySharkMiningManager`.
 - `TeamPatchMiningTask` coordinates JIT prepositioning through `JitPrepositionService`; it is not a replacement for `BabySharkMiningManager`.
 - `CustomMiningTask` intentionally suppresses Sharky's generic mining debug labels.
-- Preserve `MOVE` for positioning and `SMART` for final resource handoffs when working in the mining command logic, unless the target API requires a different ability.
+- Preserve `MOVE` for positioning and verified mineral-target `SMART` for final resource handoffs when working in the mining command logic, unless the target API requires a different ability.
+- The live mineral labels are referenced as `M[8]` through `M[1]`; do not reinterpret them using historical `M[0]` through `M[7]` examples or Observation enumeration order.
+- The 12-worker CCA opening follows the correct 8-worker choreography with bumping disabled and calculated `MOVE` commands at frames 0, 5, 10, and 15. Keep the exact SMART queue timing aligned with live CCA code rather than assuming it from historical notes.
 
 ## Manager and service boundaries
 

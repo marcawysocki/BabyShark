@@ -74,14 +74,19 @@ Other managers consume the stored observation snapshot instead of scanning the r
 
 The initial W labels exist only to normalize the starting formation. They are not persistent team roles.
 
-### Worker-chain invariants
+### Worker and mineral-chain invariants
 
 - Twelve-worker opening: `W12` is the worker farthest from mineral COM; `W1` is the opposite end.
 - Eight-worker opening: `W8` is the worker farthest from mineral COM; the chain continues through `W1`.
-- `M[0]` is on the same chain side as `W1`.
-- `M[7]` is on the same chain side as `W12`.
+- The stored worker list is reversed into W1-to-W12/W8 order after the greedy walk, so debug output is `1-W1` through `8-W8` during the 8-worker phase.
+- `W12` through `W1` and `W8` through `W1` always refer to the correctly sorted greedy worker chain, never raw Observation order.
+- `M[1]` is on the same chain side as `W1`; Teal always uses `M[1]` and `M[2]`.
+- `M[8]` is on the same chain side as `W12`/`W8`; Yellow always uses `M[7]` and `M[8]`.
+- Persisted `OrderedMineral.Index` is one-based: `Index 1 = M[1]` through `Index 8 = M[8]`. Sort ascending by `Index` before using M notation.
+- `M[8]` through `M[1]` always refers to that sorted greedy mineral chain in reverse reference order.
+- Observation raw-unit, dictionary, and availability enumeration order is never semantic and must not define worker numbers, mineral indices, colors, teams, or targets.
 - Map rotation, mirroring, and screen left/right/top/bottom have no semantic meaning.
-- The greedy chain is the orientation-independent normalization.
+- The greedy chains are the orientation-independent normalization.
 - Teal and Yellow cannot be finalized before W12/W8 anchoring and the worker chain are established.
 
 ### Confirmed 12-worker team membership
@@ -106,11 +111,11 @@ Final suffixes are role/target assignments. They must not be copied directly fro
 
 ### Confirmed outside-mineral logic for Teal and Yellow
 
-- **Teal outside-far (M[0] is Far)**:
+- **Teal outside-far (M[1] is Far)**:
   - `W2` becomes `T2` (furthest outside).
   - `W4` becomes `T1` (closest to TA).
   - `W3` becomes `T3` (push pair with T1).
-- **Yellow outside-far (M[7] is Far)**:
+- **Yellow outside-far (M[8] is Far)**:
   - `W11` becomes `Y2` (furthest outside).
   - `W9` becomes `Y1` (closest to YA).
   - `W10` becomes `Y3` (push pair with Y1).
@@ -118,6 +123,12 @@ Final suffixes are role/target assignments. They must not be copied directly fro
   - Teal: `W4` becomes `T2` -> `TB`.
   - Yellow: `W9` becomes `Y2` -> `YB`.
   - Remaining workers in team fill 1/3 push roles based on confirmed geometry logic.
+
+### Confirmed CCA movement handoff
+
+- Opening MOVE commands use the persisted radius-safe `HarvestPoint`, outside the mineral footprint.
+- The final queued SMART command must target the verified mineral unit tag; a world-position-only SMART is invalid.
+- If the exact worker tag, mineral tag, or safe point is unavailable, that command path stops without inventing a substitute target.
 
 ### Confirmed CCA cadence
 
@@ -161,10 +172,10 @@ Future RL integration may change the cadence, but not in this refactor.
 #### Fixed middle-chain targets
 
 ```text
-W5 -> M[2]
-W6 -> M[3]
-W7 -> M[4]
-W8 -> M[5]
+W5 -> M[3]
+W6 -> M[4]
+W7 -> M[5]
+W8 -> M[6]
 ```
 
 These fixed targets exist to avoid cross-traffic congestion. The final `1` or `2` suffix is derived from whether the target is the team's A or B mineral.

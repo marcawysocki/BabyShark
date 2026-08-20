@@ -241,20 +241,35 @@ namespace BabySharkBot.Builds
             return match != null && DistanceSquared(new Vector2Dto(match.Pos.X, match.Pos.Y), mineral.Position) < 4f ? match.Tag : mineral.UnitTag;
         }
 
-        private static SC2APIProtocol.Action Stop(ulong tag) => new SC2APIProtocol.Action
+        private SC2APIProtocol.Action Stop(ulong tag)
         {
-            ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.STOP, UnitTags = { tag } } }
-        };
+            var workerLabel = WorkerLabelService?.GetLabel(tag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMAND5] phase=BuildIne worker={tag} Label={workerLabel} command=STOP queued=false");
+            return new SC2APIProtocol.Action
+            {
+                ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.STOP, UnitTags = { tag } } }
+            };
+        }
 
-        private static SC2APIProtocol.Action Move(ulong tag, Point2D point) => new SC2APIProtocol.Action
+        private SC2APIProtocol.Action Move(ulong tag, Point2D point)
         {
-            ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { tag }, TargetWorldSpacePos = point } }
-        };
+            var workerLabel = WorkerLabelService?.GetLabel(tag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMAND6] phase=BuildIne worker={tag} Label={workerLabel} command=MOVE pos=({point.X:F2},{point.Y:F2}) queued=false");
+            return new SC2APIProtocol.Action
+            {
+                ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { tag }, TargetWorldSpacePos = point } }
+            };
+        }
 
-        private static SC2APIProtocol.Action Smart(ulong tag, ulong mineralTag) => new SC2APIProtocol.Action
+        private SC2APIProtocol.Action Smart(ulong tag, ulong mineralTag)
         {
-            ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { tag }, TargetUnitTag = mineralTag, QueueCommand = true } }
-        };
+            var workerLabel = WorkerLabelService?.GetLabel(tag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMAND7] phase=BuildIne worker={tag} Label={workerLabel} command=SMART targetTag={mineralTag} queued=true");
+            return new SC2APIProtocol.Action
+            {
+                ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { tag }, TargetUnitTag = mineralTag, QueueCommand = true } }
+            };
+        }
 
         public override IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
         {

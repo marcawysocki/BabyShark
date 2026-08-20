@@ -14,8 +14,7 @@ namespace BabySharkBot.Setup
             MawBaseLocationData mapData,
             int startIndex,
             MineralLabelService? mineralLabelService = null,
-            VespeneLabelService? vespeneLabelService = null,
-            SpawningPoolPlacementService? spawningPoolPlacementService = null)
+            VespeneLabelService? vespeneLabelService = null)
         {
             if (mapData == null || startIndex < 0)
             {
@@ -24,7 +23,6 @@ namespace BabySharkBot.Setup
 
             RegisterMineralLabels(mapData, startIndex, mineralLabelService);
             RegisterVespeneLabels(mapData, startIndex, vespeneLabelService);
-            RegisterSpawningPoolLabel(mapData, startIndex, spawningPoolPlacementService);
         }
 
         private static void RegisterMineralLabels(MawBaseLocationData mapData, int startIndex, MineralLabelService? mineralLabelService)
@@ -34,31 +32,39 @@ namespace BabySharkBot.Setup
                 return;
             }
 
-            var minerals = ResolveMinerals(mapData, startIndex);
+            if (mapData.TeamPatchAssignments == null
+                || startIndex < 0
+                || startIndex >= mapData.TeamPatchAssignments.Count
+                || mapData.TeamPatchAssignments[startIndex] == null
+                || mapData.TeamPatchAssignments[startIndex].Count == 0)
+            {
+                Console.WriteLine($"MapLabelRegistrationHelper: No current-spawn team assignments for start[{startIndex}]; mineral labels not registered.");
+                return;
+            }
+
+            var minerals = mapData.TeamPatchAssignments[startIndex]
+                .SelectMany(assignment => assignment?.Minerals ?? new List<OrderedMineral>())
+                .OrderBy(mineral => mineral?.Index)
+                .ToList();
+
+            if (minerals.Count != 8
+                || minerals.Any(mineral => mineral?.Position == null || string.IsNullOrWhiteSpace(mineral.FinalLabel)))
+            {
+                Console.WriteLine($"MapLabelRegistrationHelper: Current-spawn team assignments for start[{startIndex}] are incomplete; mineral labels not registered.");
+                return;
+            }
+
             foreach (var mineral in minerals)
             {
-                if (mineral?.Position == null)
-                {
-                    continue;
-                }
+                var displayLabel = mineral.Label;
+                mapData.MineralFinalLabelsByPosition[$"{mineral.Position.X:F2},{mineral.Position.Y:F2}"] = displayLabel;
 
-                var label = ResolveMineralLabel(mineral);
-                if (string.IsNullOrWhiteSpace(label))
-                {
-                    continue;
-                }
-
-                mineral.FinalLabel = label;
-                mineral.Label = label;
-                mapData.MineralFinalLabelsByPosition ??= new Dictionary<string, string>();
-                mapData.MineralFinalLabelsByPosition[$"{mineral.Position.X:F2},{mineral.Position.Y:F2}"] = label;
-
-                mineralLabelService.SetMineralLabel(label, new Point
+                mineralLabelService.SetMineralLabel(displayLabel, new Point
                 {
                     X = mineral.Position.X,
                     Y = mineral.Position.Y,
                     Z = mineral.Position.Z + 0.5f
-                }, ProcessVisableUnits.GetFinalLabelColor(label), mineral.UnitTag);
+                }, ProcessVisableUnits.GetFinalLabelColor(mineral.FinalLabel), mineral.UnitTag);
             }
         }
 
@@ -77,13 +83,11 @@ namespace BabySharkBot.Setup
                     continue;
                 }
 
-                var label = ResolveVespeneLabel(vespene);
+                var label = vespene.Label;
                 if (string.IsNullOrWhiteSpace(label))
                 {
                     continue;
                 }
-
-                vespene.Label = label;
                 mapData.VespeneFinalLabelsByPosition ??= new Dictionary<string, string>();
                 mapData.VespeneFinalLabelsByPosition[$"{vespene.Position.X:F2},{vespene.Position.Y:F2}"] = label;
 
@@ -96,49 +100,6 @@ namespace BabySharkBot.Setup
             }
         }
 
-        private static void RegisterSpawningPoolLabel(MawBaseLocationData mapData, int startIndex, SpawningPoolPlacementService? spawningPoolPlacementService)
-        {
-            if (spawningPoolPlacementService == null)
-            {
-                return;
-            }
-
-            var placement = spawningPoolPlacementService.GetPlacement(mapData, startIndex);
-            if (placement == null)
-            {
-                return;
-            }
-
-            if (mapData?.OrderedMainVespene != null && mapData.OrderedMainVespene.Count > startIndex)
-            {
-                var vb = mapData.OrderedMainVespene[startIndex].FirstOrDefault(v => v != null && v.Label == "VB")?.Position;
-                if (vb != null)
-                {
-                    var dx = placement.X - vb.X;
-                    var dy = placement.Y - vb.Y;
-                    var dist = Math.Sqrt(dx * dx + dy * dy);
-                    Console.WriteLine($"MapLabelRegistrationHelper: SpawningPool to VB distance={dist:F2}");
-                }
-            }
-
-            spawningPoolPlacementService.DrawPlacement(placement);
-        }
-
-        private static List<OrderedMineral> ResolveMinerals(MawBaseLocationData mapData, int startIndex)
-        {
-            if (mapData.SecondaryOrderedMainMinerals.Count > startIndex && mapData.SecondaryOrderedMainMinerals[startIndex].Count > 0)
-            {
-                return mapData.SecondaryOrderedMainMinerals[startIndex];
-            }
-
-            if (mapData.OrderedMainMinerals.Count > startIndex)
-            {
-                return mapData.OrderedMainMinerals[startIndex];
-            }
-
-            return new List<OrderedMineral>();
-        }
-
         private static List<OrderedVespene> ResolveVespenes(MawBaseLocationData mapData, int startIndex)
         {
             if (mapData.OrderedMainVespene.Count > startIndex)
@@ -147,53 +108,6 @@ namespace BabySharkBot.Setup
             }
 
             return new List<OrderedVespene>();
-        }
-
-        private static string ResolveMineralLabel(OrderedMineral mineral)
-        {
-            if (mineral == null)
-            {
-                return string.Empty;
-            }
-
-            if (!string.IsNullOrWhiteSpace(mineral.FinalLabel))
-            {
-                return mineral.FinalLabel;
-            }
-
-            if (!string.IsNullOrWhiteSpace(mineral.Label))
-            {
-                return mineral.Label;
-            }
-
-            return mineral.Index switch
-            {
-                1 => "M8",
-                2 => "M7",
-                3 => "M6",
-                4 => "M5",
-                5 => "M4",
-                6 => "M3",
-                7 => "M2",
-                8 => "M1",
-                _ => $"M{mineral.Index}"
-            };
-        }
-
-        private static string ResolveVespeneLabel(OrderedVespene vespene)
-        {
-            if (vespene == null)
-            {
-                return string.Empty;
-            }
-
-            // Runtime spawn labels are stable role labels, not cached numeric labels.
-            return vespene.Index switch
-            {
-                1 => "VA",
-                2 => "VB",
-                _ => $"V{vespene.Index}"
-            };
         }
 
         private static float DistanceSquared(float x1, float y1, float x2, float y2)

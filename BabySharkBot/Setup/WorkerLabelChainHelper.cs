@@ -8,8 +8,8 @@ using SC2APIProtocol;
 namespace BabySharkBot.Setup
 {
     /// <summary>
-    /// Helper for labeling workers in a greedy chain order (W1-W12).
-    /// Used during initialization to establish the start-state mapping between units and roles.
+    /// Helper for labeling workers in greedy traversal order (W12/W8 through W1).
+    /// The input enumeration order is never used to resolve worker identity.
     /// </summary>
     public static class WorkerLabelChainHelper
     {
@@ -53,25 +53,16 @@ namespace BabySharkBot.Setup
 
             var current = remaining
                 .OrderByDescending(u => DistanceSquared(getX(u), getY(u), mineralCenterOfMass.X, mineralCenterOfMass.Y))
+                .ThenBy(u => getTag(u))
                 .FirstOrDefault();
 
+            // The canonical stored list is the greedy traversal itself: W8/W12 first,
+            // descending to W1. Observation order is never retained as a list index.
+            var greedyTraversal = new List<(T Unit, ulong Tag)>();
             while (current != null)
             {
-                var labelIndex = remaining.Count;
-                var label = $"W{labelIndex}";
                 var tag = getTag(current);
-                workerLabelService?.SetLabel(label, tag);
-
-                result.Add(new WorkerEntryDto
-                {
-                    UnitTag = tag,
-                    Position = new Vector2Dto(getX(current), getY(current), getZ(current)),
-                    UnitType = getUnitType(current),
-                    Label = label,
-                    StartLabel = label,
-                    FinalLabel = label
-                });
-
+                greedyTraversal.Add((current, tag));
                 remaining.RemoveAll(u => getTag(u) == tag);
                 if (remaining.Count == 0)
                 {
@@ -80,7 +71,25 @@ namespace BabySharkBot.Setup
 
                 current = remaining
                     .OrderBy(u => DistanceSquared(getX(u), getY(u), getX(current), getY(current)))
+                    .ThenBy(u => getTag(u))
                     .FirstOrDefault();
+            }
+
+            for (var traversalIndex = 0; traversalIndex < greedyTraversal.Count; traversalIndex++)
+            {
+                var item = greedyTraversal[traversalIndex];
+                var labelIndex = greedyTraversal.Count - traversalIndex;
+                var label = $"W{labelIndex}";
+                workerLabelService?.SetLabel(label, item.Tag);
+                result.Add(new WorkerEntryDto
+                {
+                    UnitTag = item.Tag,
+                    Position = new Vector2Dto(getX(item.Unit), getY(item.Unit), getZ(item.Unit)),
+                    UnitType = getUnitType(item.Unit),
+                    Label = label,
+                    StartLabel = label,
+                    FinalLabel = label
+                });
             }
 
             return result;

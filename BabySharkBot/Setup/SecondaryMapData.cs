@@ -118,38 +118,6 @@ namespace BabySharkBot.Setup
             return new Vector2Dto();
         }
 
-        private static void ApplyMineralLabels(IEnumerable<OrderedMineral> minerals, MineralLabelService? mineralLabelService)
-        {
-            if (mineralLabelService == null)
-            {
-                return;
-            }
-
-            foreach (var mineral in minerals ?? Enumerable.Empty<OrderedMineral>())
-            {
-                if (mineral?.Position == null)
-                {
-                    continue;
-                }
-
-                var label = ResolveMineralLabel(mineral);
-
-                if (string.IsNullOrWhiteSpace(label))
-                {
-                    continue;
-                }
-
-                mineral.FinalLabel = label;
-
-                mineralLabelService.SetMineralLabel(label, new Point
-                {
-                    X = mineral.Position.X,
-                    Y = mineral.Position.Y,
-                    Z = mineral.Position.Z
-                }, ProcessVisableUnits.GetFinalLabelColor(label), mineral.UnitTag);
-            }
-        }
-
         private static void ApplyVespeneLabels(IEnumerable<OrderedVespene> vespenes, VespeneLabelService? vespeneLabelService)
         {
             if (vespeneLabelService == null)
@@ -204,37 +172,6 @@ namespace BabySharkBot.Setup
                 || unitType == (uint)UnitTypes.NEUTRAL_RICHVESPENEGEYSER
                 || unitType == (uint)UnitTypes.NEUTRAL_PURIFIERVESPENEGEYSER
                 || unitType == (uint)UnitTypes.NEUTRAL_PROTOSSVESPENEGEYSER;
-        }
-
-        private static string ResolveMineralLabel(OrderedMineral mineral)
-        {
-            if (mineral == null)
-            {
-                return string.Empty;
-            }
-
-            if (!string.IsNullOrWhiteSpace(mineral.FinalLabel))
-            {
-                return mineral.FinalLabel;
-            }
-
-            if (!string.IsNullOrWhiteSpace(mineral.Label))
-            {
-                return mineral.Label;
-            }
-
-            return mineral.TeamLabel switch
-            {
-                "N1" => "M1",
-                "F1" => "M2",
-                "N2" => "M3",
-                "F2" => "M4",
-                "N3" => "M5",
-                "F3" => "M6",
-                "N4" => "M7",
-                "F4" => "M8",
-                _ => $"M{mineral.Index}"
-            };
         }
 
         private static string ResolveVespeneLabel(OrderedVespene vespene)

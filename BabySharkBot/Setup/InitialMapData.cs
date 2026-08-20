@@ -274,7 +274,6 @@ namespace BabySharkBot.Setup
             // (MineralPatches/MainMinerals/VespenePatches/MainVespene) are filled immediately.
             var tempBaseDto = new MawBaseLocationData();
             var nearestMineralDistance = 9f;
-            var w4PositionByStart = new Dictionary<int, Vector2Dto>();
 
             // First-vision mineral index used to track minerals we can actually see from our start.
             var visibleMinerals = new List<MineralDto>();
@@ -445,7 +444,7 @@ namespace BabySharkBot.Setup
                         else if (unit.Alliance == Alliance.Self
                             && (ut == Sharky.UnitTypes.ZERG_DRONE || ut == Sharky.UnitTypes.TERRAN_SCV || ut == Sharky.UnitTypes.PROTOSS_PROBE))
                         {
-                            // Collect only self workers for greedy ordering and team assignment.
+                            // Preserve observed worker data for map metadata only; runtime greedy ordering belongs to BuildManager.
                             try { workerList.Add((unit.Tag, unit.Pos.X, unit.Pos.Y, unit.Pos.Z, unit.UnitType)); } catch { }
                         }
 
@@ -516,6 +515,7 @@ namespace BabySharkBot.Setup
                         if (si < multiMineralResources.Count && multiMineralResources[si] != null)
                         {
                             var contents = multiMineralResources[si];
+                            ClassifyDiscoveredMineralResources(si, contents);
                             var largeContents = contents.Count > 0 ? contents.Max() : 0;
                             foreach (var mineralContents in contents)
                             {
@@ -941,114 +941,13 @@ namespace BabySharkBot.Setup
                 Console.WriteLine($"InitialMapData: Failed to calculate JIT mineral cargo geometry: {ex.Message}");
             }
 
-            // Calculate vespene ordering for each start location.
-            // InitialMapData only runs for a new map the first time it is played.
-            // SecondaryMapData should use the same learned-worker ordering for first-time unplayed starts.
-            // Use W4 as the anchor and label only the closest geyser as V1 and the farthest as V2.
-            var orderedMainVespenes = new List<List<OrderedVespene>>();
-            try
-            {
-                Console.WriteLine($"InitialMapData: Starting vespene ordering for {numStartLocations} start location(s)");
-                for (int si = 0; si < numStartLocations; si++)
-                {
-                    var orderedList = new List<OrderedVespene>();
-                    var townhallPosition = startingTownHalls[si];
-
-                    // Use the anchor position saved when workers were labeled above.
-                    Vector2Dto w4Position = null;
-                    var anchorLabel = workerList.Count == 8 ? "W3" : "W4";
-                    if (w4PositionByStart.TryGetValue(si, out var savedW4Position))
-                    {
-                        w4Position = savedW4Position;
-                        Console.WriteLine($"InitialMapData: Start[{si}] saved anchor {anchorLabel} position found at ({w4Position.X:F2},{w4Position.Y:F2})");
-                    }
-                    else if (multiStartingUnits.Count > si && multiStartingUnits[si].Any(w => w.Label == anchorLabel))
-                    {
-                        w4Position = multiStartingUnits[si].First(w => w.Label == anchorLabel).Position;
-                        Console.WriteLine($"InitialMapData: Start[{si}] using {anchorLabel} as vespene anchor");
-                    }
-                    else if (multiStartingUnits.Count > si && multiStartingUnits[si].Count > 0)
-                    {
-                        // Fallback to furthest worker if anchor not found
-                        w4Position = multiStartingUnits[si][0].Position;
-                        Console.WriteLine($"InitialMapData: Start[{si}] fallback using W{workerList.Count} as vespene anchor");
-                    }
-
-                    // Get vespenes for this start
-                    List<Vector2Dto> vespenes = null;
-                    if (multiMainVespene.Count > si)
-                    {
-                        vespenes = multiMainVespene[si];
-                    }
-
-                    int vespeneCount = vespenes?.Count ?? 0;
-                    Console.WriteLine($"InitialMapData: Start[{si}] - W4Position={w4Position != null}, VespeneCount={vespeneCount}");
-
-                    if (w4Position != null && vespenes != null && vespenes.Count > 0)
-                    {
-                        // Pick the closest geyser as V1 and the farthest geyser as V2.
-                        var vespeneDistances = vespenes
-                            .Select((vespene, idx) => new 
-                            { 
-                                Vespene = vespene, 
-                                Index = idx, 
-                                Distance = Vector2.Distance(
-                                    new Vector2(vespene.X, vespene.Y),
-                                    new Vector2(w4Position.X, w4Position.Y)
-                                )
-                            })
-                            .OrderBy(v => v.Distance)
-                            .ToList();
-
-                        var closest = vespeneDistances.FirstOrDefault();
-                        var farthest = vespeneDistances.LastOrDefault();
-
-                        if (closest != null)
-                        {
-                            var linePoints = townhallPosition != null ? BuildMineralLinePoints(closest.Vespene, townhallPosition) : (null, null, null, null);
-                            orderedList.Add(new OrderedVespene
-                            {
-                                Position = closest.Vespene,
-                                HarvestPoint = linePoints.Item1,
-                                ReturnPoint = linePoints.Item3,
-                                Index = 1,
-                                DistanceToW4 = closest.Distance,
-                                Label = "V1"
-                            });
-                            Console.WriteLine($"InitialMapData: Start[{si}] V1 = vespene at distance {closest.Distance:F2} from W4");
-                        }
-
-                        if (farthest != null && farthest.Index != closest?.Index)
-                        {
-                            var linePoints = townhallPosition != null ? BuildMineralLinePoints(farthest.Vespene, townhallPosition) : (null, null, null, null);
-                            orderedList.Add(new OrderedVespene
-                            {
-                                Position = farthest.Vespene,
-                                HarvestPoint = linePoints.Item1,
-                                ReturnPoint = linePoints.Item3,
-                                Index = 2,
-                                DistanceToW4 = farthest.Distance,
-                                Label = "V2"
-                            });
-                            Console.WriteLine($"InitialMapData: Start[{si}] V2 = vespene at distance {farthest.Distance:F2} from W4");
-                        }
-                    }
-                    else if (w4Position == null && multiStartingUnits.Count > si && multiStartingUnits[si].Count > 0)
-                    {
-                        Console.WriteLine($"InitialMapData: Start[{si}] has fewer than 4 workers - cannot assign W4 for vespene ordering");
-                    }
-
-                    orderedMainVespenes.Add(orderedList);
-                    Console.WriteLine($"InitialMapData: Start[{si}] vespene ordering complete: {orderedList.Count} vespenes ordered");
-                }
-
-                tempBaseDto.OrderedMainVespene = orderedMainVespenes;
-                Console.WriteLine($"InitialMapData: Calculated vespene ordering for all start locations");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"InitialMapData: Failed to calculate vespene ordering: {ex.Message}");
-            }
+            // InitialMapData discovers and preserves all vespene positions only.
+            // Worker-dependent V1/V2 ordering belongs to BabySharkBuildManager after
+            // ObservationManager has supplied the runtime worker chain.
+            tempBaseDto.OrderedMainVespene = Enumerable.Range(0, numStartLocations)
+                .Select(_ => new List<OrderedVespene>())
+                .ToList();
+            Console.WriteLine($"InitialMapData: preserved discovered vespene resources for {numStartLocations} start location(s); BuildManager owns V1/V2 ordering");
 
                 // Populate multi-location data into tempBaseDto before returning
             try
@@ -1061,11 +960,8 @@ namespace BabySharkBot.Setup
                     var tags = si < multiMainMineralTags.Count ? multiMainMineralTags[si] : new List<ulong>();
                     var townhall = si < startingTownHalls.Length ? startingTownHalls[si] : null;
                     var com = si < multiMineralCenterOfMass.Count ? multiMineralCenterOfMass[si] : null;
-                    var anchor = si < multiStartingUnits.Count
-                        ? multiStartingUnits[si].FirstOrDefault(worker => worker?.Position != null)?.Position
-                        : null;
-                    orderedMainMinerals[si] = GreedyOrderMinerals(minerals, anchor, com, townhall, si, resources, tags);
-                    Console.WriteLine($"InitialMapData: Start[{si}] canonical greedy minerals={orderedMainMinerals[si].Count}");
+                    orderedMainMinerals[si] = new List<OrderedMineral>();
+                    Console.WriteLine($"InitialMapData: Start[{si}] preserved {minerals.Count} discovered minerals for BuildManager runtime ordering");
                 }
                 tempBaseDto.OrderedMainMinerals = orderedMainMinerals;
                 tempBaseDto.StartingMinerals = orderedMainMinerals.Select(list => list.ToList()).ToList();
@@ -1291,7 +1187,7 @@ namespace BabySharkBot.Setup
 
             var unitDirection = Vector2.Normalize(direction);
             const float hatcheryRadius = 2.75f;
-            const float mineralRadius = 1.0f;
+            const float mineralRadius = 1.5f;
             const float smallInset = 1.75f;
 
             var returnPoint = GetPointOnLine(baseVector, unitDirection, hatcheryRadius, townhallPosition.Z);
@@ -1556,12 +1452,13 @@ namespace BabySharkBot.Setup
                         if (orderedMineral == null || orderedMineral.Position == null)
                             continue;
 
-                        var displayIndex = orderedMineral.Index;
-                        var label = !string.IsNullOrWhiteSpace(orderedMineral.FinalLabel)
-                            ? orderedMineral.FinalLabel
-                            : !string.IsNullOrWhiteSpace(orderedMineral.Label)
-                                ? orderedMineral.Label
-                                : $"M{displayIndex}";
+                        if (string.IsNullOrWhiteSpace(orderedMineral.FinalLabel))
+                        {
+                            Console.WriteLine($"InitialMapData.RegisterMineralLabels: Start[{startIdx}] missing final team label for M[{orderedMineral.Index}]; label not registered.");
+                            continue;
+                        }
+
+                        var label = orderedMineral.FinalLabel;
                         var labelColor = ProcessVisableUnits.GetFinalLabelColor(label);
 
                         // Convert Vector2Dto to Point for registration (Z includes terrain height + 0.5f offset)
@@ -1577,7 +1474,7 @@ namespace BabySharkBot.Setup
                         mapData.MineralFinalLabelsByPosition ??= new Dictionary<string, string>();
                         mapData.MineralFinalLabelsByPosition[$"{orderedMineral.Position.X:F2},{orderedMineral.Position.Y:F2}"] = label;
 
-                        Console.WriteLine($"InitialMapData.RegisterMineralLabels: Start[{startIdx}] M{displayIndex} = {label} at ({orderedMineral.Position.X:F2},{orderedMineral.Position.Y:F2})");
+                        Console.WriteLine($"InitialMapData.RegisterMineralLabels: Start[{startIdx}] M[{orderedMineral.Index}] = {label} at ({orderedMineral.Position.X:F2},{orderedMineral.Position.Y:F2})");
                     }
 
                     var finalLabels = orderedList.Count(m => !string.IsNullOrWhiteSpace(m.FinalLabel));
@@ -2039,143 +1936,11 @@ namespace BabySharkBot.Setup
             }
         }
 
-        /// <summary>
-        /// Perform greedy ordering of minerals based on distance from W12.
-        /// Phase 1: Find M[8] = mineral closest to W12
-        /// Phase 2: Greedy chain M[7-1] = closest remaining mineral to current position (descending)
-        /// Phase 3: Classify each as Near or Far based on distance to Starting Townhall (cargo return efficiency)
-        /// </summary>
-        private List<OrderedMineral> GreedyOrderMinerals(List<Vector2Dto> minerals, Vector2Dto anchorPosition, Vector2Dto comPosition, Vector2Dto townhallPosition, int startIndex, List<uint> mineralResources = null, List<ulong> mineralTags = null)
+        private void ClassifyDiscoveredMineralResources(int startIndex, List<uint> resources)
         {
-            var result = new List<OrderedMineral>();
-
-            if (minerals == null || minerals.Count == 0 || anchorPosition == null)
-            {
-                Console.WriteLine($"InitialMapData.GreedyOrderMinerals: Invalid input for Start[{startIndex}]");
-                return result;
-            }
-
-            // Build a greedy path from the anchor worker to the closest mineral, then keep chaining
-            // from each chosen mineral to the closest remaining mineral.
-            var remainingIndices = new List<int>();
-            for (int i = 0; i < minerals.Count; i++)
-            {
-                remainingIndices.Add(i);
-            }
-
-            var orderedIndices = new List<int>();
-            var currentAnchor = new Vector2(anchorPosition.X, anchorPosition.Y);
-
-            while (remainingIndices.Count > 0)
-            {
-                int chosenIdx = -1;
-                float chosenDistance = float.MaxValue;
-
-                foreach (var idx in remainingIndices)
-                {
-                    var mineral = minerals[idx];
-                    var dist = Vector2.Distance(new Vector2(mineral.X, mineral.Y), currentAnchor);
-                    if (dist < chosenDistance)
-                    {
-                        chosenDistance = dist;
-                        chosenIdx = idx;
-                    }
-                }
-
-                if (chosenIdx < 0)
-                {
-                    break;
-                }
-
-                orderedIndices.Add(chosenIdx);
-                remainingIndices.Remove(chosenIdx);
-                currentAnchor = new Vector2(minerals[chosenIdx].X, minerals[chosenIdx].Y);
-            }
-
-            var orderedResourceValues = mineralResources?.Where(resource => resource > 0).Distinct().ToList() ?? new List<uint>();
-            var largeResourceValue = orderedResourceValues.Count > 1 ? orderedResourceValues.Max() : 0u;
-            if (largeResourceValue > 0)
-            {
-                Console.WriteLine($"InitialMapData.GreedyOrderMinerals: Start[{startIndex}] resource-class Near/Far uses large={largeResourceValue}; distance is diagnostic only.");
-            }
-
-            for (int orderIndex = 0; orderIndex < orderedIndices.Count; orderIndex++)
-            {
-                var mineralIndex = orderedIndices[orderIndex];
-                var mineral = minerals[mineralIndex];
-                var displayIndex = orderedIndices.Count - orderIndex;
-                var distFromCom = comPosition != null
-                    ? Vector2.Distance(new Vector2(mineral.X, mineral.Y), new Vector2(comPosition.X, comPosition.Y))
-                    : float.MaxValue;
-                var distanceToTownhall = townhallPosition != null
-                    ? Vector2.Distance(new Vector2(mineral.X, mineral.Y), new Vector2(townhallPosition.X, townhallPosition.Y))
-                    : float.MaxValue;
-                var linePoints = townhallPosition != null ? BuildMineralLinePoints(mineral, townhallPosition) : (null, null, null, null);
-
-                result.Add(new OrderedMineral
-                {
-                    Position = mineral,
-                    HarvestPoint = linePoints.Item1,
-                    SmHarvestPoint = linePoints.Item2,
-                    ReturnPoint = linePoints.Item3,
-                    SmReturnPoint = linePoints.Item4,
-                    Index = displayIndex,
-                    OriginalIndex = mineralIndex,
-                    DistanceFromCOM = distFromCom,
-                    DistanceToTownhall = distanceToTownhall,
-                    Resources = mineralResources != null && mineralIndex < mineralResources.Count ? mineralResources[mineralIndex] : 0,
-                    IsNear = largeResourceValue > 0 && mineralResources != null && mineralIndex < mineralResources.Count && mineralResources[mineralIndex] == largeResourceValue,
-                    IsLarge = largeResourceValue > 0 && mineralResources != null && mineralIndex < mineralResources.Count && mineralResources[mineralIndex] == largeResourceValue,
-                    IsFar = largeResourceValue > 0 && mineralResources != null && mineralIndex < mineralResources.Count && mineralResources[mineralIndex] != largeResourceValue,
-                    UnitTag = mineralTags != null && mineralIndex < mineralTags.Count ? mineralTags[mineralIndex] : 0
-                });
-
-                if (displayIndex == 1 || displayIndex == 8)
-                {
-                    Console.WriteLine($"InitialMapData.GreedyOrderMinerals: Start[{startIndex}] M{displayIndex} IsFar={result[^1].IsFar} IsNear={result[^1].IsNear} IsLarge={result[^1].IsLarge} distanceToTownhall={distanceToTownhall:F2}");
-                    //System.Diagnostics.Debugger.Break();
-                }
-            }
-
-            // Log the ordering
-            Console.WriteLine($"InitialMapData.GreedyOrderMinerals: Start[{startIndex}] ordering complete:");
-
-            // Detect mineral sizes and classify. If the marker data is uniform or unavailable,
-            // fall back to the Near/Far split because this map uses distance patterns.
-            var distinctResourceValues = result.Select(ord => ord.Resources).Distinct().ToList();
-            if (distinctResourceValues.Count <= 1 || distinctResourceValues.All(v => v == 0u))
-            {
-                Console.WriteLine($"InitialMapData.GreedyOrderMinerals: Start[{startIndex}] uniform resource markers; classifying by Near/Far pattern.");
-                ClassifyMineralSizesByNearFar(result);
-            }
-            else
-            {
-                ClassifyMineralSizes(result, minerals);
-            }
-
-            // Count classification summary
-            int nearCount = 0, largeCount = 0, farCount = 0;
-            foreach (var ord in result)
-            {
-                if (ord.Size == MineralSize.Large && !ord.IsNear)
-                    largeCount++;
-                else if (ord.IsNear)
-                    nearCount++;
-                else
-                    farCount++;
-            }
-
-            Console.WriteLine($"InitialMapData.GreedyOrderMinerals: Classification summary: {nearCount}N, {largeCount}L, {farCount}F");
-
-            foreach (var ord in result)
-            {
-                string sizeStr = ord.Size == MineralSize.Large ? "Large" : (ord.Size == MineralSize.Normal ? "Normal" : "Small");
-                // ord.Index is intentionally reversed by greedy ordering (M8..M1); keep this log format unchanged.
-                var label = ord.IsNear ? $"N{ord.Index}" : (ord.Size == MineralSize.Large ? $"L{ord.Index}" : $"F{ord.Index}");
-                Console.WriteLine($"  M[{ord.Index}] = mineral[{ord.OriginalIndex}] tag={ord.Position?.X:F2},{ord.Position?.Y:F2} at ({ord.Position.X:F2},{ord.Position.Y:F2}) distance={ord.DistanceToTownhall:F2} {sizeStr} {label}");
-            }
-
-            return result;
+            var distinct = resources?.Where(value => value > 0).Distinct().OrderBy(value => value).ToList()
+                ?? new List<uint>();
+            Console.WriteLine($"InitialMapData: Start[{startIndex}] discovered mineral resource levels={string.Join(", ", distinct)} count={resources?.Count ?? 0}");
         }
 
         /// <summary>

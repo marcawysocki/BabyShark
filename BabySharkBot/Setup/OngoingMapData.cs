@@ -41,7 +41,16 @@ namespace BabySharkBot.Setup
             var workerCount = snapshot.AvailableWorkers.Count + snapshot.SelfUnits.Count(u => !snapshot.AvailableWorkers.Contains(u.Key) && u.Value.UnitType == (uint)UnitTypes.ZERG_DRONE); // Rough estimate
             Settings.WorkerCount = workerCount;
 
-            var orderedMinerals = ResolveMinerals(mapData, startIndex);
+            var currentAssignments = ResolveTeamAssignments(mapData, startIndex);
+            var orderedMinerals = currentAssignments
+                .SelectMany(assignment => assignment?.Minerals ?? new List<OrderedMineral>())
+                .Where(mineral => mineral?.Position != null && !string.IsNullOrWhiteSpace(mineral.FinalLabel))
+                .GroupBy(mineral => mineral.UnitTag != 0
+                    ? $"tag:{mineral.UnitTag}"
+                    : $"pos:{mineral.Position.X:F2},{mineral.Position.Y:F2}")
+                .Select(group => group.First())
+                .OrderBy(mineral => mineral.Index)
+                .ToList();
             var orderedVespene = ResolveVespene(mapData, startIndex);
 
             // Synchronize tags and labels from snapshot
@@ -54,10 +63,10 @@ namespace BabySharkBot.Setup
                 if (liveMineral != null)
                 {
                     om.UnitTag = liveMineral.UnitTag;
-                    var label = om.FinalLabel ?? om.Label;
-                    if (!string.IsNullOrWhiteSpace(label))
+                    var displayLabel = om.Label;
+                    if (!string.IsNullOrWhiteSpace(displayLabel))
                     {
-                        mineralLabelService?.SetMineralLabel(label, new Point { X = om.Position.X, Y = om.Position.Y, Z = om.Position.Z + 0.5f }, ProcessVisableUnits.GetFinalLabelColor(label), om.UnitTag);
+                        mineralLabelService?.SetMineralLabel(displayLabel, new Point { X = om.Position.X, Y = om.Position.Y, Z = om.Position.Z + 0.5f }, ProcessVisableUnits.GetFinalLabelColor(om.FinalLabel), om.UnitTag);
                     }
                 }
             }
@@ -88,38 +97,6 @@ namespace BabySharkBot.Setup
                 return new List<TeamPatchAssignmentDto>();
             }
 
-            // High Priority: Exact match for current worker count
-            if (mapData.AssignmentsByWorkerCount != null
-                && mapData.AssignmentsByWorkerCount.TryGetValue(Settings.WorkerCount, out var assignmentsByStart)
-                && assignmentsByStart != null
-                && assignmentsByStart.Count > startIndex
-                && assignmentsByStart[startIndex] != null
-                && assignmentsByStart[startIndex].Count > 0)
-            {
-                return assignmentsByStart[startIndex];
-            }
-
-            // Fallback: If we have > 12 workers, use the 12-worker base assignments for the main base
-            if (Settings.WorkerCount > 12 && mapData.AssignmentsByWorkerCount.TryGetValue(12, out var assignments12))
-            {
-                if (assignments12.Count > startIndex && assignments12[startIndex] != null && assignments12[startIndex].Count > 0)
-                {
-                    return assignments12[startIndex];
-                }
-            }
-
-            // Fallback: If we have 8-11 workers, use the 8-worker base assignments
-            if (Settings.WorkerCount > 8 && Settings.WorkerCount < 12 && mapData.AssignmentsByWorkerCount.TryGetValue(8, out var assignments8))
-            {
-                if (assignments8.Count > startIndex && assignments8[startIndex] != null && assignments8[startIndex].Count > 0)
-                {
-                    return assignments8[startIndex];
-                }
-            }
-
-            // Runtime-generated assignments are stored by BabySharkBuildManager in the
-            // current-spawn TeamPatchAssignments list, not in the serialized worker-count
-            // index. Resolve that exact spawn before allowing any fallback mining path.
             if (mapData.TeamPatchAssignments != null
                 && mapData.TeamPatchAssignments.Count > startIndex
                 && mapData.TeamPatchAssignments[startIndex] != null
@@ -128,45 +105,8 @@ namespace BabySharkBot.Setup
                 return mapData.TeamPatchAssignments[startIndex];
             }
 
-            if (mapData.SecondaryTeamPatchAssignments != null
-                && mapData.SecondaryTeamPatchAssignments.Count > startIndex
-                && mapData.SecondaryTeamPatchAssignments[startIndex] != null
-                && mapData.SecondaryTeamPatchAssignments[startIndex].Count > 0)
-            {
-                return mapData.SecondaryTeamPatchAssignments[startIndex];
-            }
-
+            Console.WriteLine($"OngoingMapData: no current-spawn team assignments for start[{startIndex}].");
             return new List<TeamPatchAssignmentDto>();
-        }
-
-        private static Vector2Dto ResolveSpawnCenter(MawBaseLocationData mapData, int startIndex)
-        {
-            if (mapData.SecondaryMineralCenterOfMass.Count > startIndex && mapData.SecondaryMineralCenterOfMass[startIndex] != null)
-            {
-                return mapData.SecondaryMineralCenterOfMass[startIndex];
-            }
-
-            if (mapData.MineralCenterOfMass.Count > startIndex && mapData.MineralCenterOfMass[startIndex] != null)
-            {
-                return mapData.MineralCenterOfMass[startIndex];
-            }
-
-            return null;
-        }
-
-        private static List<OrderedMineral> ResolveMinerals(MawBaseLocationData mapData, int startIndex)
-        {
-            if (mapData.SecondaryOrderedMainMinerals.Count > startIndex && mapData.SecondaryOrderedMainMinerals[startIndex].Count > 0)
-            {
-                return mapData.SecondaryOrderedMainMinerals[startIndex];
-            }
-
-            if (mapData.OrderedMainMinerals.Count > startIndex)
-            {
-                return mapData.OrderedMainMinerals[startIndex];
-            }
-
-            return new List<OrderedMineral>();
         }
 
         private static List<OrderedVespene> ResolveVespene(MawBaseLocationData mapData, int startIndex)

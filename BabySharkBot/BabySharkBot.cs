@@ -86,8 +86,6 @@ namespace BabySharkBot
             Managers.Add(buildManager);
 
             // Scouting consumes the observation prepared by the first manager.
-            // DebugManager is not registered here because StartupAwareSharkyBot owns the
-            // single draw/spawn request send after all label-producing managers finish.
             var scoutingManager = new ScoutingManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData);
             Managers.Add(scoutingManager);
 
@@ -136,7 +134,7 @@ namespace BabySharkBot
 
             // Create BabySharkMiningManager with shared CCA service instance
             _miningManager = new BabySharkMiningManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, workerLabelService, crosshairService, mineralLabelService, vespeneLabelService, expansionCOMService, expansionPointService, expansionPointDrawService, provisionalExpansionService, MineralReturnRateTrackerService, FrameToTimeConverter, mapDataService, SpawningPoolPlacementService, ccaService);
-            buildManager.ConfigureLabelServices(workerLabelService, mineralLabelService, vespeneLabelService);
+            buildManager.ConfigureLabelServices(workerLabelService, mineralLabelService, vespeneLabelService, SpawningPoolPlacementService);
             Console.WriteLine("BabySharkAI: Created BabySharkMiningManager and configured BuildManager label ownership");
 
             // Register the mining manager so current-run labels and map assignments are refreshed every frame.
@@ -148,7 +146,8 @@ namespace BabySharkBot
             {
                 var ccaManager = new CcaManager(ccaService, _miningManager);
                 Managers.Add(ccaManager);
-                Console.WriteLine($"BabySharkAI: Registered CcaManager. Per-frame drawing runs in StartupAwareSharkyBot.");
+                Managers.Add(ccaManager.DrawOnlyWrapper);
+                Console.WriteLine($"BabySharkAI: Registered CcaManager followed by DrawOnlyManager for post-build debug rendering.");
             }
             catch (Exception ex)
             {
@@ -420,11 +419,6 @@ namespace BabySharkBot
                         }
                     }
 
-                    // Draw labels once on every game-loop frame after all observation and assignment
-                    // managers have updated the shared snapshot. This is intentionally outside the
-                    // manager skip logic so rendering cannot be skipped by performance throttling.
-                    _owner._miningManager?.DrawDebugVisuals(observation);
-
                     var end = System.Diagnostics.Stopwatch.GetTimestamp();
                     var endTime = (end - begin) / (double)System.Diagnostics.Stopwatch.Frequency * 1000.0;
                     _owner._defaultBot.PerformanceData.TotalFrameCalculationTime += endTime;
@@ -458,7 +452,7 @@ namespace BabySharkBot
                                 _owner._gameConnection.SendRequest(drawReq).GetAwaiter().GetResult();
                                 Console.WriteLine("StartupAwareSharkyBot: DrawRequest sent");
                                 debugService.ResetDrawRequest();
-                                     System.Diagnostics.Debugger.Break();
+                                     // System.Diagnostics.Debugger.Break();
                             }
 
                             if (hasSpawns)

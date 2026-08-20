@@ -41,10 +41,25 @@ namespace BabySharkBot
 
             var random = new Random();
             //var randomMap = maps[random.Next(maps.Length)];
-            var randomMap = "InterloperAIE.SC2Map";
-            //var randomMap = "TorchesAIE_v4.SC2Map";
+
+            //var randomMap = "Habitation Station.SC2Map";
+            //var randomMap = "Cloud Kingdom.SC2Map";
+            //var randomMap = "InterloperAIE.SC2Map";
+            //var randomMap = "W8_InterloperAIE.SC2Map";
+            var randomMap = "TorchesAIE_v4.SC2Map";
             //var randomMap = "LastFantasyAIE.SC2Map";
             //var randomMap = "MagannathaAIE_v2.SC2Map";
+            //var randomMap = "AbyssalReefAIE.SC2Map";
+            //var randomMap = "AcropolisAIE.SC2Map";
+            //var randomMap = "AutomatonAIE.SC2Map";
+            //var randomMap = "EphemeronAIE.SC2Map";
+            //var randomMap = "IncorporealAIE_v4.SC2Map";
+            //var randomMap = "LeyLinesAIE_v3.SC2Map";
+            //var randomMap = "PersephoneAIE_v4.SC2Map";
+            //var randomMap = "PylonAIE_v4.SC2Map";
+            //var randomMap = "ThunderbirdAIE.SC2Map";
+            //var randomMap = "UltraloveAIE_v2.SC2Map";
+
 
 
             var mapNameForData = randomMap;

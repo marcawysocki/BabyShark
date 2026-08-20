@@ -12,7 +12,7 @@ namespace BabySharkBot.Services
     {
         // Stable mineral-team colors for all worker counts.
         public static readonly Color Teal   = new Color { R = 0,   G = 255, B = 255 };
-        public static readonly Color Salmon = new Color { R = 255, G = 128, B = 128 };
+        public static readonly Color Salmon = new Color { R = 255, G = 105, B = 180 };
         public static readonly Color Blue   = new Color { R = 0,   G = 0,   B = 255 };
         public static readonly Color Yellow = new Color { R = 255, G = 255, B = 0   };
 
@@ -20,7 +20,7 @@ namespace BabySharkBot.Services
         public static readonly Color Pink   = new Color { R = 255, G = 192, B = 203 };
 
         // --- Mineral pair index → team metadata ---
-        // pairIndex: 0=M[0]+M[1], 1=M[2]+M[3], 2=M[4]+M[5], 3=M[6]+M[7]
+        // pairIndex: 0=M[1]+M[2], 1=M[3]+M[4], 2=M[5]+M[6], 3=M[7]+M[8]
         public static (string prefix8, string prefix12, Color color8, Color color12) GetTeamMeta(int pairIndex)
         {
             return pairIndex switch

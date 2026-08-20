@@ -15,7 +15,7 @@ namespace BabySharkBot.Setup
         public static string MiningCycleScorePath = "RLIntegration/data/mining_cycle_scores.jsonl";
 
         // Speed/mining/data schema version (semantic string). Update when heavy-generation or JSON schema changes.
-            public const string SpeedMiningVersion = "0.07";
+            public const string SpeedMiningVersion = "0.08";
 
             // Debug mode: enables console logging and debug prints. Can be true even in Release builds if needed.
             public static bool DebugMode = true;

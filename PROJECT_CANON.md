@@ -10,17 +10,25 @@ This file contains confirmed design rules for BabyShark's 12-worker mining syste
 - Do not replace the existing mining architecture with a simplified example or create duplicate worker/team services.
 - Do not implement unresolved rules by guessing. Add a focused discussion or test fixture first.
 
-## Worker-chain invariants
+## Worker and mineral chain invariants
 
 - The initial W labels are temporary ordering labels, not final team roles.
+- The canonical worker list is stored in greedy chain order from W1 through W12 (or W1 through W8 for an 8-worker opening). The numeric debug prefix is the list index: `1-W1` through `8-W8`.
 - The 12-worker chain is generated from worker geometry relative to the mineral center of mass.
 - `W12` is the worker farthest from the mineral center of mass; `W1` is at the opposite end.
+- For an 8-worker opening, `W8` is the worker farthest from the mineral center of mass; `W1` is at the opposite end.
 - The map may be rotated or mirrored. Screen directions such as left, right, top, and bottom have no semantic meaning.
-- The greedy mineral chain is orientation-independent:
-  - `M[0]` is on the same chain side as `W1`.
-  - `M[7]` is on the same chain side as `W12`.
+- The greedy mineral chain is orientation-independent and is the only mineral ordering.
+- The live mineral labels are displayed and referenced in descending chain notation: `M[8]` through `M[1]`.
+  - `M[1]` is the Teal-side chain edge and Teal uses the `M[1]/M[2]` side.
+  - `M[8]` is the Yellow-side chain edge and Yellow uses the `M[7]/M[8]` side.
+  - Current labels such as `1-TA`, `1-TB`, `8-YA`, and `8-TB` are authoritative assignment references.
+- Historical `M[0]` through `M[7]` examples and the former one-based persisted-index description must not be used to reinterpret the live labels. The implementation must resolve the current registered mineral labels and preserve their mapping.
+- `W12` through `W1` always means the correctly sorted greedy worker chain; for 8-worker starts, `W8` through `W1` means that same correctly sorted chain.
+- `M[8]` through `M[1]` always means the correctly sorted current mineral-label chain, never the order returned by Observation.
+- Observation raw-unit, dictionary, or availability enumeration order is never semantic and must never define a worker number, mineral index, team, color, or target.
 - Never add screen-direction or absolute-X/Y rules to infer worker or mineral roles.
-- Do not reorder the greedy mineral chain during worker assignment.
+- Do not reorder or mutate the greedy mineral chain during worker assignment.
 
 ## Mineral classification invariants
 
@@ -36,11 +44,13 @@ This file contains confirmed design rules for BabyShark's 12-worker mining syste
 The confirmed initial W-chain membership is:
 
 ```text
-Teal:   W2, W3, W4
+Teal:   W2, W3, W4   # W1-side team; minerals M[1], M[2]
 Salmon: W5, W6, W1
 Blue:   W7, W8, W12
-Yellow: W9, W10, W11
+Yellow: W9, W10, W11 # W12-side team; minerals M[7], M[8]
 ```
+
+Every team uses the same mineral suffix rule: the large mineral is `A` and the small mineral is `B`. Teal uses the `M[1]/M[2]` side and Yellow uses the `M[7]/M[8]` side. The live numeric display prefix follows the current mineral labels, including `1-...` through `8-...`; it must not be regenerated from Observation order or from a stale historical index convention.
 
 Final labels are role labels, not copies of W labels:
 
@@ -53,32 +63,83 @@ Yellow: Y1, Y2, Y3 -> YA/YB
 
 The role suffix is determined by the worker's target and team geometry. It must not be assigned solely from the worker's W number.
 
-## Confirmed route-aware assignment rules
+## Confirmed 12-worker assignment rules
 
-- The objective is the best complete team route, not the nearest worker to one mineral.
-- Evaluate route length, target arrival timing, route crossing, congestion, collision risk, and access to the team's B mineral.
-- A slightly longer individual route is correct when it prevents cross traffic or keeps the B-mineral route open.
-- Large-mineral assignment is therefore a constrained team optimization problem.
+- The objective is the complete team route, not nearest-worker matching in isolation.
+- Assignment must use the current live mineral labels (`M[8]` through `M[1]`) and their registered `A`/`B` identities.
+- The 12-worker CCA opening uses the same assignment choreography as the correct 8-worker opening, but all CCA bumping/pushing is disabled.
+- CCA emits calculated `MOVE` commands at frames `0`, `1`, `5`, `10`, and `15`; frame 1 repeats the initial movement command if the frame-0 command was not accepted by the game loop.
+- A `SMART` command is expected before the frame-35 handoff when the worker and mineral unit tag are verified. The exact issuing frame and queue semantics remain an implementation detail to confirm from live code.
 
-For the confirmed outside-mineral Teal case:
+### Salmon
 
 ```text
-W2 -> T2 -> TB
-W4 -> T1 -> TA
-W3 -> T3 -> push/support T1
+W1 -> S3 -> either 3-SA or 4-SA
 ```
 
-The reason is that W2 has the clean route to the outside/far TB mineral, W4 is the best primary worker for TA, and W3 is the remaining push/support worker. This is not a fixed W-number suffix rule; it is the result of the route geometry.
+`W1` becomes `S3`. The selected target is whichever of the current `3-SA` or `4-SA` labels is the team's `A` mineral.
+
+### Teal
+
+Teal membership is `W2`, `W3`, and `W4`.
+
+```text
+If M[1] is 1-TB:
+    W2 -> T2 -> 1-TB
+    Choose T1 as the nearer of W3/W4 to 2-TA
+    The remaining Teal worker -> T3 (pushing/support)
+
+If M[1] is 1-TA:
+    W4 -> T2 -> 2-TB
+    Choose T1 as the nearer of W2/W3 to 1-TA
+    The remaining Teal worker -> T3 (pushing/support)
+```
+
+`T3` is the Teal pushing/support worker. For this 12-worker opening, its bumping behavior is disabled; it later mines `TA` after completing its support movement.
+
+### Fixed middle-chain assignments
+
+```text
+W5 -> M[3]
+W6 -> M[4]
+W7 -> M[5]
+W8 -> M[6]
+```
+
+Salmon and Blue pushing/bumping pairs are disabled. These workers retain their fixed current-chain mineral targets.
+
+### Yellow
+
+Yellow membership is `W9`, `W10`, and `W11`.
+
+```text
+If M[8] is 8-TB:
+    W11 -> Y2 -> 8-TB
+Else:
+    W9 -> Y2 -> the Yellow B mineral
+```
+
+The nearest of the remaining Yellow workers to `YA` becomes `Y1`. The other remaining Yellow worker becomes `Y3` and is the pushing/support role. As with Teal, Yellow bumping is disabled for this 12-worker opening; `Y3` later mines `YA` after support movement.
+
+### Blue edge worker
+
+```text
+W12 -> B3
+```
+
+`W12` becomes `B3`. Blue bumping is disabled.
+
+These rules are explicit role mappings for the current 12-worker opening and supersede the older sequential Team 1–4 assignments.
 
 ## Fixed middle-chain targets
 
 The following greedy-chain targets are confirmed:
 
 ```text
-W5 -> M[2]
-W6 -> M[3]
-W7 -> M[4]
-W8 -> M[5]
+W5 -> M[3]
+W6 -> M[4]
+W7 -> M[5]
+W8 -> M[6]
 ```
 
 These targets are retained to avoid cross-traffic congestion. Each worker's final `1` or `2` suffix is derived from whether its target is that team's A or B mineral.
@@ -86,23 +147,26 @@ These targets are retained to avoid cross-traffic congestion. Each worker's fina
 ## CCA rules for the first 35 frames
 
 - CCA/chrisCrossAppleSause owns the opening choreography through the frame-35 handoff.
-- Teal `T1` and `T3` must remain side by side for push-repell acceleration.
-- Yellow `Y1` and `Y3` must remain side by side for push-repell acceleration.
-- Teal and Yellow role selection must preserve those adjacent 1/3 formations before optimizing their 2 worker.
-- Salmon and Blue CCA pushing is always disabled.
-- `S1`/`S2` and `B1`/`B2` behave like the 8-worker direct-mining opening.
-- `S3` moves toward `BA` and `B3` moves toward `SA` using ordinary target movement. They provide indirect push-repell assistance to Teal and Yellow; they are not Salmon/Blue bump-pair members.
-- Do not enable Salmon or Blue bump flags as a shortcut for missing assignments.
+- The 12-worker opening follows the same CCA assignment and movement choreography as the correct 8-worker opening.
+- For the 12-worker opening, bumping/pushing is false. Support workers still follow their calculated movement paths and later receive their mining target.
+- Opening mineral `MOVE` targets use the persisted radius-safe `HarvestPoint`, outside the mineral footprint.
+- Calculated `MOVE` commands are issued at frames `0`, `1`, `5`, `10`, and `15`; frame 1 repeats the initial movement command.
+- A verified mineral-target `SMART` command is expected before the frame-35 handoff. A world-position-only `SMART` is not a valid mining handoff. The exact command queue/timing must be confirmed against the live implementation before it is treated as a code invariant.
+- Teal role selection must preserve the `T1`/`T3` support formation while selecting `T2` and `T1` using the current `M[1]` condition.
+- Yellow role selection must select `Y2`, the nearest `Y1`, and the remaining `Y3` using the current `M[8]` condition.
+- Salmon and Blue bumping/pushing pairs are false. `W1` is `S3`, and `W12` is `B3`.
+- Do not enable any bump flag as a shortcut for missing assignments.
 
-## Unresolved rules: do not guess
+## Confirmed opening scope and unresolved rules
 
-The following rules are not yet canonical and require discussion before implementation:
+The 8-worker opening behavior is currently considered correct and must be preserved. The new 12-worker rules above define the current CCA assignment contract, but the following details still require live-code confirmation or separate discussion:
 
-- The complete conditional role mapping for all outside-mineral configurations, especially Yellow/M8 cases.
-- The exact algorithm and weights for route-crossing, congestion, and arrival-time scoring.
+- The exact implementation of the `M[8]`/`M[1]` label lookup and the mapping from displayed labels to persisted DTO entries.
+- The exact algorithm and weights for route-crossing, congestion, and arrival-time scoring where the explicit conditional rules do not decide the worker.
 - The exact precedence and threshold combining Townhall distance and mineral size.
-- The exact A/B pairing of every ordered mineral index for every team.
+- The exact A/B pairing of ordered mineral indices outside the explicitly documented Teal, Salmon, Blue, and Yellow cases.
+- The exact SMART issuing frame, queue behavior, and whether SMART is issued once or repeated before frame 35.
 - Post-frame-35 role rotation details.
-- Whether the historical triple-bump variants remain enabled or should be removed.
+- Whether any historical triple-bump variant should be enabled; the current 12-worker CCA contract says bumping is false.
 
-Until these are confirmed, implement only shared infrastructure, diagnostics, validation, and tests that do not choose among the unresolved alternatives.
+Until these are confirmed, implement only the explicit assignments, shared infrastructure, diagnostics, validation, and tests. Do not select among unresolved alternatives by fallback or guesswork.

@@ -11,6 +11,8 @@ namespace BabySharkBot.Services
 {
     public sealed class chrisCrossAppleSause
     {
+        private WorkerLabelService _workerLabelService;
+
         public void EnableCcaMiningForCurrentSpawn(MawBaseLocationData mapData, int startIndex)
         {
             Settings.ccaMining = true;
@@ -34,6 +36,11 @@ namespace BabySharkBot.Services
             }
 
 
+            if (workerEntries.Count == 12 || Settings.WorkerCount == 12)
+            {
+                return BuildTwelveWorkerOrders(relativeFrame, mapData, startIndex, workerEntries).ToList();
+            }
+
             if (relativeFrame < 0 || relativeFrame % 5 != 0 || Settings.AvailableWorker.Count == 0)
             {
                 return commands;
@@ -52,6 +59,87 @@ namespace BabySharkBot.Services
             commands.AddRange(HandleAcceleratingWorkerOne(frame, mapData, teamAssignments, workerEntries));
             commands.AddRange(HandleAlignAtMineralA(frame, mapData, startIndex, teamAssignments, workerEntries));
             return commands;
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> BuildTwelveWorkerOrders(
+            int relativeFrame,
+            MawBaseLocationData mapData,
+            int startIndex,
+            IReadOnlyList<WorkerEntryDto> workerEntries)
+        {
+            var commands = new List<SC2APIProtocol.Action>();
+            if (relativeFrame != 0 && relativeFrame != 1 && relativeFrame != 5 && relativeFrame != 10 && relativeFrame != 15)
+            {
+                return commands;
+            }
+
+            var assignments = OngoingMapData.ResolveTeamAssignments(mapData, startIndex);
+            if (assignments.Count == 0)
+            {
+                return commands;
+            }
+
+            foreach (var assignment in assignments)
+            {
+                foreach (var worker in assignment.Workers ?? new List<WorkerEntryDto>())
+                {
+                    var liveWorker = workerEntries.FirstOrDefault(candidate => candidate.UnitTag == worker.UnitTag);
+                    var target = ResolveInitialTarget(worker, assignment);
+                    if (liveWorker == null || target?.Position == null)
+                    {
+                        continue;
+                    }
+
+                    var movePoint = target.HarvestPoint != null
+                        && (target.HarvestPoint.X != 0f || target.HarvestPoint.Y != 0f)
+                        ? new Point2D { X = target.HarvestPoint.X, Y = target.HarvestPoint.Y }
+                        : new Point2D { X = target.Position.X, Y = target.Position.Y };
+                    if (relativeFrame == 0)
+                    {
+                        commands.AddRange(Stop(liveWorker.UnitTag));
+                    }
+                    commands.AddRange(MoveTo(liveWorker.UnitTag, movePoint));
+
+                    if (relativeFrame == 15)
+                    {
+                        var mineralTag = ResolveLiveMineralTag(target, Globals.CurrentObservation);
+                        if (mineralTag != 0)
+                        {
+                            commands.AddRange(SmartTo(liveWorker.UnitTag, mineralTag));
+                        }
+                    }
+                }
+            }
+
+            return commands;
+        }
+
+        private static OrderedMineral ResolveInitialTarget(WorkerEntryDto worker, TeamPatchAssignmentDto assignment)
+        {
+            if (worker == null || assignment?.Minerals == null)
+            {
+                return null;
+            }
+
+            var role = worker.FinalLabel ?? worker.Label;
+            if (string.Equals(role, "S3", StringComparison.OrdinalIgnoreCase))
+            {
+                return assignment.Minerals.FirstOrDefault(mineral => string.Equals(mineral.FinalLabel, "SA", StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (string.Equals(role, "B3", StringComparison.OrdinalIgnoreCase))
+            {
+                return assignment.Minerals.FirstOrDefault(mineral => string.Equals(mineral.FinalLabel, "BA", StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (role?.Length == 2 && int.TryParse(role.Substring(1), out var roleNumber))
+            {
+                var suffix = roleNumber == 1 ? "A" : roleNumber == 2 ? "B" : "A";
+                return assignment.Minerals.FirstOrDefault(mineral =>
+                    string.Equals(mineral.FinalLabel, $"{role[0]}{suffix}", StringComparison.OrdinalIgnoreCase));
+            }
+
+            return null;
         }
 
         private IEnumerable<SC2APIProtocol.Action> HandleAcceleratingWorkerOne(int frame, MawBaseLocationData mapData, IReadOnlyList<TeamPatchAssignmentDto> teamAssignments, IReadOnlyList<WorkerEntryDto> workerEntries)
@@ -170,8 +258,10 @@ namespace BabySharkBot.Services
 
         private IEnumerable<SC2APIProtocol.Action> MoveTo(ulong tag, Point2D point)
         {
-            if (tag == 0) return Array.Empty<SC2APIProtocol.Action>();
+            if (tag == 0 || point == null) return Array.Empty<SC2APIProtocol.Action>();
 
+            var workerLabel = _workerLabelService?.GetLabel(tag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMAND2] phase=CCA worker={tag} Label={workerLabel} command=MOVE pos=({point.X:F2},{point.Y:F2}) queued=false");
             var command = new ActionRawUnitCommand
             {
                 AbilityId = 16, // MOVE
@@ -191,8 +281,9 @@ namespace BabySharkBot.Services
 
         public void RecordSpawnObservation(MawBaseLocationData mapData, int startIndex, List<List<TeamPatchAssignmentDto>> teamAssignmentsByStart, WorkerLabelService workerLabelService = null, int frame = -1, IReadOnlyList<WorkerEntryDto> workerEntries = null)
         {
+            _workerLabelService = workerLabelService;
             // Team assignments are read directly from mapData during BuildBumpOrders.
-            // This compatibility hook intentionally retains no CCA state.
+            // This compatibility hook retains the shared label service for command diagnostics.
         }
 
         /// <summary>
@@ -252,6 +343,9 @@ namespace BabySharkBot.Services
                     ? mapData.OrderedMainMinerals[startIndex]
                     : null;
             }
+            // Index is the persisted one-based greedy-chain position: Index 1 = M[1]
+            // (W1/Teal side), Index 8 = M[8] (W12/Yellow side). Observation order is
+            // never used to resolve a mineral.
             var mineralsByIndex = persistedMinerals?
                 .Where(m => m != null && m.Position != null)
                 .OrderBy(m => m.Index)
@@ -261,15 +355,18 @@ namespace BabySharkBot.Services
             for (int mi = 0; mi < mineralsByIndex.Count; mi++)
             {
                 var mineral = mineralsByIndex[mi];
-                Console.WriteLine($"  M[{mi}] (stored Index={mineral.Index}) position=({mineral.Position.X:F2},{mineral.Position.Y:F2}) cachedTag={mineral.UnitTag}");
+                Console.WriteLine($"  M[{mineral.Index}] (stored Index={mineral.Index}) position=({mineral.Position.X:F2},{mineral.Position.Y:F2}) cachedTag={mineral.UnitTag}");
             }
             if (mineralsByIndex.Count < liveWorkers.Count) return commands;
 
-            // 1.0 mineral radius + 0.5 worker standoff = worker center sits 1.5u from mineral center.
+            // Match the persisted harvest geometry: the worker center remains outside the
+            // mineral footprint with the established 1.5u center offset.
             const float mineralOffset = 1.5f;
 
-            // Greedy worker chain: anchor at the stored mineral COM, then chain to the closest
-            // unvisited worker. The first worker is W8 and the last worker is W1.
+            // Greedy worker chain: anchor at mineral COM, then chain to the closest
+            // unvisited worker. The traversal begins at W8/W12 and descends to W1;
+            // CCA pairs that traversal with the high-to-low mineral chain. Observation
+            // order is never semantic.
             var mineralCom = mapData.MineralCenterOfMass != null
                 && startIndex >= 0
                 && startIndex < mapData.MineralCenterOfMass.Count
@@ -277,38 +374,30 @@ namespace BabySharkBot.Services
                 : null;
             if (mineralCom == null) return commands;
 
-            var remaining = new List<(ulong Tag, Vector2Dto Position)>(liveWorkers);
-            var greedyOrder = new List<(ulong Tag, Vector2Dto Position)>();
-            var current = remaining.OrderByDescending(w =>
-                (w.Position.X - mineralCom.X) * (w.Position.X - mineralCom.X)
-                + (w.Position.Y - mineralCom.Y) * (w.Position.Y - mineralCom.Y)).FirstOrDefault();
-            while (current.Tag != 0 && remaining.Count > 0)
-            {
-                greedyOrder.Add(current);
-                remaining.RemoveAll(w => w.Tag == current.Tag);
-                if (remaining.Count == 0) break;
-                current = remaining.OrderBy(w =>
-                    (w.Position.X - current.Position.X) * (w.Position.X - current.Position.X)
-                    + (w.Position.Y - current.Position.Y) * (w.Position.Y - current.Position.Y)).FirstOrDefault();
-            }
+            var workerTuples = liveWorkers
+                .Select(worker => (worker.Tag, worker.Position.X, worker.Position.Y, worker.Position.Z, (uint)UnitTypes.ZERG_DRONE));
+            var greedyWorkers = WorkerLabelChainHelper.BuildGreedyWorkerEntries(workerTuples, mineralCom, null);
 
             Console.WriteLine("[CCA Frame0] Greedy worker chain and required targets:");
-            for (int wi = 0; wi < greedyOrder.Count && wi < mineralsByIndex.Count; wi++)
+            for (int wi = 0; wi < greedyWorkers.Count && wi < mineralsByIndex.Count; wi++)
             {
-                var workerNumber = greedyOrder.Count - wi;
+                var workerNumber = greedyWorkers.Count - wi;
                 var targetIndex = mineralsByIndex.Count - 1 - wi;
                 var targetMineral = mineralsByIndex[targetIndex];
-                var worker = greedyOrder[wi];
+                var worker = greedyWorkers[wi];
                 var mineralTag = ResolveLiveMineralTag(targetMineral, snapshot);
                 var returnPoint = targetMineral.ReturnPoint != null
                     && (targetMineral.ReturnPoint.X != 0f || targetMineral.ReturnPoint.Y != 0f)
                     ? targetMineral.ReturnPoint
                     : ComputeReturnCargoPoint(townhall, targetMineral.Position);
-                var harvestPoint = CalculateFrame0HarvestPoint(
-                    worker.Position,
-                    returnPoint,
-                    targetMineral.Position,
-                    mineralOffset);
+                var harvestPoint = targetMineral.HarvestPoint != null
+                    && (targetMineral.HarvestPoint.X != 0f || targetMineral.HarvestPoint.Y != 0f)
+                    ? new Point2D { X = targetMineral.HarvestPoint.X, Y = targetMineral.HarvestPoint.Y }
+                    : CalculateFrame0HarvestPoint(
+                        worker.Position,
+                        returnPoint,
+                        targetMineral.Position,
+                        mineralOffset);
 
                 var targetFinalLabel = targetMineral.FinalLabel ?? string.Empty;
                 var workerFinalLabel = targetFinalLabel.EndsWith("A", StringComparison.OrdinalIgnoreCase)
@@ -317,22 +406,24 @@ namespace BabySharkBot.Services
                         ? $"{targetFinalLabel.Substring(0, targetFinalLabel.Length - 1)}2"
                         : $"W{workerNumber}";
                 var workerDisplayLabel = $"{workerNumber}-{workerFinalLabel}";
-                var mineralDisplayLabel = $"{targetIndex}-{targetFinalLabel}";
-                Console.WriteLine($"  {workerDisplayLabel} tag={worker.Tag} -> {mineralDisplayLabel} storedIndex={targetMineral.Index} mineralTag={mineralTag} position=({targetMineral.Position.X:F2},{targetMineral.Position.Y:F2})");
+                var mineralDisplayLabel = $"{targetMineral.Index}-{targetFinalLabel}";
+                Console.WriteLine($"  {workerDisplayLabel} tag={worker.UnitTag} -> {mineralDisplayLabel} storedIndex={targetMineral.Index} mineralTag={mineralTag} position=({targetMineral.Position.X:F2},{targetMineral.Position.Y:F2})");
                 if (mineralTag == 0) continue;
 
-                commands.AddRange(Stop(worker.Tag));
-                commands.AddRange(MoveTo(worker.Tag, harvestPoint));
-                commands.AddRange(SmartTo(worker.Tag, mineralTag));
+                commands.AddRange(Stop(worker.UnitTag));
+                commands.AddRange(MoveTo(worker.UnitTag, harvestPoint));
+                commands.AddRange(SmartTo(worker.UnitTag, mineralTag));
             }
 
             Console.WriteLine($"[CCA Frame0] Issued {commands.Count} actions total.");
             return commands;
         }
-        private static IEnumerable<SC2APIProtocol.Action> Stop(ulong tag)
+        private IEnumerable<SC2APIProtocol.Action> Stop(ulong tag)
         {
             if (tag == 0) return Array.Empty<SC2APIProtocol.Action>();
 
+            var workerLabel = _workerLabelService?.GetLabel(tag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMAND3] phase=CCA worker={tag} Label={workerLabel} command=STOP queued=false");
             var command = new ActionRawUnitCommand
             {
                 AbilityId = (int)Abilities.STOP
@@ -438,13 +529,15 @@ namespace BabySharkBot.Services
             };
         }
 
-        private static IEnumerable<SC2APIProtocol.Action> SmartTo(ulong tag, ulong targetTag)
+        private IEnumerable<SC2APIProtocol.Action> SmartTo(ulong tag, ulong targetTag)
         {
             if (tag == 0 || targetTag == 0) return Array.Empty<SC2APIProtocol.Action>();
 
             // Sharky speed-mining pattern: GATHER/SMART is QUEUED so MOVE can run first and shape
             // the worker's approach angle. See Sharky/MicroTasks/Mining/MineralMiner.cs:73-77 and
             // UnitCommander.Order at Sharky/Unit/UnitCommander.cs:78-147 (QueueCommand=true).
+            var workerLabel = _workerLabelService?.GetLabel(tag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMAND4] phase=CCA worker={tag} Label={workerLabel} command=SMART targetTag={targetTag} queued=true");
             var command = new ActionRawUnitCommand
             {
                 AbilityId = (int)Abilities.SMART,

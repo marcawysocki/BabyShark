@@ -62,7 +62,8 @@ namespace BabySharkBot.Setup
     }
 
     /// <summary>
-    /// Represents a mineral patch indexed in the order it was first encountered.
+    /// Represents a live observed mineral patch. MineralIndex is observation bookkeeping only;
+    /// it is never a canonical mineral role or M[1]-M[8] assignment index.
     /// </summary>
     [MemoryPackable]
     public partial class MineralDto
@@ -71,6 +72,7 @@ namespace BabySharkBot.Setup
         public uint UnitType { get; set; }
         public int MineralIndex { get; set; }
         public Vector2Dto Position { get; set; } = new Vector2Dto();
+        public bool IsVisible { get; set; }
         public int MineralContents { get; set; }
         public int MaxMineralContents { get; set; }
     }
@@ -87,11 +89,11 @@ namespace BabySharkBot.Setup
     }
 
     /// <summary>
-    /// Represents a mineral patch ordered by greedy chain from a starting worker (W1).
-    /// M[8] is furthest from W1, M[7] is closest to M[8], etc., down to M[1].
-    /// After ordering, classified as Near or Far based on distance to starting townhall.
-    /// Large minerals that are Far become L1-L4 instead of F1-F4.
-    /// Descending index (8→1) for easier binary serialization and debugging.
+    /// Represents a mineral patch in the canonical greedy mineral chain.
+    /// The persisted Index is one-based: Index 1 is M[1] on the W1/Teal side,
+    /// Index 8 is M[8] on the W12/Yellow side, and sorting by Index ascending is the only valid
+    /// way to obtain M[1] through M[8]. Observation enumeration order is never semantic.
+    /// After ordering, the mineral is classified as Near or Far based on the map's resource rules.
     /// </summary>
     [MemoryPackable]
     public partial class OrderedMineral
@@ -122,10 +124,9 @@ namespace BabySharkBot.Setup
         public Vector2Dto SmReturnPoint { get; set; } = new Vector2Dto();
 
         /// <summary>
-        /// Index in greedy chain: 8-1 (M8-M1, descending)
-        /// 8 = furthest from W1 (first in greedy chain)
-        /// 7-1 = greedy chain closest to previous (descending)
-        /// Descending order for binary serialization and debugging ease
+        /// One-based position in the canonical greedy chain.
+        /// Index 1 = M[1] on the W1/Teal side; Index 8 = M[8] on the W12/Yellow side.
+        /// Consumers must sort ascending by Index before referring to M[1]-M[8].
         /// </summary>
         public int Index { get; set; }
 
@@ -443,6 +444,7 @@ namespace BabySharkBot.Setup
         public Dictionary<ulong, WorkerEntryDto> SelfUnits { get; set; } = new();
         public Dictionary<ulong, Vector2Dto> WorkerPositions { get; set; } = new();
         public Dictionary<ulong, MineralDto> Minerals { get; set; } = new();
+        public List<MineralDto> VisibleMinerals { get; set; } = new();
         public Dictionary<ulong, OrderedVespene> Vespene { get; set; } = new();
         public Dictionary<ulong, WorkerEntryDto> CurrentTownHalls { get; set; } = new();
     }

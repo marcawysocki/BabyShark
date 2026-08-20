@@ -147,6 +147,28 @@ namespace BabySharkBot.Managers
                     return actions != null ? actions.ToList() : Array.Empty<SC2APIProtocol.Action>();
                 }
 
+                // The canonical 12-worker opening owns its scheduled MOVE/SMART sequence
+                // through the fixed frame-35 handoff; do not replace it with the recovery path.
+                if (liveWorkers.Count == 12 || Settings.WorkerCount == 12)
+                {
+                    if (relativeFrame >= 35 && !_unregistered)
+                    {
+                        Console.WriteLine("CcaManager: 12-worker CCA handoff at frame 35.");
+                        try
+                        {
+                            _miningManager.SignalMiningStarted();
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"CcaManager: failed 12-worker handoff: {ex.Message}");
+                        }
+
+                        HandleMiningStarted();
+                    }
+
+                    return actions != null ? actions.ToList() : Array.Empty<SC2APIProtocol.Action>();
+                }
+
                 // After frame 15, if bump is disabled, issue mining gather orders for any worker that isn't mining
                 if (relativeFrame >= 15)
                 {
@@ -165,22 +187,22 @@ namespace BabySharkBot.Managers
                         foreach (var w in liveWorkers.Where(lw => assignedTags.Contains(lw.UnitTag)))
                         {
                             var unit = snapshot?.SelfUnits?.TryGetValue(w.UnitTag, out var snapshotWorker) == true ? snapshotWorker : null;
-                            var isMining = unit?.OrderAbilityIds?.Any(abilityId => abilityId == (int)Abilities.HARVEST_GATHER || abilityId == (int)Abilities.HARVEST_GATHER_DRONE || abilityId == (int)Abilities.HARVEST_GATHER_PROBE || abilityId == (int)Abilities.HARVEST_GATHER_SCV || abilityId == (int)Abilities.HARVEST_RETURN) == true;
-                            if (!isMining)
+                            var hasMiningOrder = unit?.OrderAbilityIds?.Any(abilityId => abilityId == (int)Abilities.MOVE || abilityId == (int)Abilities.SMART || abilityId == (int)Abilities.HARVEST_GATHER || abilityId == (int)Abilities.HARVEST_GATHER_DRONE || abilityId == (int)Abilities.HARVEST_GATHER_PROBE || abilityId == (int)Abilities.HARVEST_GATHER_SCV || abilityId == (int)Abilities.HARVEST_RETURN) == true;
+                            var justReturnedCargo = unit?.WasCarrying == true && unit.IsCarrying == false;
+                            if (!hasMiningOrder || justReturnedCargo)
                             {
                                 // Try to find assigned mineral for this worker
                                 var label = w.Label ?? w.FinalLabel ?? w.StartLabel;
                                 var assignedMineral = teamAssignments.SelectMany(t => t.Minerals ?? new List<OrderedMineral>()).FirstOrDefault(m => string.Equals((m?.FinalLabel ?? m?.Label), label, StringComparison.OrdinalIgnoreCase));
-                                var targetPoint = assignedMineral?.HarvestPoint ?? assignedMineral?.Position;
-                                if (targetPoint != null)
+                                var targetPoint = assignedMineral?.HarvestPoint;
+                                var targetMineralTag = assignedMineral?.UnitTag ?? 0;
+                                if (targetPoint != null
+                                    && (targetPoint.X != 0f || targetPoint.Y != 0f)
+                                    && targetMineralTag != 0)
                                 {
-                                    var cmd = new ActionRawUnitCommand
-                                    {
-                                        AbilityId = (int)Abilities.SMART,
-                                        TargetWorldSpacePos = new Point2D { X = targetPoint.X, Y = targetPoint.Y }
-                                    };
-                                    cmd.UnitTags.Add(w.UnitTag);
-                                    gatherActions.Add(new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = cmd } });
+                                    gatherActions.AddRange(StopWorker(w.UnitTag));
+                                    gatherActions.AddRange(MoveWorker(w.UnitTag, new Point2D { X = targetPoint.X, Y = targetPoint.Y }));
+                                    gatherActions.AddRange(GatherMineral(w.UnitTag, targetMineralTag));
                                 }
                             }
                         }
@@ -235,6 +257,45 @@ namespace BabySharkBot.Managers
                 Console.WriteLine($"CcaManager.OnFrame error: {ex.Message}");
                 return Array.Empty<SC2APIProtocol.Action>();
             }
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> StopWorker(ulong workerTag)
+        {
+            if (workerTag == 0) return Array.Empty<SC2APIProtocol.Action>();
+            var workerLabel = _miningManager.WorkerLabelService?.GetLabel(workerTag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMAND8] phase=CCA_RECOVERY worker={workerTag} Label={workerLabel} command=STOP queued=false");
+            var command = new ActionRawUnitCommand { AbilityId = (int)Abilities.STOP };
+            command.UnitTags.Add(workerTag);
+            return new[] { new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = command } } };
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> MoveWorker(ulong workerTag, Point2D target)
+        {
+            if (workerTag == 0 || target == null) return Array.Empty<SC2APIProtocol.Action>();
+            var workerLabel = _miningManager.WorkerLabelService?.GetLabel(workerTag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMAND9] phase=CCA_RECOVERY worker={workerTag} Label={workerLabel} command=MOVE pos=({target.X:F2},{target.Y:F2}) queued=false");
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.MOVE,
+                TargetWorldSpacePos = target
+            };
+            command.UnitTags.Add(workerTag);
+            return new[] { new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = command } } };
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> GatherMineral(ulong workerTag, ulong mineralTag)
+        {
+            if (workerTag == 0 || mineralTag == 0) return Array.Empty<SC2APIProtocol.Action>();
+            var workerLabel = _miningManager.WorkerLabelService?.GetLabel(workerTag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMANDa] phase=CCA_RECOVERY worker={workerTag} Label={workerLabel} command=SMART targetTag={mineralTag} queued=true");
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.SMART,
+                TargetUnitTag = mineralTag,
+                QueueCommand = true
+            };
+            command.UnitTags.Add(workerTag);
+            return new[] { new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = command } } };
         }
 
         public void OnEnd(ResponseObservation observation, Result result)

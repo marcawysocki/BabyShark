@@ -66,6 +66,8 @@ namespace BabySharkBot.Services
                     else
                     {
                         // Just move to the location
+                        var workerLabel = _miningManager.WorkerLabelService?.GetLabel(_selectedWorkerTag) ?? string.Empty;
+                        Console.WriteLine($"[MINING COMMANDf] phase=JIT_PREPOSITION worker={_selectedWorkerTag} Label={workerLabel} command=MOVE pos=({buildPos.X:F2},{buildPos.Y:F2}) queued=false");
                         var moveCmd = new ActionRawUnitCommand
                         {
                             AbilityId = 16, // MOVE
