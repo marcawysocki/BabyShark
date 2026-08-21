@@ -65,7 +65,7 @@ namespace BabySharkBot.Managers
         private int _pauseUntilFrame = -1;
         private bool _forceCcaOnce = false;
         private bool _handoffBreakTriggered = false;
-        private bool _startingTeamsAssigned = false;
+
         private bool _cargoReturnDebugBreakTriggered = false;
         private int _lastReachabilityConsoleFrame = -999999;
         private int _lastCargoEvaluationConsoleFrame = -999999;
@@ -86,6 +86,8 @@ namespace BabySharkBot.Managers
         private readonly HashSet<ulong> _cargoReturnSequenceActive = new HashSet<ulong>();
         private readonly Dictionary<ulong, CargoReturnSequenceState> _pendingCargoReturnSequences = new Dictionary<ulong, CargoReturnSequenceState>();
         private readonly Dictionary<ulong, ulong> _defaultSpeedMiningMineralByWorker = new Dictionary<ulong, ulong>();
+        private readonly Dictionary<ulong, bool> _assignedWorkerCarryingState = new Dictionary<ulong, bool>();
+        private readonly HashSet<string> _firstCycleRoleThreeMineralWalks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private sealed class CargoReturnSequenceState
         {
@@ -218,6 +220,7 @@ namespace BabySharkBot.Managers
 
         public void OnStart(ResponseGameInfo gameInfo, ResponseData data, ResponsePing pingResponse, ResponseObservation observation, uint playerId, String opponentId)
         {
+            _firstCycleRoleThreeMineralWalks.Clear();
             _currentFrame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
             var snapshot = Globals.CurrentObservation;
             var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
@@ -308,7 +311,7 @@ namespace BabySharkBot.Managers
             {
                 if (worker == null || worker.UnitTag == 0) continue;
                 var label = worker.FinalLabel ?? worker.Label ?? worker.StartLabel;
-                if (!string.IsNullOrWhiteSpace(label))
+                if (!string.IsNullOrWhiteSpace(label) && !labelsByTag.ContainsKey(worker.UnitTag))
                 {
                     labelsByTag[worker.UnitTag] = label;
                 }
@@ -319,7 +322,12 @@ namespace BabySharkBot.Managers
                 var tag = labelByTag.Key;
                 var label = labelByTag.Value;
                 var workerEntry = storedWorkers?.FirstOrDefault(worker => worker != null && worker.UnitTag == tag);
-                var displayLabel = FormatWorkerDisplayLabel(workerEntry, label, storedWorkers);
+                var liveAssignmentWorker = ResolveBuildGreedyAssignments(startIndex)
+                    .SelectMany(assignment => assignment.Workers ?? new List<WorkerEntryDto>())
+                    .FirstOrDefault(worker => worker != null && worker.UnitTag == tag);
+                var displayWorker = liveAssignmentWorker ?? workerEntry;
+                var displayLabel = FormatWorkerDisplayLabel(displayWorker, label, storedWorkers);
+                var displayColor = ResolveWorkerDisplayColor(tag, label, startIndex);
                 Vector2Dto position = null;
 
                 if (snapshot?.SelfUnits != null && snapshot.SelfUnits.TryGetValue(tag, out var entry))
@@ -340,8 +348,44 @@ namespace BabySharkBot.Managers
                     X = position.X,
                     Y = position.Y,
                     Z = position.Z + 0.5f
-                }, ProcessVisableUnits.GetFinalLabelColor(label), 12);
+                }, displayColor, 12);
             }
+        }
+
+        private Color ResolveWorkerDisplayColor(ulong workerTag, string label, int startIndex)
+        {
+            var assignedWorkerEntry = ResolveBuildGreedyAssignments(startIndex)
+                .SelectMany(assignment => assignment.Workers ?? new List<WorkerEntryDto>())
+                .FirstOrDefault(worker => worker != null && worker.UnitTag == workerTag);
+            var storedWorker = GetStoredWorkersForStart(startIndex)
+                ?.FirstOrDefault(worker => worker != null && worker.UnitTag == workerTag);
+            var startLabel = assignedWorkerEntry?.StartLabel
+                ?? assignedWorkerEntry?.Label
+                ?? storedWorker?.StartLabel
+                ?? storedWorker?.Label;
+            var assignedWorkerCount = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)?.Count ?? 0;
+            if (assignedWorkerCount == 12)
+            {
+                var assignedWorker = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                    ?.FirstOrDefault(worker => worker != null && worker.UnitID == workerTag);
+                var target = assignedWorker?.MiningTargets?.ElementAtOrDefault(assignedWorker.Mti);
+                if (!string.IsNullOrWhiteSpace(target?.ToResourceLabel)
+                    && target.ToResourceLabel.Length == 2)
+                {
+                    var teamColor = TeamColorService.GetColorByPrefix(target.ToResourceLabel.Substring(0, 1));
+                    if (target.ToResourceLabel.EndsWith("A", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return teamColor;
+                    }
+
+                    if (target.ToResourceLabel.EndsWith("B", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new Color { R = 255, G = 255, B = 255 };
+                    }
+                }
+            }
+
+            return ProcessVisableUnits.GetFinalLabelColor(label);
         }
 
         private static string FormatWorkerDisplayLabel(WorkerEntryDto worker, string finalLabel, List<WorkerEntryDto> storedWorkers)
@@ -465,83 +509,13 @@ namespace BabySharkBot.Managers
             return actions;
         }
 
-        private void AssignStartingTeams(int startIndex, List<WorkerEntryDto> liveWorkers)
-        {
-            if (_startingTeamsAssigned || _mapData == null || liveWorkers == null || liveWorkers.Count == 0)
-            {
-                return;
-            }
-
-            if (Settings.WorkerCount != 8 && Settings.WorkerCount != 12)
-            {
-                return;
-            }
-
-            var orderedMinerals = _mapData.SecondaryOrderedMainMinerals != null
-                && _mapData.SecondaryOrderedMainMinerals.Count > startIndex
-                && _mapData.SecondaryOrderedMainMinerals[startIndex] != null
-                && _mapData.SecondaryOrderedMainMinerals[startIndex].Count > 0
-                ? _mapData.SecondaryOrderedMainMinerals[startIndex]
-                    .Where(mineral => mineral != null)
-                    .OrderBy(mineral => mineral.Index)
-                    .ToList()
-                : (_mapData.OrderedMainMinerals != null && _mapData.OrderedMainMinerals.Count > startIndex
-                    ? _mapData.OrderedMainMinerals[startIndex]
-                        .Where(mineral => mineral != null)
-                        .OrderBy(mineral => mineral.Index)
-                        .ToList()
-                    : null);
-
-            var mineralCom = _mapData.SecondaryMineralCenterOfMass != null
-                && _mapData.SecondaryMineralCenterOfMass.Count > startIndex
-                && _mapData.SecondaryMineralCenterOfMass[startIndex] != null
-                ? _mapData.SecondaryMineralCenterOfMass[startIndex]
-                : (_mapData.MineralCenterOfMass != null && _mapData.MineralCenterOfMass.Count > startIndex
-                    ? _mapData.MineralCenterOfMass[startIndex]
-                    : null);
-
-            if (orderedMinerals == null || mineralCom == null)
-            {
-                return;
-            }
-
-            var workerTuples = liveWorkers
-                .Where(w => w?.Position != null && w.UnitTag != 0)
-                .Select(w => (w.UnitTag, w.Position.X, w.Position.Y, w.Position.Z, w.UnitType))
-                .ToList();
-            var startingWorkers = WorkerLabelChainHelper.BuildGreedyWorkerEntries(workerTuples, mineralCom, _workerLabelService);
-            if (startingWorkers.Count != Settings.WorkerCount)
-            {
-                return;
-            }
-
-            _startingTeamsAssigned = _mapData.TeamPatchAssignments.Count > startIndex
-                && _mapData.TeamPatchAssignments[startIndex] != null
-                && _mapData.TeamPatchAssignments[startIndex].Count > 0;
-        }
-
         private void RegisterCurrentSpawnLabels(int startIndex, List<WorkerEntryDto> liveWorkers)
         {
+            // BuildManager owns worker labels. MiningManager only consumes the
+            // current-spawn assignment records and registers resource visuals.
             if (_mapData == null || startIndex < 0)
             {
                 return;
-            }
-
-            AssignStartingTeams(startIndex, liveWorkers);
-
-            var storedWorkers = GetStoredWorkersForStart(startIndex);
-            foreach (var storedWorker in storedWorkers ?? new List<WorkerEntryDto>())
-            {
-                if (storedWorker?.Position == null) continue;
-                var label = storedWorker.FinalLabel ?? storedWorker.Label ?? storedWorker.StartLabel;
-                if (string.IsNullOrWhiteSpace(label)) continue;
-
-                var liveWorker = liveWorkers?.Where(w => w?.Position != null)
-                    .OrderBy(w => DistanceSquared(w.Position, storedWorker.Position))
-                    .FirstOrDefault();
-                if (liveWorker == null || liveWorker.UnitTag == 0) continue;
-
-                _workerLabelService.SetLabel(label, liveWorker.UnitTag);
             }
 
             MapLabelRegistrationHelper.RegisterLabels(
@@ -597,6 +571,7 @@ namespace BabySharkBot.Managers
                 .Select(worker => ToObservedUnit(worker))
                 .ToList();
             var buildAssignments = ResolveBuildGreedyAssignments(currentStartIndex);
+            UpdateAssignedWorkerObservationState(currentStartIndex, snapshot);
             RefreshBuildPlanLiveTags(buildAssignments, liveWorkers, currentStartIndex);
             var currentAssignments = ResolveBuildGreedyAssignments(currentStartIndex);
             var relativeFrame = Settings.GetRelativeFrame(_currentFrame);
@@ -723,16 +698,31 @@ namespace BabySharkBot.Managers
             {
                 if (assignment?.Workers == null || assignment.Minerals?.Count < 2) continue;
                 
-                // FIX: Resolve mineralA as the NEAR mineral (IsNear=true) and mineralB as FAR.
-                var mineralA = assignment.Minerals.FirstOrDefault(m => m.IsNear) ?? assignment.Minerals[0];
-                var mineralB = assignment.Minerals.FirstOrDefault(m => !m.IsNear && m != mineralA) ?? assignment.Minerals.Skip(1).FirstOrDefault() ?? mineralA;
+                var teamPrefix = assignment.TeamNumber switch
+                {
+                    1 => "T",
+                    2 => "S",
+                    3 => "B",
+                    4 => "Y",
+                    _ => string.Empty
+                };
+                var mineralA = assignment.Minerals.FirstOrDefault(mineral =>
+                    string.Equals(mineral.FinalLabel, $"{teamPrefix}A", StringComparison.OrdinalIgnoreCase));
+                var mineralB = assignment.Minerals.FirstOrDefault(mineral =>
+                    string.Equals(mineral.FinalLabel, $"{teamPrefix}B", StringComparison.OrdinalIgnoreCase));
+                if (mineralA == null || mineralB == null)
+                {
+                    Console.WriteLine($"[MINING TARGET] JIT state skipped team={assignment.TeamId}: missing canonical {teamPrefix}A/{teamPrefix}B labels.");
+                    continue;
+                }
                 
                 foreach (var worker in assignment.Workers)
                 {
                     if (worker.UnitTag == 0) continue;
 
                     var label = worker.FinalLabel ?? worker.Label ?? string.Empty;
-                    var startsOnA = label.EndsWith("1") || label.EndsWith("3");
+                    var startsOnA = label.EndsWith("1", StringComparison.OrdinalIgnoreCase)
+                        || label.EndsWith("3", StringComparison.OrdinalIgnoreCase);
 
                     if (!_jitWorkerStates.TryGetValue(worker.UnitTag, out var state))
                     {
@@ -776,10 +766,12 @@ namespace BabySharkBot.Managers
                     continue;
                 }
 
+                _assignedWorkerCarryingState.TryGetValue(assignedWorker.UnitID, out var wasAssignedWorkerCarrying);
                 assignedWorker.CurrentXY = observedWorker.Position;
                 assignedWorker.CurrentTargetUnitID = observedWorker.TargetUnitTag;
                 assignedWorker.CurrentAbilityID = (uint)(observedWorker.OrderAbilityIds?.FirstOrDefault() ?? 0);
                 assignedWorker.IsCarrying = observedWorker.IsCarrying;
+                _assignedWorkerCarryingState[assignedWorker.UnitID] = observedWorker.IsCarrying;
 
                 if (assignedWorker.MiningTargets.Count <= 1)
                 {
@@ -787,12 +779,12 @@ namespace BabySharkBot.Managers
                     continue;
                 }
 
-                if (observedWorker.WasCarrying && !observedWorker.IsCarrying)
+                if (wasAssignedWorkerCarrying && !observedWorker.IsCarrying)
                 {
                     var oldIndex = assignedWorker.Mti;
                     var oldCount = assignedWorker.MiningTargets.Count;
                     AdvanceAssignedWorkerTarget(assignedWorker);
-                    Console.WriteLine($"[ASSIGNED TARGET] worker={assignedWorker.UnitID} cargo-return mti={oldIndex}->{assignedWorker.Mti} targets={oldCount}->{assignedWorker.MiningTargets.Count} current={(assignedWorker.MiningTargets.ElementAtOrDefault(assignedWorker.Mti)?.ToResourceLabel ?? "<none>")}");
+                    Console.WriteLine($"[ASSIGNED TARGET] worker={assignedWorker.UnitID} cargo-return mti={oldIndex}->{assignedWorker.Mti} targets={oldCount}->{assignedWorker.MiningTargets.Count} current={(assignedWorker.MiningTargets.ElementAtOrDefault(assignedWorker.Mti)?.ToResourceLabel ?? "<none>")} carrying={wasAssignedWorkerCarrying}->{assignedWorker.IsCarrying}");
                 }
             }
         }
@@ -802,6 +794,13 @@ namespace BabySharkBot.Managers
             if (assignedWorker.MiningTargets.Count <= 1)
             {
                 assignedWorker.Mti = 0;
+                return;
+            }
+
+            if (assignedWorker.MiningTargets.Count == 2)
+            {
+                // The 12-worker A/B plan is a true cycle: A -> B -> A.
+                assignedWorker.Mti = assignedWorker.Mti == 0 ? 1 : 0;
                 return;
             }
 
@@ -856,7 +855,6 @@ namespace BabySharkBot.Managers
             }
 
             var rawTeamAssignments = ResolveBuildGreedyAssignments(startIndex);
-            UpdateAssignedWorkerObservationState(startIndex, snapshot);
             var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
                 ?? new List<AssignedWorkerDto>();
             var liveWorkers = snapshot.SelfUnits.Values
@@ -1168,6 +1166,7 @@ namespace BabySharkBot.Managers
             List<TeamPatchAssignmentDto> teamAssignments)
         {
             var actions = new List<SC2Action>();
+            var hatcheryReturnPredecessors = BuildHatcheryReturnPredecessors(assignedWorkers, liveWorkers);
             foreach (var assignedWorker in assignedWorkers ?? new List<AssignedWorkerDto>())
             {
                 var worker = liveWorkers.FirstOrDefault(candidate => candidate.Tag == assignedWorker.UnitID);
@@ -1182,6 +1181,14 @@ namespace BabySharkBot.Managers
                     continue;
                 }
 
+                if (assignedWorker.MiningTargets.Count == 2
+                    && IsRoleThree(assignedWorker.Role)
+                    && assignedWorker.Mti == 0
+                    && !HasTeamRoleOneCompleted(assignedWorker, assignedWorkers))
+                {
+                    continue;
+                }
+
                 var carrying = worker.IsCarrying;
                 var justPickedUp = carrying && worker.WasCarrying == false;
                 var justReturnedCargo = !carrying && worker.WasCarrying;
@@ -1191,8 +1198,10 @@ namespace BabySharkBot.Managers
                 {
                     if (justPickedUp)
                     {
+                        TryIssueFirstCycleRoleThreeMineralWalk(actions, assignedWorker, assignedWorkers, liveWorkers, target);
                         var returnPoint = target.ReturnPoint;
-                        if (townhallUnit != null && HasNonZeroPoint(returnPoint))
+                        if (townhallUnit != null && HasNonZeroPoint(returnPoint)
+                            && CanEnterHatcheryReturn(worker, assignedWorker, hatcheryReturnPredecessors, liveWorkers))
                         {
                             AddCargoReturnSequence(actions, worker, returnPoint, townhallUnit.Tag);
                         }
@@ -1200,7 +1209,8 @@ namespace BabySharkBot.Managers
                     else if (!hasActiveOrder)
                     {
                         var returnPoint = target.ReturnPoint;
-                        if (townhallUnit != null && HasNonZeroPoint(returnPoint))
+                        if (townhallUnit != null && HasNonZeroPoint(returnPoint)
+                            && CanEnterHatcheryReturn(worker, assignedWorker, hatcheryReturnPredecessors, liveWorkers))
                         {
                             AddCargoReturnSequence(actions, worker, returnPoint, townhallUnit.Tag);
                         }
@@ -1226,20 +1236,158 @@ namespace BabySharkBot.Managers
             return actions;
         }
 
+        private void TryIssueFirstCycleRoleThreeMineralWalk(
+            List<SC2Action> actions,
+            AssignedWorkerDto roleOne,
+            List<AssignedWorkerDto> assignedWorkers,
+            List<SnapshotUnit> liveWorkers,
+            MiningTargetDto roleOneTarget)
+        {
+            if (assignedWorkers?.Count != 12
+                || roleOne == null
+                || string.IsNullOrWhiteSpace(roleOne.Role)
+                || !roleOne.Role.EndsWith("1", StringComparison.OrdinalIgnoreCase)
+                || roleOne.Mti != 0
+                || roleOneTarget == null
+                || !roleOneTarget.ToResourceLabel.EndsWith("A", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var teamPrefix = roleOne.Role.Substring(0, 1);
+            if (!_firstCycleRoleThreeMineralWalks.Add(teamPrefix))
+            {
+                return;
+            }
+
+            var roleThree = assignedWorkers.FirstOrDefault(worker =>
+                worker != null
+                && string.Equals(worker.Role, $"{teamPrefix}3", StringComparison.OrdinalIgnoreCase));
+            var roleThreeTarget = roleThree?.MiningTargets?.ElementAtOrDefault(roleThree.Mti);
+            var roleThreeLive = roleThree == null
+                ? null
+                : liveWorkers?.FirstOrDefault(worker => worker.Tag == roleThree.UnitID);
+            if (roleThree == null || roleThreeTarget == null || roleThreeLive == null
+                || roleThreeTarget.ResourceUnitId == 0
+                || !roleThreeTarget.ToResourceLabel.EndsWith("A", StringComparison.OrdinalIgnoreCase))
+            {
+                _firstCycleRoleThreeMineralWalks.Remove(teamPrefix);
+                return;
+            }
+
+            AddAction(actions, IssueSmart(roleThreeLive, roleThreeTarget.ResourceUnitId, false));
+            Console.WriteLine($"[FIRST CYCLE MINERAL WALK] leader={roleOne.Role}:{roleOne.UnitID} bumper={roleThree.Role}:{roleThree.UnitID} target={roleThreeTarget.ToResourceLabel} before-leader-hatchery-return=true");
+        }
+
+        private Dictionary<ulong, ulong> BuildHatcheryReturnPredecessors(
+            List<AssignedWorkerDto> assignedWorkers,
+            List<SnapshotUnit> liveWorkers)
+        {
+            var predecessors = new Dictionary<ulong, ulong>();
+            var candidates = (assignedWorkers ?? new List<AssignedWorkerDto>())
+                .Select(assigned => new
+                {
+                    Assigned = assigned,
+                    Live = liveWorkers?.FirstOrDefault(worker => worker.Tag == assigned.UnitID),
+                    Target = assigned?.MiningTargets?.ElementAtOrDefault(assigned.Mti)
+                })
+                .Where(item => item.Assigned != null && item.Live != null && HasNonZeroPoint(item.Target?.ReturnPoint))
+                .OrderBy(item => ReturnRoleRank(item.Assigned.Role))
+                .ThenBy(item => item.Assigned.UnitID)
+                .ToList();
+
+            foreach (var candidate in candidates)
+            {
+                var predecessor = candidates.FirstOrDefault(previous =>
+                    previous.Assigned.UnitID != candidate.Assigned.UnitID
+                    && ReturnRoleRank(previous.Assigned.Role) <= ReturnRoleRank(candidate.Assigned.Role)
+                    && DistanceSquared(previous.Target.ReturnPoint, candidate.Target.ReturnPoint) <= 0.35f * 0.35f);
+                if (predecessor != null)
+                {
+                    predecessors[candidate.Assigned.UnitID] = predecessor.Assigned.UnitID;
+                }
+            }
+
+            return predecessors;
+        }
+
+        private bool CanEnterHatcheryReturn(
+            SnapshotUnit worker,
+            AssignedWorkerDto assignedWorker,
+            Dictionary<ulong, ulong> predecessors,
+            List<SnapshotUnit> liveWorkers)
+        {
+            if (worker == null || assignedWorker == null || predecessors == null
+                || !predecessors.TryGetValue(assignedWorker.UnitID, out var predecessorTag))
+            {
+                return true;
+            }
+
+            var predecessor = liveWorkers?.FirstOrDefault(candidate => candidate.Tag == predecessorTag);
+            var returnPoint = assignedWorker.MiningTargets?.ElementAtOrDefault(assignedWorker.Mti)?.ReturnPoint;
+            var predecessorHoldingReturn = predecessor != null
+                && predecessor.IsCarrying
+                && (returnPoint == null || DistanceSquared(new Vector2Dto(predecessor.Pos.X, predecessor.Pos.Y, predecessor.Pos.Z), returnPoint) <= 0.75f * 0.75f);
+            if (predecessorHoldingReturn)
+            {
+                Console.WriteLine($"[HATCHERY RETURN] worker={worker.Tag} role={assignedWorker.Role} held behind predecessor={predecessorTag} policy=leader-then-bumper");
+                return false;
+            }
+
+            return true;
+        }
+
+        private static int ReturnRoleRank(string role)
+        {
+            if (string.IsNullOrWhiteSpace(role)) return 99;
+            return role.EndsWith("1", StringComparison.OrdinalIgnoreCase) ? 1
+                : role.EndsWith("3", StringComparison.OrdinalIgnoreCase) ? 2
+                : role.EndsWith("2", StringComparison.OrdinalIgnoreCase) ? 3
+                : 4;
+        }
+
         private void AddCargoReturnSequence(List<SC2Action> actions, SnapshotUnit worker, Vector2Dto returnPoint, ulong townhallTag)
         {
-            AddAction(actions, IssueStop(worker));
             AddAction(actions, IssueMoveToPoint(worker, returnPoint, true));
-            AddAction(actions, IssueSmart(worker, townhallTag, true));
-            Console.WriteLine($"[MINING TRANSITION] worker={worker.Tag} Label={worker.Label} return-sequence=STOP,queued-MOVE,queued-SMART");
+            AddAction(actions, IssueHarvestReturn(worker.Tag, true));
+
+            Console.WriteLine($"[MINING TRANSITION Return Cargo] worker={worker.Tag} Label={worker.Label} return-sequence=queued-MOVE,queued-HARVEST_RETURN");
         }
 
         private void AddHarvestSequence(List<SC2Action> actions, SnapshotUnit worker, Vector2Dto harvestPoint, ulong mineralTag)
         {
-            AddAction(actions, IssueStop(worker));
-            AddAction(actions, IssueMoveToPoint(worker, harvestPoint, false));
-            AddAction(actions, IssueSmart(worker, mineralTag, true));
-            Console.WriteLine($"[MINING TRANSITION] worker={worker.Tag} Label={worker.Label} harvest-sequence=STOP,MOVE,queued-SMART");
+            if (worker?.Tag == 0 || mineralTag == 0)
+            {
+                return;
+            }
+
+            // During steady-state mining, let the mineral-target SMART command
+            // own worker pathing. Do not inject STOP/MOVE corrections that make
+            // workers path around one another and lose their mining momentum.
+            AddAction(actions, IssueSmart(worker, mineralTag, false));
+            Console.WriteLine($"[MINING TRANSITION2] worker={worker.Tag} Label={worker.Label} harvest-sequence=direct-SMART worker-aware-pass-through=true");
+        }
+
+        private static bool IsRoleThree(string role)
+        {
+            return !string.IsNullOrWhiteSpace(role)
+                && role.Length == 2
+                && role[1] == '3'
+                && (role[0] == 'T' || role[0] == 'S' || role[0] == 'B' || role[0] == 'Y');
+        }
+
+        private static bool HasTeamRoleOneCompleted(AssignedWorkerDto roleThree, List<AssignedWorkerDto> assignedWorkers)
+        {
+            if (roleThree == null || assignedWorkers == null || string.IsNullOrWhiteSpace(roleThree.Role))
+            {
+                return false;
+            }
+
+            var teamPrefix = roleThree.Role.Substring(0, 1);
+            var roleOne = assignedWorkers.FirstOrDefault(worker =>
+                worker != null
+                && string.Equals(worker.Role, $"{teamPrefix}1", StringComparison.OrdinalIgnoreCase));
+            return roleOne != null && roleOne.Mti > 0;
         }
 
         private static bool IsMiningOrder(int abilityId)
@@ -1288,7 +1436,7 @@ namespace BabySharkBot.Managers
                     && pendingSequence.CreatedFrame < _currentFrame)
                 {
                     IssueQueuedCargoReturnContinuation(actions, worker.Tag, pendingSequence);
-                    Console.WriteLine($"[MINING CARGO] frame={_currentFrame} worker={worker.Tag} observedWorkers={liveWorkers.Count} configuredWorkers={Settings.WorkerCount} townhall={pendingSequence.TownhallTag} stage=MOVE queued=false; stage=SMART queued=true");
+                    Console.WriteLine($"[MINING CARGO] frame={_currentFrame} worker={worker.Tag} observedWorkers={liveWorkers.Count} configuredWorkers={Settings.WorkerCount} townhall={pendingSequence.TownhallTag} stage=MOVE queued=false; stage=HARVEST_RETURN queued=true");
                     _pendingCargoReturnSequences.Remove(worker.Tag);
                     _previousCarryingState[worker.Tag] = carrying;
                     continue;
@@ -1372,7 +1520,7 @@ namespace BabySharkBot.Managers
                     && pendingSequence.CreatedFrame < _currentFrame)
                 {
                     IssueQueuedCargoReturnContinuation(actions, worker.Tag, pendingSequence);
-                    Console.WriteLine($"[MINING CARGO] frame={_currentFrame} worker={worker.Tag} observedWorkers={liveWorkers.Count} configuredWorkers={Settings.WorkerCount} townhall={pendingSequence.TownhallTag} stage=MOVE queued=false; stage=SMART queued=true");
+                    Console.WriteLine($"[MINING CARGO] frame={_currentFrame} worker={worker.Tag} observedWorkers={liveWorkers.Count} configuredWorkers={Settings.WorkerCount} townhall={pendingSequence.TownhallTag} stage=MOVE queued=false; stage=HARVEST_RETURN queued=true");
                     _pendingCargoReturnSequences.Remove(worker.Tag);
                     _previousCarryingState[worker.Tag] = carrying;
                     continue;
@@ -1549,9 +1697,8 @@ namespace BabySharkBot.Managers
                 {
                     UnitCommand = new ActionRawUnitCommand
                     {
-                        AbilityId = (int)Abilities.SMART,
+                        AbilityId = (int)Abilities.HARVEST_RETURN,
                         UnitTags = { workerTag },
-                        TargetUnitTag = sequence.TownhallTag,
                         QueueCommand = true
                     }
                 }
@@ -1663,7 +1810,29 @@ namespace BabySharkBot.Managers
             };
         }
 
+        private static SC2Action? IssueHarvestReturn(ulong workerTag, bool queued)
+        {
+            if (workerTag == 0)
+            {
+                return null;
+            }
+
+            return new SC2Action
+            {
+                ActionRaw = new ActionRaw
+                {
+                    UnitCommand = new ActionRawUnitCommand
+                    {
+                        AbilityId = (int)Abilities.HARVEST_RETURN,
+                        UnitTags = { workerTag },
+                        QueueCommand = queued
+                    }
+                }
+            };
+        }
+
         private SC2Action? IssueSmart(SnapshotUnit worker, ulong targetTag, bool queued)
+
         {
             if (worker?.Tag == 0 || targetTag == 0) return null;
             return new SC2Action

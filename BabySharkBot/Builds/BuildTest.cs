@@ -3,6 +3,8 @@ using Sharky.DefaultBot;
 using System.Linq;
 using System;
 using System.IO;
+using System.Collections.Generic;
+using BabySharkBot.Setup;
 
 namespace Sharky.Builds.Zerg
 {
@@ -28,8 +30,17 @@ namespace Sharky.Builds.Zerg
         // TestNumber can be set externally if you want multiple runs labeled
         public int TestNumber { get; set; } = 6;
         int _prevMinerals = -1;
+        private int _initialMinerals = -1;
+        private int _initialFrame;
+        private bool _initialRecordWritten;
         string _logFile;
         readonly object _logLock = new object();
+        private bool _frameZeroContentsCaptured;
+        private int _frameZeroWorkerCount;
+        private readonly int[] _frameZeroMineralContents = new int[8];
+        private readonly Dictionary<ulong, int> _frameZeroContentsByTag = new Dictionary<ulong, int>();
+        private readonly Dictionary<string, int> _frameZeroContentsByPosition = new Dictionary<string, int>();
+        private bool _frameZeroObservationCaptured;
 
         public BuildTest(DefaultSharkyBot defaultSharkyBot)
             : base(defaultSharkyBot)
@@ -52,8 +63,8 @@ namespace Sharky.Builds.Zerg
 
                 if (!File.Exists(_logFile))
                 {
-                    // Header includes GameSeconds with millisecond precision
-                    File.WriteAllText(_logFile, "Test,TimestampUTC,GameSeconds,Minerals,Frame" + Environment.NewLine);
+                    // Header includes frame-zero worker count and canonical M[1]-M[8] contents.
+                    File.WriteAllText(_logFile, "Test,TimestampUTC,GameSeconds,Minerals,Frame,Worker.Count,M[1].content,M[2].content,M[3].content,M[4].content,M[5].content,M[6].content,M[7].content,M[8].content" + Environment.NewLine);
                 }
             }
             catch
@@ -83,11 +94,29 @@ namespace Sharky.Builds.Zerg
 
             // reset prev minerals at start of the build
             _prevMinerals = -1;
+            _initialMinerals = -1;
+            _initialFrame = 0;
+            _initialRecordWritten = false;
+            _frameZeroContentsCaptured = false;
+            _frameZeroObservationCaptured = false;
+            _frameZeroWorkerCount = 0;
+            Array.Clear(_frameZeroMineralContents, 0, _frameZeroMineralContents.Length);
+            _frameZeroContentsByTag.Clear();
+            _frameZeroContentsByPosition.Clear();
         }
 
         public override void OnFrame(ResponseObservation observation)
         {
             base.OnFrame(observation);
+
+            if (!_frameZeroObservationCaptured && MacroData != null && MacroData.Frame >= 0)
+            {
+                CaptureFrameZeroObservation(observation);
+            }
+            if (!_frameZeroContentsCaptured)
+            {
+                TryResolveFrameZeroMineralContents();
+            }
 
             // record mineral changes for spreadsheet:
             if (MacroData != null)
@@ -97,9 +126,10 @@ namespace Sharky.Builds.Zerg
 
                 if (_prevMinerals == -1)
                 {
-                    // initial seed value (record the starting minerals once)
+                    // Buffer the initial row until frame-zero M[1]-M[8] contents are available.
                     _prevMinerals = currentMinerals;
-                    AppendMineralRecord(currentMinerals, currentFrame);
+                    _initialMinerals = currentMinerals;
+                    _initialFrame = currentFrame;
                 }
                 else if (currentMinerals != _prevMinerals)
                 {
@@ -107,6 +137,12 @@ namespace Sharky.Builds.Zerg
                     AppendMineralRecord(currentMinerals, currentFrame);
                     _prevMinerals = currentMinerals;
                 }
+            }
+
+            if (!_initialRecordWritten && _frameZeroContentsCaptured && _initialMinerals >= 0)
+            {
+                AppendMineralRecord(_initialMinerals, _initialFrame);
+                _initialRecordWritten = true;
             }
 
             // Early stop: when minerals exceed 275, trigger the build at the stored Step5 location (once)
@@ -235,7 +271,10 @@ namespace Sharky.Builds.Zerg
                 // ignore and use fallback
             }
 
-            var line = $"{TestNumber},{DateTime.UtcNow:o},{gameSeconds:F3},{minerals},{frame}{Environment.NewLine}";
+            var contents = _frameZeroContentsCaptured
+                ? $",{_frameZeroWorkerCount},{string.Join(",", _frameZeroMineralContents)}"
+                : ",,,,,,,,,";
+            var line = $"{TestNumber},{DateTime.UtcNow:o},{gameSeconds:F3},{minerals},{frame}{contents}{Environment.NewLine}";
 
             try
             {
@@ -248,6 +287,58 @@ namespace Sharky.Builds.Zerg
             {
                 // swallow logging exceptions to avoid interfering with runtime
             }
+        }
+
+        private void CaptureFrameZeroObservation(ResponseObservation observation)
+        {
+            _frameZeroObservationCaptured = true;
+            var rawUnits = observation?.Observation?.RawData?.Units;
+            if (rawUnits == null)
+            {
+                return;
+            }
+
+            _frameZeroWorkerCount = rawUnits.Count(unit => unit != null && unit.Alliance == Alliance.Self && unit.UnitType == (uint)UnitTypes.ZERG_DRONE);
+            foreach (var unit in rawUnits.Where(unit => unit != null && unit.Alliance == Alliance.Neutral && unit.HasMineralContents && unit.Tag != 0))
+            {
+                _frameZeroContentsByTag[unit.Tag] = unit.MineralContents;
+                _frameZeroContentsByPosition[$"{unit.Pos.X:F2},{unit.Pos.Y:F2}"] = unit.MineralContents;
+            }
+        }
+
+        private void TryResolveFrameZeroMineralContents()
+        {
+            var mapData = Globals.CurrentMapData;
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            if (mapData?.OrderedMainMinerals == null || startIndex < 0 || startIndex >= mapData.OrderedMainMinerals.Count)
+            {
+                return;
+            }
+
+            var orderedMinerals = mapData.OrderedMainMinerals[startIndex]
+                .Where(mineral => mineral != null && mineral.Index >= 1 && mineral.Index <= 8)
+                .OrderBy(mineral => mineral.Index)
+                .ToList();
+            if (orderedMinerals.Count != 8)
+            {
+                return;
+            }
+
+            var contents = new int[8];
+            foreach (var mineral in orderedMinerals)
+            {
+                if (!_frameZeroContentsByTag.TryGetValue(mineral.UnitTag, out var content)
+                    && (mineral.Position == null
+                        || !_frameZeroContentsByPosition.TryGetValue($"{mineral.Position.X:F2},{mineral.Position.Y:F2}", out content)))
+                {
+                    return;
+                }
+
+                contents[mineral.Index - 1] = content;
+            }
+
+            Array.Copy(contents, _frameZeroMineralContents, contents.Length);
+            _frameZeroContentsCaptured = true;
         }
 
         public override bool Transition(int frame)

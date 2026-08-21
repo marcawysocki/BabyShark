@@ -452,13 +452,19 @@ namespace BabySharkBot.Managers
                         }
 
                         var isInitial = assigned.MiningTargets.Count == 0;
-                        assigned.MiningTargets.Add(CreateMiningTarget(
+                        var miningTarget = CreateMiningTarget(
                             targetMineral,
                             targetMineral,
                             townhall,
                             townHallUnitId,
                             !isInitial,
-                            !isInitial));
+                            !isInitial);
+                        if (workerCount == 12 && HasNonZeroPoint(assignment.JitReturnPoint))
+                        {
+                            miningTarget.ReturnPoint = assignment.JitReturnPoint;
+                        }
+
+                        assigned.MiningTargets.Add(miningTarget);
                     }
 
                     assignedWorkers.Add(assigned);
@@ -505,6 +511,21 @@ namespace BabySharkBot.Managers
 
         private static IReadOnlyList<string> GetInstructionLabels(string role, int teamNumber, int workerCount)
         {
+            if (workerCount == 12)
+            {
+                if (string.IsNullOrWhiteSpace(role) || role.Length != 2)
+                {
+                    return Array.Empty<string>();
+                }
+
+                var teamPrefix = role.Substring(0, 1);
+                var roleNumber = role[1];
+                var startsOnA = roleNumber == '1' || roleNumber == '3';
+                return startsOnA
+                    ? new[] { $"{teamPrefix}A", $"{teamPrefix}B" }
+                    : new[] { $"{teamPrefix}B", $"{teamPrefix}A" };
+            }
+
             if (workerCount != 8)
             {
                 return Array.Empty<string>();
@@ -600,38 +621,9 @@ namespace BabySharkBot.Managers
                 return;
             }
 
-            var liveWorkers = snapshot.SelfUnits.Values
-                .Where(worker => worker != null && IsWorkerType(worker.UnitType) && worker.UnitTag != 0)
-                .ToList();
-
-            var mineralCom = Globals.CurrentMapData.MineralCenterOfMass != null
-                && Globals.CurrentMapData.MineralCenterOfMass.Count > startIndex
-                ? Globals.CurrentMapData.MineralCenterOfMass[startIndex]
-                : null;
-            var orderedMinerals = Globals.CurrentMapData.OrderedMainMinerals != null
-                && Globals.CurrentMapData.OrderedMainMinerals.Count > startIndex
-                ? Globals.CurrentMapData.OrderedMainMinerals[startIndex]
-                : null;
-
-            if (_workerLabelService != null && mineralCom != null && liveWorkers.Count > 0)
-            {
-                var workerTuples = liveWorkers.Select(worker =>
-                    (worker.UnitTag, worker.Position.X, worker.Position.Y, worker.Position.Z, worker.UnitType));
-                var startingWorkers = WorkerLabelChainHelper.BuildGreedyWorkerEntries(workerTuples, mineralCom, _workerLabelService);
-
-                if (orderedMinerals != null && startingWorkers.Count == liveWorkers.Count)
-                {
-                    TeamLabelRegistrationHelper.EnsureTeamLabelsForStart(
-                        Globals.CurrentMapData,
-                        startIndex,
-                        orderedMinerals,
-                        startingWorkers,
-                        mineralCom,
-                        _workerLabelService,
-                        Globals.CurrentMapData.TeamPatchAssignments);
-                }
-            }
-
+            // BuildGreedyMineralChainFromObservation is the sole worker-label and
+            // assignment writer. This method only registers resource visuals and
+            // consumes the already-built current-spawn assignments.
             MapLabelRegistrationHelper.RegisterLabels(
                 Globals.CurrentMapData,
                 startIndex,

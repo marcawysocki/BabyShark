@@ -147,7 +147,8 @@ namespace BabySharkBot
                 var ccaManager = new CcaManager(ccaService, _miningManager);
                 Managers.Add(ccaManager);
                 Managers.Add(ccaManager.DrawOnlyWrapper);
-                Console.WriteLine($"BabySharkAI: Registered CcaManager followed by DrawOnlyManager for post-build debug rendering.");
+                Managers.Add(new WorkerAwareCollisionManager());
+                Console.WriteLine($"BabySharkAI: Registered CcaManager, DrawOnlyManager, and post-CCA WorkerAwareCollisionManager (pass-through only).");
             }
             catch (Exception ex)
             {

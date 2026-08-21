@@ -1638,13 +1638,7 @@ namespace BabySharkBot.Setup
                     var newLabel = $"{prefix}1";
                     var oldLabel = closestWorker.Label;
 
-                    closestWorker.Label = newLabel;
-                    if (closestWorker.UnitTag != 0)
-                    {
-                        workerLabelService.SetLabel(newLabel, closestWorker.UnitTag);
-                    }
-
-                    Console.WriteLine($"Worker Initial Mining Assignment: {oldLabel} has been changed to {newLabel}");
+                    Console.WriteLine($"InitialMapData legacy worker assignment ignored: {oldLabel} -> {newLabel}; BuildManager owns worker labels.");
                     remainingWorkers.Remove(closestWorker);
                     assignedPrefixes.Add(prefix);
                     reservedMineralIndices?.Add(mineral.OriginalIndex);
@@ -1726,13 +1720,7 @@ namespace BabySharkBot.Setup
                     var newLabel = $"{prefix}2";
                     var oldLabel = assignment.Worker.Label;
 
-                    assignment.Worker.Label = newLabel;
-                    if (assignment.Worker.UnitTag != 0)
-                    {
-                       // workerLabelService.SetLabel(newLabel, assignment.Worker.UnitTag);
-                    }
-
-                    Console.WriteLine($"Worker Initial Mining Assignment: {oldLabel} has been changed to {newLabel}");
+                    Console.WriteLine($"InitialMapData legacy worker assignment ignored: {oldLabel} -> {newLabel}; BuildManager owns worker labels.");
                     totalAssignments++;
                 }
             }
@@ -1768,13 +1756,7 @@ namespace BabySharkBot.Setup
                     var newLabel = $"{phaseFourPrefixes[i]}3";
                     var oldLabel = worker.Label;
 
-                    worker.Label = newLabel;
-                    if (worker.UnitTag != 0)
-                    {
-                        workerLabelService.SetLabel(newLabel, worker.UnitTag);
-                    }
-
-                    Console.WriteLine($"Worker Initial Mining Assignment: {oldLabel} has been changed to {newLabel}");
+                    Console.WriteLine($"InitialMapData legacy worker assignment ignored: {oldLabel} -> {newLabel}; BuildManager owns worker labels.");
                 }
             }
         }

@@ -166,8 +166,9 @@ At frame 35, `CcaManager` captures final CCA actions, including the verified min
 
 After handoff, `BabySharkMiningManager.OnFrame()`:
 
-- refreshes worker and assignment state;
-- executes JIT mining rotations;
+- consumes BuildManager-owned worker labels, team assignments, and `MiningTarget` plans;
+- refreshes live unit tags and assignment state without rebuilding labels;
+- executes the current BuildManager target plan. The 12-worker plan uses two mineral targets per worker, cycles `Mti` between `A` and `B`, and holds role-3 workers at `A` until role 1 completes its first `A` turn; the 8-worker plan retains its three-target opening before steady-state switching;
 - handles idle-worker fallback;
 - updates mineral return-rate tracking;
 - draws debug state through the custom drawing services.

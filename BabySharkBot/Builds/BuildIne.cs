@@ -31,8 +31,17 @@ namespace BabySharkBot.Builds
         // --- logging fields for mineral sampling ---
         public int TestNumber { get; set; } = 6;
         int _prevMinerals = -1;
+        private int _initialMinerals = -1;
+        private int _initialFrame;
+        private bool _initialRecordWritten;
         string _logFile;
         readonly object _logLock = new object();
+        private bool _frameZeroContentsCaptured;
+        private int _frameZeroWorkerCount;
+        private readonly int[] _frameZeroMineralContents = new int[8];
+        private readonly Dictionary<ulong, int> _frameZeroContentsByTag = new Dictionary<ulong, int>();
+        private readonly Dictionary<string, int> _frameZeroContentsByPosition = new Dictionary<string, int>();
+        private bool _frameZeroObservationCaptured;
 
         public BuildIne(DefaultSharkyBot defaultBot) : base(defaultBot)
         {
@@ -54,7 +63,7 @@ namespace BabySharkBot.Builds
 
                 if (!File.Exists(_logFile))
                 {
-                    File.WriteAllText(_logFile, "Test,TimestampUTC,GameSeconds,Minerals,Frame" + Environment.NewLine);
+                    File.WriteAllText(_logFile, "Test,TimestampUTC,GameSeconds,Minerals,Frame,Worker.Count,M[1].content,M[2].content,M[3].content,M[4].content,M[5].content,M[6].content,M[7].content,M[8].content" + Environment.NewLine);
                 }
             }
             catch
@@ -72,6 +81,15 @@ namespace BabySharkBot.Builds
             _step5Target = null;
             _teamBuildSelected = false;
             _prevMinerals = -1;
+            _initialMinerals = -1;
+            _initialFrame = 0;
+            _initialRecordWritten = false;
+            _frameZeroContentsCaptured = false;
+            _frameZeroObservationCaptured = false;
+            _frameZeroWorkerCount = 0;
+            Array.Clear(_frameZeroMineralContents, 0, _frameZeroMineralContents.Length);
+            _frameZeroContentsByTag.Clear();
+            _frameZeroContentsByPosition.Clear();
 
             if (Settings.GetRelativeFrame(frame) == 0)
             {
@@ -278,6 +296,15 @@ namespace BabySharkBot.Builds
 
             SelectTeamBuild();
 
+            if (!_frameZeroObservationCaptured && MacroData != null && MacroData.Frame >= 0)
+            {
+                CaptureFrameZeroObservation(observation);
+            }
+            if (!_frameZeroContentsCaptured)
+            {
+                TryResolveFrameZeroMineralContents();
+            }
+
             // CCA owns the 8-worker STOP -> MOVE -> queued SMART opening.
             // BuildIne only selects the build and manages macro production targets.
 
@@ -290,13 +317,20 @@ namespace BabySharkBot.Builds
                 if (_prevMinerals == -1)
                 {
                     _prevMinerals = currentMinerals;
-                    AppendMineralRecord(currentMinerals, currentFrame);
+                    _initialMinerals = currentMinerals;
+                    _initialFrame = currentFrame;
                 }
                 else if (currentMinerals != _prevMinerals)
                 {
-                    AppendMineralRecord(currentMinerals, currentFrame);
+                    AppendMineralRecord(currentMinerals, currentFrame, useFrameZeroContents: false);
                     _prevMinerals = currentMinerals;
                 }
+            }
+
+            if (!_initialRecordWritten && _frameZeroContentsCaptured && _initialMinerals >= 0)
+            {
+                AppendMineralRecord(_initialMinerals, _initialFrame, useFrameZeroContents: true);
+                _initialRecordWritten = true;
             }
 
             // --- Phase 1: Continuous drone morphing until desired count ---
@@ -335,7 +369,98 @@ namespace BabySharkBot.Builds
             return actions;
         }
 
-        private void AppendMineralRecord(int minerals, int frame)
+        private string BuildCurrentMineralContentsCsv()
+        {
+            var mapData = Globals.CurrentMapData;
+            var snapshot = Globals.CurrentObservation;
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var orderedMinerals = mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)?
+                .Where(mineral => mineral != null && mineral.Index >= 1 && mineral.Index <= 8)
+                .OrderBy(mineral => mineral.Index)
+                .ToList();
+            if (snapshot == null || orderedMinerals == null || orderedMinerals.Count != 8)
+            {
+                return ",,,,,,,,,";
+            }
+
+            var liveMinerals = snapshot.Minerals ?? new Dictionary<ulong, MineralDto>();
+            var contents = new int[8];
+            foreach (var mineral in orderedMinerals)
+            {
+                var liveMineral = liveMinerals.TryGetValue(mineral.UnitTag, out var byTag)
+                    ? byTag
+                    : snapshot.VisibleMinerals?.FirstOrDefault(candidate => candidate != null
+                        && candidate.Position != null
+                        && mineral.Position != null
+                        && Math.Abs(candidate.Position.X - mineral.Position.X) < 0.05f
+                        && Math.Abs(candidate.Position.Y - mineral.Position.Y) < 0.05f);
+                if (liveMineral == null)
+                {
+                    return ",,,,,,,,,";
+                }
+
+                contents[mineral.Index - 1] = liveMineral.MineralContents;
+            }
+
+            var workerCount = snapshot.AvailableWorkers?.Count
+                ?? snapshot.SelfUnits?.Values.Count(worker => worker != null && worker.UnitType == (uint)UnitTypes.ZERG_DRONE)
+                ?? 0;
+            return $",{workerCount},{string.Join(",", contents)}";
+        }
+
+        private void CaptureFrameZeroObservation(ResponseObservation observation)
+        {
+            _frameZeroObservationCaptured = true;
+            var rawUnits = observation?.Observation?.RawData?.Units;
+            if (rawUnits == null)
+            {
+                return;
+            }
+
+            _frameZeroWorkerCount = rawUnits.Count(unit => unit != null && unit.Alliance == Alliance.Self && unit.UnitType == (uint)UnitTypes.ZERG_DRONE);
+            foreach (var unit in rawUnits.Where(unit => unit != null && unit.Alliance == Alliance.Neutral && unit.HasMineralContents && unit.Tag != 0))
+            {
+                _frameZeroContentsByTag[unit.Tag] = unit.MineralContents;
+                _frameZeroContentsByPosition[$"{unit.Pos.X:F2},{unit.Pos.Y:F2}"] = unit.MineralContents;
+            }
+        }
+
+        private void TryResolveFrameZeroMineralContents()
+        {
+            var mapData = Globals.CurrentMapData;
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            if (mapData?.OrderedMainMinerals == null || startIndex < 0 || startIndex >= mapData.OrderedMainMinerals.Count)
+            {
+                return;
+            }
+
+            var orderedMinerals = mapData.OrderedMainMinerals[startIndex]
+                .Where(mineral => mineral != null && mineral.Index >= 1 && mineral.Index <= 8)
+                .OrderBy(mineral => mineral.Index)
+                .ToList();
+            if (orderedMinerals.Count != 8)
+            {
+                return;
+            }
+
+            var contents = new int[8];
+            foreach (var mineral in orderedMinerals)
+            {
+                if (!_frameZeroContentsByTag.TryGetValue(mineral.UnitTag, out var content)
+                    && (mineral.Position == null
+                        || !_frameZeroContentsByPosition.TryGetValue($"{mineral.Position.X:F2},{mineral.Position.Y:F2}", out content)))
+                {
+                    return;
+                }
+
+                contents[mineral.Index - 1] = content;
+            }
+
+            Array.Copy(contents, _frameZeroMineralContents, contents.Length);
+            _frameZeroContentsCaptured = true;
+        }
+
+        private void AppendMineralRecord(int minerals, int frame, bool useFrameZeroContents)
         {
             if (string.IsNullOrEmpty(_logFile)) return;
 
@@ -349,7 +474,10 @@ namespace BabySharkBot.Builds
             }
             catch {}
 
-            var line = $"{TestNumber},{DateTime.UtcNow:o},{gameSeconds:F3},{minerals},{frame}{Environment.NewLine}";
+            var contents = useFrameZeroContents
+                ? $",{_frameZeroWorkerCount},{string.Join(",", _frameZeroMineralContents)}"
+                : BuildCurrentMineralContentsCsv();
+            var line = $"{TestNumber},{DateTime.UtcNow:o},{gameSeconds:F3},{minerals},{frame}{contents}{Environment.NewLine}";
 
             try
             {

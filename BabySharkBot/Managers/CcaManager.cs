@@ -107,10 +107,18 @@ namespace BabySharkBot.Managers
                             continue;
                         }
 
-                        var label = _miningManager.WorkerLabelService?.GetLabel(tag) ?? string.Empty;
-                        worker.Label = label;
-                        worker.StartLabel = label;
-                        worker.FinalLabel = label;
+                        var assignedWorker = mapData.TeamPatchAssignments?
+                            .ElementAtOrDefault(startIndex)?
+                            .SelectMany(assignment => assignment.Workers ?? new List<WorkerEntryDto>())
+                            .FirstOrDefault(assigned => assigned != null && assigned.UnitTag == tag);
+                        if (assignedWorker == null)
+                        {
+                            continue;
+                        }
+
+                        worker.Label = assignedWorker.FinalLabel;
+                        worker.StartLabel = assignedWorker.StartLabel;
+                        worker.FinalLabel = assignedWorker.FinalLabel;
                         liveWorkers.Add(worker);
                     }
                 }

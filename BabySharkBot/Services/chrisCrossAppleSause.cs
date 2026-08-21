@@ -100,7 +100,7 @@ namespace BabySharkBot.Services
                     }
                     commands.AddRange(MoveTo(liveWorker.UnitTag, movePoint));
 
-                    if (relativeFrame == 15)
+                    if (relativeFrame == 15 && !IsRoleThree(worker.FinalLabel ?? worker.Label))
                     {
                         var mineralTag = ResolveLiveMineralTag(target, Globals.CurrentObservation);
                         if (mineralTag != 0)
@@ -112,6 +112,14 @@ namespace BabySharkBot.Services
             }
 
             return commands;
+        }
+
+        private static bool IsRoleThree(string label)
+        {
+            return !string.IsNullOrWhiteSpace(label)
+                && label.Length == 2
+                && label[1] == '3'
+                && (label[0] == 'T' || label[0] == 'S' || label[0] == 'B' || label[0] == 'Y');
         }
 
         private static OrderedMineral ResolveInitialTarget(WorkerEntryDto worker, TeamPatchAssignmentDto assignment)

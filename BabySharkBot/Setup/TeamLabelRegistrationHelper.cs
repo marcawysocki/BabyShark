@@ -417,6 +417,11 @@ namespace BabySharkBot.Setup
 
         }
 
+        private static string GetMineralDisplayLabel(OrderedMineral mineral)
+        {
+            return mineral == null ? "<missing>" : $"{mineral.Index}-{mineral.FinalLabel}";
+        }
+
         private static string FormatMineralAssignmentLabel(OrderedMineral mineral)
         {
             if (mineral == null || string.IsNullOrWhiteSpace(mineral.FinalLabel))
@@ -515,6 +520,8 @@ namespace BabySharkBot.Setup
 
                 AssignFinalLabel(t2, "T2", workerLabelService);
                 AssignFinalLabel(t1, "T1", workerLabelService);
+                var t2Target = m1IsB ? m1 : bMineral;
+                Console.WriteLine($"TeamLabelRegistrationHelper: Teal M[1]={m1?.FinalLabel ?? "<missing>"}; T2={t2.StartLabel}->T2 target={GetMineralDisplayLabel(t2Target)}; T1={t1.StartLabel}->T1 target={GetMineralDisplayLabel(t1Target)}; T3 is remaining worker.");
                 var t3 = teamWorkers.FirstOrDefault(worker => worker != t2 && worker != t1);
                 if (t3 != null)
                 {
@@ -931,66 +938,18 @@ namespace BabySharkBot.Setup
             MawBaseLocationData mapData,
             int startIndex)
         {
-            var assignment = TeamColorService.GetAssignmentForNewWorker(currentWorkerCount);
-            var label = $"{assignment.prefix}{assignment.workerNum}";
-            workerLabelService.SetLabel(label, unitTag);
-
-            // If this is a 3rd worker joining an 8-worker team, transition existing workers
-            if (assignment.workerNum == 3 && currentWorkerCount >= 8 && currentWorkerCount <= 11)
-            {
-                TransitionExistingTeamTo12WorkerColor(
-                    assignment.pairIndex, 
-                    currentWorkerCount + 1, 
-                    workerLabelService, 
-                    mapData, 
-                    startIndex);
-            }
-
-            var entry = new WorkerEntryDto
-            {
-                UnitTag = unitTag,
-                Position = position,
-                Label = label,
-                StartLabel = label,
-                FinalLabel = label
-            };
-
-            Console.WriteLine($"AssignDynamicWorker: Worker {label} (tag {unitTag}) " +
-                $"assigned at count {currentWorkerCount + 1}. Pink={assignment.isPink}");
-
-            return entry;
+            // BuildManager owns all worker labels. A worker-count change must
+            // rebuild the current-spawn assignment instead of using this legacy
+            // incremental relabeling path.
+            return null;
         }
+
+
 
         /// <summary>
         /// When a 3rd worker joins, existing workers 1-2 on that team change from 
         /// 8-worker color to 12-worker color (e.g., G1→T1, G2→T2).
         /// </summary>
-        private static void TransitionExistingTeamTo12WorkerColor(
-            int pairIndex,
-            int newTotalCount,
-            WorkerLabelService workerLabelService,
-            MawBaseLocationData mapData,
-            int startIndex)
-        {
-            var meta = TeamColorService.GetTeamMeta(pairIndex);
-            var oldPrefix = meta.prefix8;
-            var newPrefix = meta.prefix12;
-
-            // Find workers with old prefix and update their labels
-            var allLabels = workerLabelService.GetAllLabels();
-            foreach (var kvp in allLabels)
-            {
-                if (kvp.Key.StartsWith(oldPrefix))
-                {
-                    var suffix = kvp.Key.Substring(oldPrefix.Length);
-                    var newLabel = $"{newPrefix}{suffix}";
-                    workerLabelService.RemoveLabel(kvp.Key);
-                    workerLabelService.SetLabel(newLabel, kvp.Value);
-                    Console.WriteLine($"TransitionExistingTeamTo12WorkerColor: Re-labeled {kvp.Key} to {newLabel} (tag {kvp.Value})");
-                }
-            }
-        }
-
         private static WorkerEntryDto? FindClosestWorkerToMineral(List<WorkerEntryDto> workers, OrderedMineral mineral)
         {
             if (workers == null || workers.Count == 0 || mineral == null)

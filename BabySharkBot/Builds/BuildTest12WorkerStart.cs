@@ -96,7 +96,7 @@ namespace BabySharkBot.Builds
         {
             var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
             var mineralCom = ResolveMineralCenter(startIndex);
-            if (mineralCom == null || WorkerLabelService == null)
+            if (mineralCom == null)
             {
                 return;
             }
@@ -115,7 +115,8 @@ namespace BabySharkBot.Builds
 
             var workerTuples = workers.Select(worker =>
                 (worker.UnitTag, worker.Position.X, worker.Position.Y, worker.Position.Z, worker.UnitType));
-            var orderedWorkers = WorkerLabelChainHelper.BuildGreedyWorkerEntries(workerTuples, mineralCom, WorkerLabelService);
+            // BuildManager owns labels; this local chain is geometry-only for formation recording.
+            var orderedWorkers = WorkerLabelChainHelper.BuildGreedyWorkerEntries(workerTuples, mineralCom, null);
             if (orderedWorkers.Count != StartingWorkerCount)
             {
                 return;

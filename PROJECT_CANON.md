@@ -95,7 +95,7 @@ If M[1] is 1-TA:
     The remaining Teal worker -> T3 (pushing/support)
 ```
 
-`T3` is the Teal pushing/support worker. For this 12-worker opening, its bumping behavior is disabled; it later mines `TA` after completing its support movement.
+`T3` is the Teal pushing/support worker. For this 12-worker opening, its bumping behavior is disabled; it moves to and waits at `TA` without an initial `SMART`, then mines `TA` after `T1` completes its first `A` turn. All role-3 workers follow this same wait-at-A rule.
 
 ### Fixed middle-chain assignments
 
@@ -142,7 +142,16 @@ W7 -> M[5]
 W8 -> M[6]
 ```
 
-These targets are retained to avoid cross-traffic congestion. Each worker's final `1` or `2` suffix is derived from whether its target is that team's A or B mineral.
+These targets are retained to avoid cross-traffic congestion. Each worker's final `1` or `2` suffix is derived from whether its target is that team's A or B mineral. A 12-worker role-3 worker starts with the team's `A` target but waits there until role 1 completes its first `A` turn. Its two-target `Mti` sequence cycles `0 -> 1 -> 0`.
+
+## Build-owned target plans
+
+`BabySharkBuildManager` is the sole owner of worker labels, team assignments, and `MiningTarget` construction. `CcaManager`, `BabySharkMiningManager`, and debug drawing consume those records and must not create or rewrite worker labels.
+
+- The 8-worker plan may contain three targets per worker during its opening/speed-mining sequence, then reduces or switches to its two-mineral steady-state route.
+- The 12-worker plan starts with exactly two mineral targets per worker: the team's `A` and `B` labels. A worker's initial target order is determined by its BuildManager-assigned role (`1`/`3` start on `A`; `2` starts on `B`).
+- A worker-count change is a BuildManager assignment transition. BuildManager must rebuild the current-spawn worker labels and target plans once for the new count; no other manager may re-invent labels or team membership.
+- For Teal, when `M[1]` is an `A` mineral, BuildManager assigns `W4 -> T2 -> 2-TB`, chooses the nearest of `W2/W3` to `1-TA` as `T1`, and assigns the remaining worker as `T3`. When `M[1]` is `B`, `W2 -> T2` and the corresponding `T1`/`T3` selection is applied.
 
 ## CCA rules for the first 35 frames
 
