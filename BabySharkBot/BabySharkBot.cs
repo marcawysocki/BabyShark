@@ -44,6 +44,7 @@ namespace BabySharkBot
         private GameConnection _gameConnection;
         private DefaultSharkyBot _defaultBot;
         private BabySharkMiningManager _miningManager;
+        private readonly WorkerCommandTelemetry _workerCommandTelemetry;
 
         /// <summary>
         /// Initialize BabySharkAI with a GameConnection instance.
@@ -53,6 +54,7 @@ namespace BabySharkBot
         {
             Instance = this;
             _gameConnection = gameConnection;
+            _workerCommandTelemetry = new WorkerCommandTelemetry();
             // Create the underlying DefaultSharkyBot to manage all Sharky infrastructure
             _defaultBot = new DefaultSharkyBot(gameConnection);
             
@@ -133,7 +135,7 @@ namespace BabySharkBot
             InstallRlMicroControllerWrappers();
 
             // Create BabySharkMiningManager with shared CCA service instance
-            _miningManager = new BabySharkMiningManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, workerLabelService, crosshairService, mineralLabelService, vespeneLabelService, expansionCOMService, expansionPointService, expansionPointDrawService, provisionalExpansionService, MineralReturnRateTrackerService, FrameToTimeConverter, mapDataService, SpawningPoolPlacementService, ccaService);
+            _miningManager = new BabySharkMiningManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.CollisionCalculator, workerLabelService, crosshairService, mineralLabelService, vespeneLabelService, expansionCOMService, expansionPointService, expansionPointDrawService, provisionalExpansionService, MineralReturnRateTrackerService, FrameToTimeConverter, mapDataService, SpawningPoolPlacementService, ccaService);
             buildManager.ConfigureLabelServices(workerLabelService, mineralLabelService, vespeneLabelService, SpawningPoolPlacementService);
             Console.WriteLine("BabySharkAI: Created BabySharkMiningManager and configured BuildManager label ownership");
 
@@ -147,8 +149,11 @@ namespace BabySharkBot
                 var ccaManager = new CcaManager(ccaService, _miningManager);
                 Managers.Add(ccaManager);
                 Managers.Add(ccaManager.DrawOnlyWrapper);
-                Managers.Add(new WorkerAwareCollisionManager());
-                Console.WriteLine($"BabySharkAI: Registered CcaManager, DrawOnlyManager, and post-CCA WorkerAwareCollisionManager (pass-through only).");
+
+                // Collision recovery runs after mining and CCA, only during steady-state.
+                var collisionManager = new WorkerAwareCollisionManager(_miningManager);
+                Managers.Add(collisionManager);
+                Console.WriteLine("BabySharkAI: Registered CcaManager, DrawOnlyManager, and steady-state WorkerAwareCollisionManager.");
             }
             catch (Exception ex)
             {
@@ -231,6 +236,7 @@ namespace BabySharkBot
         {
             ConsecrationofMyStarCraftIIBotProject.Invoke();
             Console.WriteLine("BabySharkAI: OnStart called");
+            Settings.CurrentMapName = gameInfo?.MapName ?? Settings.CurrentMapName ?? string.Empty;
             
             var workersCount = observation?.Observation?.RawData?.Units?.Count(u => u != null && u.Alliance == Alliance.Self && (u.UnitType == (uint)UnitTypes.ZERG_DRONE || u.UnitType == (uint)UnitTypes.TERRAN_SCV || u.UnitType == (uint)UnitTypes.PROTOSS_PROBE)) ?? 12;
             Settings.WorkerCount = workersCount;
@@ -385,6 +391,7 @@ namespace BabySharkBot
                                 actions.AddRange(mgrActions);
                                 foreach (var action in mgrActions)
                                 {
+                                    _owner._workerCommandTelemetry.LogAction(action, observation, manager.GetType().Name);
                                     if (action?.ActionRaw?.UnitCommand?.UnitTags != null)
                                     {
                                         foreach (var tag in action.ActionRaw.UnitCommand.UnitTags)

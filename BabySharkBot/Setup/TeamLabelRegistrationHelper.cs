@@ -227,17 +227,29 @@ namespace BabySharkBot.Setup
 
             Console.WriteLine($"TeamLabelRegistrationHelper: Building layouts for {workers?.Count ?? 0} workers and {minerals?.Count ?? 0} minerals.");
 
-            // Full 12-worker mapping follows the shared color order:
-            // Teal: M[1], M[2] -> W2, W3, W4
-            // Salmon: M[3], M[4] -> W5, W6, W1
-            // Blue: M[5], M[6] -> W7, W8, W12
-            // Yellow: M[7], M[8] -> W9, W10, W11
+            // Full 12-worker mapping follows the generic color order unless the played map
+            // activates the scoped Magannatha override.
             if (workers != null && workers.Count == 12)
             {
-                AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W2", "W3", "W4" }, 1);
-                AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W1" }, 2);
-                AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W8", "W12" }, 3);
-                AddTeamIfPossible(teams, minerals, workers, 6, 7, new[] { "W9", "W10", "W11" }, 4);
+                if (Settings.IsMagannatha12WorkerOverride)
+                {
+                    // Magannatha custom role layout:
+                    // Teal: W3/T1, W4/T2, W1/T3
+                    // Salmon: W5/S1, W6/S2, W12/S3
+                    // Blue: W7/B1, W2/B2, W10/B3
+                    // Yellow: W9/Y1, W8/Y2, W11/Y3
+                    AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W3", "W4", "W1" }, 1);
+                    AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W12" }, 2);
+                    AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W2", "W10" }, 3);
+                    AddTeamIfPossible(teams, minerals, workers, 6, 7, new[] { "W9", "W8", "W11" }, 4);
+                }
+                else
+                {
+                    AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W2", "W3", "W4" }, 1);
+                    AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W1" }, 2);
+                    AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W8", "W12" }, 3);
+                    AddTeamIfPossible(teams, minerals, workers, 6, 7, new[] { "W9", "W10", "W11" }, 4);
+                }
             }
             else
             {
@@ -503,13 +515,15 @@ namespace BabySharkBot.Setup
 
             if (teamNumber == 1)
             {
-                // M[1] is the Teal edge. The B/A identity of M[1] determines the
-                // fixed T2 worker and which two candidates compete for T1.
+                // M[1] is the Teal edge. Keep the existing target-suitability rule for T1;
+                // only the Magannatha starting lineup and fixed T2 anchor differ.
                 var m1 = mineralPair.FirstOrDefault(mineral => mineral.Index == 1);
                 var m1IsB = string.Equals(m1?.FinalLabel, "TB", StringComparison.OrdinalIgnoreCase);
-                var t2Source = m1IsB ? "W2" : "W4";
-                var t1Candidates = m1IsB ? new[] { "W3", "W4" } : new[] { "W2", "W3" };
-                var t1Target = m1IsB ? aMineral : m1;
+                var t2Source = Settings.IsMagannatha12WorkerOverride ? "W4" : (m1IsB ? "W2" : "W4");
+                var t1Candidates = Settings.IsMagannatha12WorkerOverride
+                    ? new[] { "W3", "W1" }
+                    : (m1IsB ? new[] { "W3", "W4" } : new[] { "W2", "W3" });
+                var t1Target = m1IsB && !Settings.IsMagannatha12WorkerOverride ? aMineral : m1;
                 var t2 = FindWorkerByStartLabel(teamWorkers, t2Source);
                 var t1 = FindClosestWorker(teamWorkers, t1Candidates, t1Target);
                 if (t2 == null || t1 == null || t1 == t2)
@@ -534,9 +548,9 @@ namespace BabySharkBot.Setup
 
             if (teamNumber == 2)
             {
-                // Salmon keeps the fixed M[3]/M[4] targets; W1 is the S3 A-mineral
-                // worker defined by the current 12-worker opening contract.
-                var s3 = FindWorkerByStartLabel(teamWorkers, "W1");
+                // Salmon keeps the fixed M[3]/M[4] targets. Magannatha changes the
+                // S3 anchor to W12; generic maps retain W1.
+                var s3 = FindWorkerByStartLabel(teamWorkers, Settings.IsMagannatha12WorkerOverride ? "W12" : "W1");
                 var w5 = FindWorkerByStartLabel(teamWorkers, "W5");
                 var w6 = FindWorkerByStartLabel(teamWorkers, "W6");
                 if (s3 == null || w5 == null || w6 == null)
@@ -554,10 +568,11 @@ namespace BabySharkBot.Setup
 
             if (teamNumber == 3)
             {
-                // Blue keeps the fixed M[5]/M[6] targets; W12 is B3.
-                var b3 = FindWorkerByStartLabel(teamWorkers, "W12");
+                // Blue keeps the fixed M[5]/M[6] targets. Magannatha changes the
+                // B3 anchor to W10; generic maps retain W12.
+                var b3 = FindWorkerByStartLabel(teamWorkers, Settings.IsMagannatha12WorkerOverride ? "W10" : "W12");
                 var w7 = FindWorkerByStartLabel(teamWorkers, "W7");
-                var w8 = FindWorkerByStartLabel(teamWorkers, "W8");
+                var w8 = FindWorkerByStartLabel(teamWorkers, Settings.IsMagannatha12WorkerOverride ? "W2" : "W8");
                 if (b3 == null || w7 == null || w8 == null)
                 {
                     Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Incomplete Blue fixed assignment for start[{startIndex}].");
@@ -577,7 +592,7 @@ namespace BabySharkBot.Setup
                 // otherwise W9 is Y2. The nearest remaining worker to YA is Y1.
                 var m8 = mineralPair.FirstOrDefault(mineral => mineral.Index == 8);
                 var m8IsB = string.Equals(m8?.FinalLabel, "YB", StringComparison.OrdinalIgnoreCase);
-                var y2Source = m8IsB ? "W11" : "W9";
+                var y2Source = Settings.IsMagannatha12WorkerOverride ? "W8" : (m8IsB ? "W11" : "W9");
                 var y2 = FindWorkerByStartLabel(teamWorkers, y2Source);
                 var remaining = teamWorkers.Where(worker => worker != y2).ToList();
                 var y1 = FindClosestWorker(remaining, remaining.Select(worker => worker.StartLabel).ToArray(), aMineral);

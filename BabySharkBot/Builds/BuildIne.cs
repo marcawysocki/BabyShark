@@ -265,7 +265,7 @@ namespace BabySharkBot.Builds
             Console.WriteLine($"[MINING COMMAND5] phase=BuildIne worker={tag} Label={workerLabel} command=STOP queued=false");
             return new SC2APIProtocol.Action
             {
-                ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.STOP, UnitTags = { tag } } }
+                //ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.STOP, UnitTags = { tag } } }
             };
         }
 

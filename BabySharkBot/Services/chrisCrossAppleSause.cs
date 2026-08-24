@@ -418,7 +418,7 @@ namespace BabySharkBot.Services
                 Console.WriteLine($"  {workerDisplayLabel} tag={worker.UnitTag} -> {mineralDisplayLabel} storedIndex={targetMineral.Index} mineralTag={mineralTag} position=({targetMineral.Position.X:F2},{targetMineral.Position.Y:F2})");
                 if (mineralTag == 0) continue;
 
-                commands.AddRange(Stop(worker.UnitTag));
+                //commands.AddRange(Stop(worker.UnitTag));
                 commands.AddRange(MoveTo(worker.UnitTag, harvestPoint));
                 commands.AddRange(SmartTo(worker.UnitTag, mineralTag));
             }
@@ -434,7 +434,7 @@ namespace BabySharkBot.Services
             Console.WriteLine($"[MINING COMMAND3] phase=CCA worker={tag} Label={workerLabel} command=STOP queued=false");
             var command = new ActionRawUnitCommand
             {
-                AbilityId = (int)Abilities.STOP
+                //AbilityId = (int)Abilities.STOP
             };
             command.UnitTags.Add(tag);
 

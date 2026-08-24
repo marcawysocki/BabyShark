@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace BabySharkBot.Setup
@@ -39,6 +40,9 @@ namespace BabySharkBot.Setup
         public static Dictionary<int, Vector2Dto> CurrentW4PositionsByStart = new Dictionary<int, Vector2Dto>();
         public static int CurrentSpawnIndex = -1;
         public static int WorkerCount = 12; // Default to 12, updated during initialization
+        public static string CurrentMapName = string.Empty;
+        public static bool IsMagannathaMap => CurrentMapName.Contains("Magannatha", StringComparison.OrdinalIgnoreCase);
+        public static bool IsMagannatha12WorkerOverride => WorkerCount == 12 && IsMagannathaMap;
         public static Vector2Dto CurrentSpawnLocation = new Vector2Dto();
         public static Vector2Dto CurrentSpawnCOM = new Vector2Dto();
         public static bool CurrentBaseHasBeenPlayed = false;

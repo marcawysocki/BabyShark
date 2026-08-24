@@ -334,16 +334,27 @@ namespace BabySharkBot.Managers
             List<WorkerEntryDto> greedyWorkers,
             Vector2Dto townhall)
         {
-            var anchorMineral = Globals.CurrentMapData?.OrderedMainMinerals?
+            var anchorMineral = mapData.OrderedMainMinerals?
                 .ElementAtOrDefault(startIndex)?
-                .FirstOrDefault(mineral => mineral?.Index == 3);
+                .FirstOrDefault(mineral => mineral?.Index == 8);
             if (anchorMineral?.Position == null || observedVespenes == null || observedVespenes.Count == 0 || townhall == null)
             {
                 return;
             }
 
+            var currentSpawnVespenes = mapData.MainVespene?
+                .ElementAtOrDefault(startIndex)?
+                .Where(position => position != null)
+                .ToList();
+            if (currentSpawnVespenes == null || currentSpawnVespenes.Count != 2)
+            {
+                return;
+            }
+
             var ordered = observedVespenes
-                .Where(vespene => vespene?.Position != null && vespene.UnitTag != 0)
+                .Where(vespene => vespene?.Position != null
+                    && vespene.UnitTag != 0
+                    && currentSpawnVespenes.Any(position => DistanceSquared(position, vespene.Position) <= 0.01f))
                 .Select(vespene => new
                 {
                     Vespene = vespene,
@@ -399,14 +410,21 @@ namespace BabySharkBot.Managers
 
             var placement = _spawningPoolPlacementService?.CalculateSpawningPoolPlacement(
                 townhall,
-                mapData.MineralCenterOfMass[startIndex],
+                mapData.MineralCenterOfMass.ElementAtOrDefault(startIndex),
                 result[1].Position);
             if (placement != null)
             {
+                mapData.SpawningPoolPlacements ??= new List<Vector2Dto>();
+                while (mapData.SpawningPoolPlacements.Count <= startIndex)
+                {
+                    mapData.SpawningPoolPlacements.Add(null);
+                }
+
+                mapData.SpawningPoolPlacements[startIndex] = new Vector2Dto(placement.X, placement.Y, townhall.Z);
                 _spawningPoolPlacementService.DrawPlacement(placement);
             }
 
-            Console.WriteLine($"BabySharkBuildManager: Start[{startIndex}] ordered VA/VB from runtime M[3] anchor and completed spawning-pool placement.");
+            Console.WriteLine($"BabySharkBuildManager: Start[{startIndex}] ordered VA/VB from M[8] anchor (VA nearest, VB furthest) and completed spawning-pool placement.");
         }
 
         private static void PopulateAssignedWorkersAndCrossTable(

@@ -23,18 +23,18 @@ namespace BabySharkBot
 
             var maps = new[]
             {
-                "AbyssalReefAIE.SC2Map",
-                "AcropolisAIE.SC2Map",
-                "AutomatonAIE.SC2Map",
+                //"AbyssalReefAIE.SC2Map",
+                //"AcropolisAIE.SC2Map",
+                //"AutomatonAIE.SC2Map",
                 "EphemeronAIE.SC2Map",
                 "IncorporealAIE_v4.SC2Map",
-                "InterloperAIE.SC2Map",
-                "LastFantasyAIE.SC2Map",
-               // "LeyLinesAIE_v3.SC2Map",
-               // "MagannathaAIE_v2.SC2Map",
-              //  "PersephoneAIE_v4.SC2Map",
-               // "PylonAIE_v4.SC2Map",
-              //  "ThunderbirdAIE.SC2Map",
+                //"InterloperAIE.SC2Map",
+                //"LastFantasyAIE.SC2Map",
+                "LeyLinesAIE_v3.SC2Map",
+               "MagannathaAIE_v2.SC2Map",
+                "PersephoneAIE_v4.SC2Map",
+                "PylonAIE_v4.SC2Map",
+               "ThunderbirdAIE.SC2Map",
                 "TorchesAIE_v4.SC2Map",
                 "UltraloveAIE_v2.SC2Map"
             };
@@ -46,9 +46,9 @@ namespace BabySharkBot
             //var randomMap = "Cloud Kingdom.SC2Map";
             //var randomMap = "InterloperAIE.SC2Map";
             //var randomMap = "W8_InterloperAIE.SC2Map";
-            var randomMap = "TorchesAIE_v4.SC2Map";
+            //var randomMap = "TorchesAIE_v4.SC2Map";
             //var randomMap = "LastFantasyAIE.SC2Map";
-            //var randomMap = "MagannathaAIE_v2.SC2Map";
+            var randomMap = "MagannathaAIE_v2.SC2Map";
             //var randomMap = "AbyssalReefAIE.SC2Map";
             //var randomMap = "AcropolisAIE.SC2Map";
             //var randomMap = "AutomatonAIE.SC2Map";
@@ -69,6 +69,7 @@ namespace BabySharkBot
                 mapNameForData = ladderArgs.MapName;
             }
 
+            Settings.CurrentMapName = mapNameForData ?? string.Empty;
             Settings.SerializeDataLoaded = false;
             Settings.MapDataLoaded = false;
 
@@ -110,6 +111,7 @@ namespace BabySharkBot
             var myRace = Race.Zerg;
             if (args.Length == 0)
             {
+                 gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild).Wait();
                  gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild).Wait();
             }
             else

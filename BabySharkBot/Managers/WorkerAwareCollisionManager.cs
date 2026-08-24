@@ -9,15 +9,15 @@ using BabySharkBot.Setup;
 namespace BabySharkBot.Managers
 {
     /// <summary>
-    /// Observes mining-worker proximity without issuing avoidance commands.
-    /// Workers are mineral-bound agents and must be allowed to pass through one another;
-    /// BabySharkMiningManager remains the sole owner of mining MOVE/SMART commands.
+    /// Detects worker pass-through events and uses verified mineral SMART targets
+    /// so workers can pass through each other without corrective movement.
     /// </summary>
     public sealed class WorkerAwareCollisionManager : IManager
     {
         private const float WorkerPassThroughRange = 0.35f;
-        private const int EarlyMiningFrames = 34;
-        private readonly Dictionary<ulong, Vector2Dto> _previousPositions = new();
+        private readonly BabySharkMiningManager _miningManager;
+        private readonly HashSet<ulong> _workersInCollision = new();
+        private readonly HashSet<ulong> _temporaryMineralWalkers = new();
         private int _lastLogFrame = -1;
 
         public bool NeverSkip { get; set; } = true;
@@ -25,18 +25,25 @@ namespace BabySharkBot.Managers
         public double LongestFrame { get; set; }
         public double TotalFrameTime { get; set; }
 
+        public WorkerAwareCollisionManager(BabySharkMiningManager miningManager)
+        {
+            _miningManager = miningManager ?? throw new ArgumentNullException(nameof(miningManager));
+        }
+
         public void OnStart(ResponseGameInfo gameInfo, ResponseData data, ResponsePing pingResponse, ResponseObservation observation, uint playerId, string opponentId)
         {
-            _previousPositions.Clear();
+            _workersInCollision.Clear();
+            _temporaryMineralWalkers.Clear();
             _lastLogFrame = -1;
         }
 
         public IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
         {
             var frame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
-            if (Settings.ccaMining || Settings.SimulatedStartActive || Settings.BuildOwnsWorkerCommands)
+            if (Settings.ccaMining || Settings.SimulatedStartActive)
             {
-                _previousPositions.Clear();
+                _workersInCollision.Clear();
+                _temporaryMineralWalkers.Clear();
                 return Array.Empty<SC2APIProtocol.Action>();
             }
 
@@ -59,43 +66,90 @@ namespace BabySharkBot.Managers
                     && unit.UnitType == (uint)UnitTypes.ZERG_DRONE)
                 .ToList();
 
+            var actions = new List<SC2APIProtocol.Action>();
             var closePairs = 0;
+            var currentWorkerTags = workers.Select(worker => worker.UnitTag).ToHashSet();
+            _workersInCollision.RemoveWhere(tag => !currentWorkerTags.Contains(tag));
+            _temporaryMineralWalkers.RemoveWhere(tag => !currentWorkerTags.Contains(tag));
+
             foreach (var worker in workers)
             {
-                if (_previousPositions.TryGetValue(worker.UnitTag, out var previous))
+                var nearWorker = workers.Any(other => other.UnitTag != worker.UnitTag
+                    && DistanceSquared(worker.Position, other.Position) <= WorkerPassThroughRange * WorkerPassThroughRange);
+                var nearCarryingWorker = workers.Any(other => other.UnitTag != worker.UnitTag
+                    && other.IsCarrying
+                    && DistanceSquared(worker.Position, other.Position) <= WorkerPassThroughRange * WorkerPassThroughRange);
+                var mineralWalkCollision = !worker.IsCarrying && nearCarryingWorker;
+                var wasInCollision = _workersInCollision.Contains(worker.UnitTag);
+                var wasTemporaryMineralWalker = _temporaryMineralWalkers.Contains(worker.UnitTag);
+                if (nearWorker)
                 {
-                    var dx = worker.Position.X - previous.X;
-                    var dy = worker.Position.Y - previous.Y;
-                    var speedSquared = dx * dx + dy * dy;
-                    var nearWorker = workers.Any(other => other.UnitTag != worker.UnitTag
-                        && DistanceSquared(worker.Position, other.Position) <= WorkerPassThroughRange * WorkerPassThroughRange);
-                    if (nearWorker)
-                    {
-                        closePairs++;
-                    }
-
-                    if (frame <= EarlyMiningFrames && nearWorker && !worker.IsCarrying)
-                    {
-                        // Deliberately do not issue a corrective MOVE. This is the
-                        // worker-aware pass-through policy.
-                        _ = speedSquared;
-                    }
+                    closePairs++;
                 }
 
-                _previousPositions[worker.UnitTag] = worker.Position;
+                if (mineralWalkCollision)
+                {
+                    if (!wasInCollision
+                        && _miningManager.TryCreateMineralWalkSmart(
+                            worker.UnitTag,
+                            false,
+                            out var mineralWalkAction,
+                            out var mineralTag))
+                    {
+                        actions.Add(mineralWalkAction);
+                        _temporaryMineralWalkers.Add(worker.UnitTag);
+                        Console.WriteLine($"[WORKER COLLISION] frame={frame} worker={worker.UnitTag} command=SMART targetMineral={mineralTag} carrying=false event=MINERAL_WALK_START");
+                    }
+
+                    _workersInCollision.Add(worker.UnitTag);
+                }
+                else if (!worker.IsCarrying)
+                {
+                    _workersInCollision.Remove(worker.UnitTag);
+                }
+
+                if (wasTemporaryMineralWalker
+                    && (!nearCarryingWorker || (worker.IsCarrying && IsAtTownhallFootprint(worker, snapshot))))
+                {
+                    if (_miningManager.TryCreateCollisionResumeAction(
+                        worker.UnitTag,
+                        worker.IsCarrying,
+                        out var resumeAction,
+                        out var resumeReason))
+                    {
+                        actions.Add(resumeAction);
+                        Console.WriteLine($"[WORKER COLLISION] frame={frame} worker={worker.UnitTag} command=RESUME reason={resumeReason} carrying={worker.IsCarrying}");
+                    }
+
+                    _temporaryMineralWalkers.Remove(worker.UnitTag);
+                }
             }
 
             if (closePairs > 0 && frame != _lastLogFrame)
             {
                 _lastLogFrame = frame;
-                Console.WriteLine($"[WORKER COLLISION] frame={frame} assignedWorkers={workers.Count} closePairs={closePairs} range={WorkerPassThroughRange:F2} policy=PASS_THROUGH no-avoidance-MOVE=true");
+                Console.WriteLine($"[WORKER COLLISION] frame={frame} assignedWorkers={workers.Count} closePairs={closePairs} range={WorkerPassThroughRange:F2} policy=MINERAL_WALK_SMART");
             }
 
-            return Array.Empty<SC2APIProtocol.Action>();
+            return actions;
         }
 
         public void OnEnd(ResponseObservation observation, Result result)
         {
+        }
+
+        private static bool IsAtTownhallFootprint(WorkerEntryDto worker, ObservationSnapshotDto snapshot)
+        {
+            if (worker == null || snapshot?.CurrentTownHalls == null)
+            {
+                return false;
+            }
+
+            return snapshot.CurrentTownHalls.Values.Any(townhall => townhall != null
+                && townhall.Position != null
+                && DistanceSquared(
+                    worker.Position,
+                    townhall.Position) <= 2.75f * 2.75f);
         }
 
         private static float DistanceSquared(Vector2Dto first, Vector2Dto second)

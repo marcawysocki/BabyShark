@@ -210,8 +210,8 @@ namespace BabySharkBot.Setup
     }
 
     /// <summary>
-    /// Represents a vespene geyser ordered by greedy chain from the 4th starting worker (W4).
-    /// V1 is closest to W4, V2 is next closest to W4 (typically 2 vespenes per base in SC2).
+    /// Represents a main-base vespene geyser ordered by distance from the canonical M[8] anchor.
+    /// VA is the nearest geyser and VB is the furthest geyser (typically 2 geysers per base in SC2).
     /// </summary>
     [MemoryPackable]
     public partial class OrderedVespene
@@ -232,21 +232,19 @@ namespace BabySharkBot.Setup
         public Vector2Dto ReturnPoint { get; set; } = new Vector2Dto();
 
         /// <summary>
-        /// Index in greedy chain: 1-2 (V1-V2)
-        /// 1 = closest to W4
-        /// 2 = next closest to W4
+        /// Index in the VA/VB ordering: 1 = VA (nearest to M[8]), 2 = VB (furthest from M[8]).
         /// </summary>
         public int Index { get; set; }
 
         /// <summary>
-        /// Distance from this vespene to W4 (4th starting worker)
-        /// Used for ordering: lower distance = lower index (closer to W4)
+        /// Distance from this vespene to the canonical M[8] anchor.
+        /// The legacy property name is retained for serialized compatibility; lower distance is VA and higher distance is VB.
         /// </summary>
         public float DistanceToW4 { get; set; }
 
         /// <summary>
-        /// Label assignment: V1 or V2 per base location
-        /// Set by InitialMapData based on distance ordering to W4
+        /// Label assignment: VA or VB per base location.
+        /// Assigned by BabySharkBuildManager from distance ordering relative to M[8].
         /// </summary>
         public string Label { get; set; } = "";
 

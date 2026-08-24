@@ -208,7 +208,7 @@ namespace BabySharkBot.Managers
                                     && (targetPoint.X != 0f || targetPoint.Y != 0f)
                                     && targetMineralTag != 0)
                                 {
-                                    gatherActions.AddRange(StopWorker(w.UnitTag));
+                                    //gatherActions.AddRange(StopWorker(w.UnitTag));
                                     gatherActions.AddRange(MoveWorker(w.UnitTag, new Point2D { X = targetPoint.X, Y = targetPoint.Y }));
                                     gatherActions.AddRange(GatherMineral(w.UnitTag, targetMineralTag));
                                 }
