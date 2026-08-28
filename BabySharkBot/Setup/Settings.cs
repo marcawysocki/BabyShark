@@ -34,6 +34,12 @@ namespace BabySharkBot.Setup
         public static bool SerializeDataLoaded = false;
 
         /// <summary>
+        /// Latched immediately before GameConnection startup to identify whether the cached
+        /// BaseDtos data had completed successfully before the game connection opened.
+        /// </summary>
+        public static bool BaseDtosLoadedBeforeGameConnection = false;
+
+        /// <summary>
         /// Flag set once the current spawn location has been processed for the current map.
         /// </summary>
         public static bool SpawnDataLoaded = false;
@@ -42,7 +48,7 @@ namespace BabySharkBot.Setup
         public static int WorkerCount = 12; // Default to 12, updated during initialization
         public static string CurrentMapName = string.Empty;
         public static bool IsMagannathaMap => CurrentMapName.Contains("Magannatha", StringComparison.OrdinalIgnoreCase);
-        public static bool IsMagannatha12WorkerOverride => WorkerCount == 12 && IsMagannathaMap;
+        public static bool IsMagannatha12WorkerOverride => IsMagannathaMap;
         public static Vector2Dto CurrentSpawnLocation = new Vector2Dto();
         public static Vector2Dto CurrentSpawnCOM = new Vector2Dto();
         public static bool CurrentBaseHasBeenPlayed = false;

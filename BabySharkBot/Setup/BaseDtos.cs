@@ -323,8 +323,12 @@ namespace BabySharkBot.Setup
         public ulong ResourceUnitId { get; set; }
         public ulong TownHallUnitId { get; set; }
         public Vector2Dto ResourcePosition { get; set; } = new();
+        public Vector2Dto FromHarvestPoint { get; set; } = new();
+        public Vector2Dto ToHarvestPoint { get; set; } = new();
         public Vector2Dto HarvestPoint { get; set; } = new();
+        public Vector2Dto SmHarvestPoint { get; set; } = new();
         public Vector2Dto ReturnPoint { get; set; } = new();
+        public Vector2Dto SmReturnPoint { get; set; } = new();
         public bool IsSpeedMining { get; set; }
         public bool IsABSwitch { get; set; }
         public bool IsInitialMineralAssignment { get; set; }

@@ -63,7 +63,7 @@ namespace BabySharkBot.Builds
 
                 if (!File.Exists(_logFile))
                 {
-                    File.WriteAllText(_logFile, "Test,TimestampUTC,GameSeconds,Minerals,Frame,Worker.Count,M[1].content,M[2].content,M[3].content,M[4].content,M[5].content,M[6].content,M[7].content,M[8].content" + Environment.NewLine);
+                    File.WriteAllText(_logFile, "Loaded,TimestampUTC,GameSeconds,Minerals,Frame,Worker.Count,M[1].content,M[2].content,M[3].content,M[4].content,M[5].content,M[6].content,M[7].content,M[8].content" + Environment.NewLine);
                 }
             }
             catch
@@ -134,159 +134,6 @@ namespace BabySharkBot.Builds
             SetDesiredUnitCount(UnitTypes.ZERG_DRONE, DesiredDrones);
             SetDesiredUnitCount(UnitTypes.ZERG_QUEEN, 1);
             SetDesiredUnitCount(UnitTypes.ZERG_OVERLORD, 1);
-        }
-
-        private List<SC2APIProtocol.Action> BuildEightWorkerOpening(ResponseObservation observation)
-        {
-            var actions = new List<SC2APIProtocol.Action>();
-            if (Settings.AvailableWorker.Count != 8 || observation?.Observation?.RawData?.Units == null)
-            {
-                return actions;
-            }
-
-            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-            var mapData = Globals.CurrentMapData;
-            if (mapData == null || startIndex < 0)
-            {
-                return actions;
-            }
-
-            var mineralLists = mapData.SecondaryOrderedMainMinerals != null
-                && mapData.SecondaryOrderedMainMinerals.Count > startIndex
-                && mapData.SecondaryOrderedMainMinerals[startIndex] != null
-                && mapData.SecondaryOrderedMainMinerals[startIndex].Count >= 8
-                ? mapData.SecondaryOrderedMainMinerals
-                : mapData.OrderedMainMinerals;
-
-            if (mineralLists == null || mineralLists.Count <= startIndex)
-            {
-                return actions;
-            }
-
-            var minerals = mineralLists[startIndex]
-                ?.Where(m => m != null && m.Position != null)
-                .OrderBy(m => m.Index)
-                .ToList();
-            if (minerals == null || minerals.Count < 8)
-            {
-                return actions;
-            }
-
-            var workers = observation.Observation.RawData.Units
-                .Where(u => u != null && u.Alliance == Alliance.Self && u.Tag != 0 && u.UnitType == (uint)UnitTypes.ZERG_DRONE)
-                .Select(u => new { Unit = u, Position = new Vector2Dto(u.Pos.X, u.Pos.Y, u.Pos.Z) })
-                .ToList();
-            if (workers.Count != 8)
-            {
-                return actions;
-            }
-
-            var mineralCom = mapData.MineralCenterOfMass != null && startIndex < mapData.MineralCenterOfMass.Count
-                ? mapData.MineralCenterOfMass[startIndex]
-                : null;
-            if (mineralCom == null)
-            {
-                return actions;
-            }
-
-            var remaining = new List<dynamic>(workers);
-            var greedyOrder = new List<dynamic>();
-            while (remaining.Count > 0)
-            {
-                var next = greedyOrder.Count == 0
-                    ? remaining.OrderByDescending(w => DistanceSquared(w.Position, mineralCom)).First()
-                    : remaining.OrderBy(w => DistanceSquared(w.Position, greedyOrder[^1].Position)).First();
-                greedyOrder.Add(next);
-                remaining.Remove(next);
-            }
-
-            for (var chainIndex = 0; chainIndex < 8; chainIndex++)
-            {
-                var workerNumber = 8 - chainIndex;
-                var mineral = minerals[7 - chainIndex];
-                var worker = greedyOrder[chainIndex];
-                var mineralTag = ResolveLiveMineralTag(mineral, observation);
-                if (mineralTag == 0) continue;
-
-                var returnPoint = mineral.ReturnPoint != null && (mineral.ReturnPoint.X != 0f || mineral.ReturnPoint.Y != 0f)
-                    ? mineral.ReturnPoint
-                    : CalculateReturnPoint(mapData.StartingTownHall[startIndex], mineral.Position);
-                var harvestPoint = CalculateTemporaryHarvestPoint(worker.Position, returnPoint, mineral.Position, 1.5f);
-
-                actions.Add(Stop(worker.Unit.Tag));
-                actions.Add(Move(worker.Unit.Tag, harvestPoint));
-                actions.Add(Smart(worker.Unit.Tag, mineralTag));
-                Console.WriteLine($"BuildIne: W{workerNumber} -> M[{7 - chainIndex}] at frame 0");
-            }
-
-            return actions;
-        }
-
-        private static float DistanceSquared(Vector2Dto first, Vector2Dto second)
-        {
-            var dx = first.X - second.X;
-            var dy = first.Y - second.Y;
-            return dx * dx + dy * dy;
-        }
-
-        private static Vector2Dto CalculateReturnPoint(Vector2Dto townhall, Vector2Dto mineral)
-        {
-            var dx = mineral.X - townhall.X;
-            var dy = mineral.Y - townhall.Y;
-            var length = MathF.Sqrt(dx * dx + dy * dy);
-            return length <= 0.0001f
-                ? new Vector2Dto(townhall.X + 2.75f, townhall.Y)
-                : new Vector2Dto(townhall.X + dx / length * 2.75f, townhall.Y + dy / length * 2.75f);
-        }
-
-        private static Point2D CalculateTemporaryHarvestPoint(Vector2Dto worker, Vector2Dto returnPoint, Vector2Dto mineral, float offset)
-        {
-            var midX = (worker.X + returnPoint.X) * 0.5f;
-            var midY = (worker.Y + returnPoint.Y) * 0.5f;
-            var dirX = mineral.X - midX;
-            var dirY = mineral.Y - midY;
-            var length = MathF.Sqrt(dirX * dirX + dirY * dirY);
-            if (length <= 0.0001f) return new Point2D { X = mineral.X + offset, Y = mineral.Y };
-            return new Point2D { X = mineral.X - dirX / length * offset, Y = mineral.Y - dirY / length * offset };
-        }
-
-        private static ulong ResolveLiveMineralTag(OrderedMineral mineral, ResponseObservation observation)
-        {
-            var match = observation.Observation.RawData.Units
-                .Where(u => u != null && u.Alliance == Alliance.Neutral)
-                .OrderBy(u => DistanceSquared(new Vector2Dto(u.Pos.X, u.Pos.Y), mineral.Position))
-                .FirstOrDefault();
-            return match != null && DistanceSquared(new Vector2Dto(match.Pos.X, match.Pos.Y), mineral.Position) < 4f ? match.Tag : mineral.UnitTag;
-        }
-
-        private SC2APIProtocol.Action Stop(ulong tag)
-        {
-            var workerLabel = WorkerLabelService?.GetLabel(tag) ?? string.Empty;
-            Console.WriteLine($"[MINING COMMAND5] phase=BuildIne worker={tag} Label={workerLabel} command=STOP queued=false");
-            return new SC2APIProtocol.Action
-            {
-                //ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.STOP, UnitTags = { tag } } }
-            };
-        }
-
-        private SC2APIProtocol.Action Move(ulong tag, Point2D point)
-        {
-            var workerLabel = WorkerLabelService?.GetLabel(tag) ?? string.Empty;
-            Console.WriteLine($"[MINING COMMAND6] phase=BuildIne worker={tag} Label={workerLabel} command=MOVE pos=({point.X:F2},{point.Y:F2}) queued=false");
-            return new SC2APIProtocol.Action
-            {
-                ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.MOVE, UnitTags = { tag }, TargetWorldSpacePos = point } }
-            };
-        }
-
-        private SC2APIProtocol.Action Smart(ulong tag, ulong mineralTag)
-        {
-            var workerLabel = WorkerLabelService?.GetLabel(tag) ?? string.Empty;
-            Console.WriteLine($"[MINING COMMAND7] phase=BuildIne worker={tag} Label={workerLabel} command=SMART targetTag={mineralTag} queued=true");
-            return new SC2APIProtocol.Action
-            {
-                ActionRaw = new ActionRaw { UnitCommand = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, UnitTags = { tag }, TargetUnitTag = mineralTag, QueueCommand = true } }
-            };
         }
 
         public override IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
@@ -477,7 +324,8 @@ namespace BabySharkBot.Builds
             var contents = useFrameZeroContents
                 ? $",{_frameZeroWorkerCount},{string.Join(",", _frameZeroMineralContents)}"
                 : BuildCurrentMineralContentsCsv();
-            var line = $"{TestNumber},{DateTime.UtcNow:o},{gameSeconds:F3},{minerals},{frame}{contents}{Environment.NewLine}";
+            var loadedStatus = Settings.BaseDtosLoadedBeforeGameConnection ? "loaded:true" : "loaded:false";
+            var line = $"{loadedStatus},{DateTime.UtcNow:o},{gameSeconds:F3},{minerals},{frame}{contents}{Environment.NewLine}";
 
             try
             {

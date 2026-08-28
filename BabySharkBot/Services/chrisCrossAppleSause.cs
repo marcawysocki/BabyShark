@@ -12,10 +12,18 @@ namespace BabySharkBot.Services
     public sealed class chrisCrossAppleSause
     {
         private WorkerLabelService _workerLabelService;
+        private int _frame55HandoffStartIndex = -1;
+        private int _frame15GatherFrame = -1;
+        private readonly HashSet<ulong> _frame15GatheredWorkers = new();
+        private readonly HashSet<string> _roleOneCompletionTeams = new(StringComparer.OrdinalIgnoreCase);
 
         public void EnableCcaMiningForCurrentSpawn(MawBaseLocationData mapData, int startIndex)
         {
             Settings.ccaMining = true;
+            _roleOneCompletionTeams.Clear();
+            _frame55HandoffStartIndex = -1;
+            _frame15GatherFrame = -1;
+            _frame15GatheredWorkers.Clear();
         }
 
         public IEnumerable<SC2APIProtocol.Action> BuildBumpOrders(int frame, MawBaseLocationData mapData, int startIndex, IReadOnlyList<WorkerEntryDto> workerEntries)
@@ -28,17 +36,52 @@ namespace BabySharkBot.Services
                 return commands;
             }
 
+            if (relativeFrame >= 15 && relativeFrame < 35 && !Settings.IsMagannathaMap)
+            {
+                var roleOneCompletion = BuildRoleOneCompletionHandoff(mapData, startIndex, workerEntries);
+                if (roleOneCompletion.Count > 0)
+                {
+                    return roleOneCompletion;
+                }
+            }
+
+            if (relativeFrame == 15 && (workerEntries.Count == 8 || workerEntries.Count == 12 || Settings.WorkerCount == 8 || Settings.WorkerCount == 12))
+            {
+                if (_frame15GatherFrame != frame)
+                {
+                    _frame15GatherFrame = frame;
+                    _frame15GatheredWorkers.Clear();
+                }
+
+                return BuildRoleOneHarvestOrders(mapData, startIndex, workerEntries).ToList();
+            }
+
             if (workerEntries.Count == 8 || Settings.WorkerCount == 8)
             {
-                 return relativeFrame == 0
-                     ? BuildFrame0EightWorkerSpeedMine(mapData, startIndex, workerEntries).ToList()
+                 return IsSharkySequenceFrame(relativeFrame)
+                     ? BuildFrame0EightWorkerSpeedMine(mapData, startIndex, workerEntries, relativeFrame).ToList()
                      : commands;
             }
 
 
             if (workerEntries.Count == 12 || Settings.WorkerCount == 12)
             {
-                return BuildTwelveWorkerOrders(relativeFrame, mapData, startIndex, workerEntries).ToList();
+                if (Settings.IsMagannatha12WorkerOverride)
+                {
+                    if (relativeFrame == 55 && _frame55HandoffStartIndex != startIndex)
+                    {
+                        _frame55HandoffStartIndex = startIndex;
+                        return BuildMagannathaFrame55Handoff(mapData, startIndex, workerEntries).ToList();
+                    }
+
+                    return relativeFrame == 0
+                        ? BuildTwelveWorkerOrders(relativeFrame, mapData, startIndex, workerEntries, true).ToList()
+                        : BuildMagannathaOpeningOrders(relativeFrame, mapData, startIndex, workerEntries).ToList();
+                }
+
+                return relativeFrame == 0
+                    ? BuildTwelveWorkerOrders(relativeFrame, mapData, startIndex, workerEntries, true).ToList()
+                    : BuildTwelveWorkerOrders(relativeFrame, mapData, startIndex, workerEntries, true).ToList();
             }
 
             if (relativeFrame < 0 || relativeFrame % 5 != 0 || Settings.AvailableWorker.Count == 0)
@@ -61,14 +104,310 @@ namespace BabySharkBot.Services
             return commands;
         }
 
-        private IEnumerable<SC2APIProtocol.Action> BuildTwelveWorkerOrders(
-            int relativeFrame,
+        private List<SC2APIProtocol.Action> BuildRoleOneCompletionHandoff(
             MawBaseLocationData mapData,
             int startIndex,
             IReadOnlyList<WorkerEntryDto> workerEntries)
         {
             var commands = new List<SC2APIProtocol.Action>();
-            if (relativeFrame != 0 && relativeFrame != 1 && relativeFrame != 5 && relativeFrame != 10 && relativeFrame != 15)
+            var assignments = OngoingMapData.ResolveTeamAssignments(mapData, startIndex);
+            var snapshot = Globals.CurrentObservation;
+            var hatcheryTag = snapshot?.CurrentTownHalls?.Values
+                .Where(unit => unit?.UnitTag != 0 && unit.Position != null)
+                .OrderBy(unit => DistanceSquared(unit.Position, mapData.StartingTownHall.ElementAtOrDefault(startIndex)))
+                .Select(unit => unit.UnitTag)
+                .FirstOrDefault() ?? 0;
+            if (assignments.Count == 0 || snapshot == null || hatcheryTag == 0)
+            {
+                return commands;
+            }
+
+            foreach (var assignment in assignments)
+            {
+                var teamPrefix = GetTeamPrefix(assignment.TeamNumber);
+                if (string.IsNullOrEmpty(teamPrefix) || _roleOneCompletionTeams.Contains(teamPrefix))
+                {
+                    continue;
+                }
+
+                var roleOne = assignment.Workers?.FirstOrDefault(worker =>
+                    (worker?.FinalLabel ?? worker?.Label)?.Equals($"{teamPrefix}1", StringComparison.OrdinalIgnoreCase) == true);
+                var liveRoleOne = workerEntries.FirstOrDefault(worker => worker.UnitTag == roleOne?.UnitTag);
+                if (liveRoleOne == null || !liveRoleOne.IsCarrying)
+                {
+                    continue;
+                }
+
+                commands.AddRange(SmartTo(liveRoleOne.UnitTag, hatcheryTag));
+                _roleOneCompletionTeams.Add(teamPrefix);
+                Console.WriteLine($"[CCA ROLE1 COMPLETE] team={teamPrefix} role1={liveRoleOne.UnitTag} command=SMART hatchery queued=true");
+            }
+
+            return commands;
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> BuildRoleOneHarvestOrders(
+            MawBaseLocationData mapData,
+            int startIndex,
+            IReadOnlyList<WorkerEntryDto> workerEntries)
+        {
+            var commands = new List<SC2APIProtocol.Action>();
+            var assignments = OngoingMapData.ResolveTeamAssignments(mapData, startIndex);
+            var snapshot = Globals.CurrentObservation;
+            if (assignments.Count == 0 || snapshot == null)
+            {
+                return commands;
+            }
+
+            foreach (var assignment in assignments)
+            {
+                var teamPrefix = GetTeamPrefix(assignment.TeamNumber);
+                var aMineral = assignment.Minerals?.FirstOrDefault(mineral =>
+                    string.Equals(mineral?.FinalLabel, $"{teamPrefix}A", StringComparison.OrdinalIgnoreCase));
+                var bMineral = assignment.Minerals?.FirstOrDefault(mineral =>
+                    string.Equals(mineral?.FinalLabel, $"{teamPrefix}B", StringComparison.OrdinalIgnoreCase));
+
+                foreach (var worker in assignment.Workers ?? new List<WorkerEntryDto>())
+                {
+                    var role = worker?.FinalLabel ?? worker?.Label;
+                    if (worker?.UnitTag == 0
+                        || string.IsNullOrWhiteSpace(role)
+                        || (!role.EndsWith("1", StringComparison.OrdinalIgnoreCase)
+                            && !role.EndsWith("2", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    var mineral = role.EndsWith("1", StringComparison.OrdinalIgnoreCase) ? aMineral : bMineral;
+                    var mineralTag = ResolveLiveMineralTag(mineral, snapshot);
+                    var liveWorker = workerEntries.FirstOrDefault(candidate => candidate.UnitTag == worker.UnitTag);
+                    if (liveWorker != null && mineralTag != 0 && _frame15GatheredWorkers.Add(liveWorker.UnitTag))
+                    {
+                        commands.AddRange(HarvestGatherTo(liveWorker.UnitTag, mineralTag, true));
+                    }
+                }
+            }
+
+
+            return commands;
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> BuildTwelveWorkerFrameZeroOrders(
+            MawBaseLocationData mapData,
+            int startIndex,
+            IReadOnlyList<WorkerEntryDto> workerEntries)
+        {
+            var commands = new List<SC2APIProtocol.Action>();
+            var assignments = OngoingMapData.ResolveTeamAssignments(mapData, startIndex);
+            if (assignments.Count == 0)
+            {
+                return commands;
+            }
+
+            foreach (var assignment in assignments)
+            {
+                if (assignment.Workers == null || assignment.Workers.Count == 0 || assignment.Minerals == null || assignment.Minerals.Count < 2)
+                {
+                    continue;
+                }
+
+                var teamPrefix = GetTeamPrefix(assignment.TeamNumber);
+                var aMineral = assignment.Minerals.FirstOrDefault(mineral =>
+                    string.Equals(mineral?.FinalLabel, $"{teamPrefix}A", StringComparison.OrdinalIgnoreCase));
+                var bMineral = assignment.Minerals.FirstOrDefault(mineral =>
+                    string.Equals(mineral?.FinalLabel, $"{teamPrefix}B", StringComparison.OrdinalIgnoreCase));
+                var roleOne = assignment.Workers.FirstOrDefault(worker => (worker.FinalLabel ?? worker.Label)?.EndsWith("1", StringComparison.OrdinalIgnoreCase) == true);
+                var roleTwo = assignment.Workers.FirstOrDefault(worker => (worker.FinalLabel ?? worker.Label)?.EndsWith("2", StringComparison.OrdinalIgnoreCase) == true);
+                var roleThree = assignment.Workers.FirstOrDefault(worker => (worker.FinalLabel ?? worker.Label)?.EndsWith("3", StringComparison.OrdinalIgnoreCase) == true);
+                if (!IsTeamBumpingDisabled(mapData, startIndex, assignment.TeamNumber)
+                    || aMineral?.HarvestPoint == null
+                    || bMineral?.HarvestPoint == null)
+                {
+                    continue;
+                }
+
+                if (roleOne != null && workerEntries.Any(worker => worker.UnitTag == roleOne.UnitTag))
+                {
+                    commands.AddRange(MoveTo(roleOne.UnitTag, ToPoint2D(aMineral.HarvestPoint)));
+                }
+
+                if (roleTwo != null && workerEntries.Any(worker => worker.UnitTag == roleTwo.UnitTag))
+                {
+                    commands.AddRange(MoveTo(roleTwo.UnitTag, ToPoint2D(bMineral.HarvestPoint)));
+                }
+
+                if (roleThree != null
+                    && workerEntries.Any(worker => worker.UnitTag == roleThree.UnitTag))
+                {
+                    var waitPoint = CalculateRoleThreeWaitPoint(
+                        roleThree.FinalLabel ?? roleThree.Label,
+                        assignment,
+                        mapData.StartingTownHall.ElementAtOrDefault(startIndex),
+                        aMineral);
+                    if (waitPoint != null)
+                    {
+                        commands.AddRange(MoveTo(roleThree.UnitTag, ToPoint2D(waitPoint)));
+                    }
+                }
+            }
+
+            return commands;
+        }
+
+        private static bool IsTeamBumpingDisabled(MawBaseLocationData mapData, int startIndex, int teamNumber)
+        {
+            if (Settings.IsMagannatha12WorkerOverride)
+            {
+                return true;
+            }
+
+            var prefix = GetTeamPrefix(teamNumber);
+            return mapData?.AssignmentFlagsByStart?.TryGetValue(startIndex, out var flags) == true
+                && flags.TryGetValue($"{prefix}NoPush", out var noPush)
+                && noPush;
+        }
+
+        private static Vector2Dto CalculateRoleThreeWaitPoint(
+            string role,
+            TeamPatchAssignmentDto assignment,
+            Vector2Dto townhall,
+            OrderedMineral aMineral)
+        {
+            if (aMineral?.Position == null || townhall == null)
+            {
+                return null;
+            }
+
+            if (string.Equals(role, "S3", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "B3", StringComparison.OrdinalIgnoreCase))
+            {
+                var dx = townhall.X - aMineral.Position.X;
+                var dy = townhall.Y - aMineral.Position.Y;
+                var distance = MathF.Sqrt(dx * dx + dy * dy);
+                return distance <= 0.001f
+                    ? null
+                    : new Vector2Dto(
+                        aMineral.Position.X + dx / distance,
+                        aMineral.Position.Y + dy / distance,
+                        aMineral.Position.Z);
+            }
+
+            return assignment?.JitWaitPoint != null
+                && (assignment.JitWaitPoint.X != 0f || assignment.JitWaitPoint.Y != 0f)
+                ? assignment.JitWaitPoint
+                : CalculateWaitPoint(townhall, aMineral.Position);
+        }
+
+        private static Vector2Dto CalculateWaitPoint(Vector2Dto townhall, Vector2Dto mineral)
+        {
+            if (townhall == null || mineral == null)
+            {
+                return null;
+            }
+
+            var dx = mineral.X - townhall.X;
+            var dy = mineral.Y - townhall.Y;
+            var distance = MathF.Sqrt(dx * dx + dy * dy);
+            return distance <= 0.001f
+                ? null
+                : new Vector2Dto(mineral.X - dx / distance, mineral.Y - dy / distance, mineral.Z);
+        }
+
+        private static Point2D ToPoint2D(Vector2Dto point)
+        {
+            return point == null ? null : new Point2D { X = point.X, Y = point.Y };
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> BuildMagannathaOpeningOrders(
+            int relativeFrame,
+            MawBaseLocationData mapData,
+            int startIndex,
+            IReadOnlyList<WorkerEntryDto> workerEntries)
+        {
+            return relativeFrame == 0 || relativeFrame == 1 || relativeFrame == 14
+                ? BuildTwelveWorkerOrders(relativeFrame, mapData, startIndex, workerEntries, true)
+                : Array.Empty<SC2APIProtocol.Action>();
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> BuildMagannathaFrame55Handoff(
+            MawBaseLocationData mapData,
+            int startIndex,
+            IReadOnlyList<WorkerEntryDto> workerEntries)
+        {
+            var commands = new List<SC2APIProtocol.Action>();
+            var assignments = OngoingMapData.ResolveTeamAssignments(mapData, startIndex);
+            var snapshot = Globals.CurrentObservation;
+
+            if (assignments.Count == 0 || snapshot == null)
+            {
+                return commands;
+            }
+
+            foreach (var assignment in assignments)
+            {
+                var aMineral = assignment.Minerals?.FirstOrDefault(mineral =>
+                    string.Equals(mineral?.FinalLabel, $"{GetTeamPrefix(assignment.TeamNumber)}A", StringComparison.OrdinalIgnoreCase));
+                if (aMineral == null)
+                {
+                    continue;
+                }
+
+                foreach (var worker in assignment.Workers ?? new List<WorkerEntryDto>())
+                {
+                    var liveWorker = workerEntries.FirstOrDefault(candidate => candidate.UnitTag == worker.UnitTag);
+                    var role = worker.FinalLabel ?? worker.Label;
+                    if (liveWorker == null || string.IsNullOrWhiteSpace(role))
+                    {
+                        continue;
+                    }
+
+                    if (role.EndsWith("3", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var mineralTag = ResolveLiveMineralTag(aMineral, snapshot);
+                        if (mineralTag != 0)
+                        {
+                            commands.AddRange(SmartToImmediate(liveWorker.UnitTag, mineralTag));
+                        }
+                    }
+                }
+            }
+
+            return commands;
+        }
+
+        private static string GetTeamPrefix(int teamNumber)
+        {
+            return teamNumber switch
+            {
+                1 => "T",
+                2 => "S",
+                3 => "B",
+                4 => "Y",
+                _ => string.Empty
+            };
+        }
+
+        private static float DistanceSquared(Vector2Dto first, Vector2Dto second)
+        {
+            if (first == null || second == null)
+            {
+                return float.MaxValue;
+            }
+
+            var dx = first.X - second.X;
+            var dy = first.Y - second.Y;
+            return dx * dx + dy * dy;
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> BuildTwelveWorkerOrders(
+            int relativeFrame,
+            MawBaseLocationData mapData,
+            int startIndex,
+            IReadOnlyList<WorkerEntryDto> workerEntries,
+            bool waitRoleThree = false)
+        {
+            var commands = new List<SC2APIProtocol.Action>();
+            if (relativeFrame != 0 && relativeFrame != 1 && relativeFrame != 14)
             {
                 return commands;
             }
@@ -90,24 +429,39 @@ namespace BabySharkBot.Services
                         continue;
                     }
 
+                    if (waitRoleThree && IsRoleThree(worker.FinalLabel ?? worker.Label))
+                    {
+                        var aMineral = assignment.Minerals?.FirstOrDefault(mineral =>
+                            string.Equals(mineral?.FinalLabel, $"{GetTeamPrefix(assignment.TeamNumber)}A", StringComparison.OrdinalIgnoreCase));
+                        var waitPoint = CalculateRoleThreeWaitPoint(
+                            worker.FinalLabel ?? worker.Label,
+                            assignment,
+                            mapData.StartingTownHall.ElementAtOrDefault(startIndex),
+                            aMineral);
+                        if (waitPoint != null)
+                        {
+                            commands.AddRange(MoveTo(liveWorker.UnitTag, ToPoint2D(waitPoint), false));
+                        }
+
+                        continue;
+                    }
+
                     var movePoint = target.HarvestPoint != null
                         && (target.HarvestPoint.X != 0f || target.HarvestPoint.Y != 0f)
                         ? new Point2D { X = target.HarvestPoint.X, Y = target.HarvestPoint.Y }
                         : new Point2D { X = target.Position.X, Y = target.Position.Y };
-                    if (relativeFrame == 0)
+                    var mineralTag = ResolveLiveMineralTag(target, Globals.CurrentObservation);
+                    if (mineralTag == 0)
                     {
-                        commands.AddRange(Stop(liveWorker.UnitTag));
+                        continue;
                     }
-                    commands.AddRange(MoveTo(liveWorker.UnitTag, movePoint));
 
-                    if (relativeFrame == 15 && !IsRoleThree(worker.FinalLabel ?? worker.Label))
-                    {
-                        var mineralTag = ResolveLiveMineralTag(target, Globals.CurrentObservation);
-                        if (mineralTag != 0)
-                        {
-                            commands.AddRange(SmartTo(liveWorker.UnitTag, mineralTag));
-                        }
-                    }
+                    commands.AddRange(BuildSharkyGatherSequence(
+                        liveWorker.UnitTag,
+                        mineralTag,
+                        target,
+                        movePoint,
+                        relativeFrame));
                 }
             }
 
@@ -160,8 +514,13 @@ namespace BabySharkBot.Services
                 var minerals = team.Minerals;
                 if (logicalWorkers.Count == 0 || minerals.Count == 0) continue;
 
-                var aMineral = minerals.FirstOrDefault(m => m.IsNear) ?? minerals[0];
-                var bMineral = minerals.FirstOrDefault(m => !m.IsNear && m != aMineral) ?? minerals.Skip(1).FirstOrDefault() ?? aMineral;
+                var teamPrefix = GetTeamPrefix(team.TeamNumber);
+                var aMineral = minerals.FirstOrDefault(mineral => string.Equals(mineral?.FinalLabel, $"{teamPrefix}A", StringComparison.OrdinalIgnoreCase));
+                var bMineral = minerals.FirstOrDefault(mineral => string.Equals(mineral?.FinalLabel, $"{teamPrefix}B", StringComparison.OrdinalIgnoreCase));
+                if (aMineral == null || bMineral == null)
+                {
+                    continue;
+                }
 
                 var w1 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "1");
                 var w2 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "2");
@@ -225,7 +584,13 @@ namespace BabySharkBot.Services
                 var minerals = team.Minerals;
                 if (logicalWorkers.Count == 0 || minerals.Count == 0) continue;
 
-                var aMineral = minerals.FirstOrDefault(m => m.IsNear) ?? minerals[0];
+                var teamPrefix = GetTeamPrefix(team.TeamNumber);
+                var aMineral = minerals.FirstOrDefault(mineral => string.Equals(mineral?.FinalLabel, $"{teamPrefix}A", StringComparison.OrdinalIgnoreCase));
+                if (aMineral == null)
+                {
+                    continue;
+                }
+
                 var hatcheryPos = mapData.StartingTownHall[startIndex];
 
                 var w1 = ResolveLiveWorkerBySuffix(logicalWorkers, workerEntries, "1");
@@ -308,7 +673,8 @@ namespace BabySharkBot.Services
         private IEnumerable<SC2APIProtocol.Action> BuildFrame0EightWorkerSpeedMine(
             MawBaseLocationData mapData,
             int startIndex,
-            IReadOnlyList<WorkerEntryDto> workerEntries)
+            IReadOnlyList<WorkerEntryDto> workerEntries,
+            int relativeFrame)
         {
             var commands = new List<SC2APIProtocol.Action>();
 
@@ -418,9 +784,12 @@ namespace BabySharkBot.Services
                 Console.WriteLine($"  {workerDisplayLabel} tag={worker.UnitTag} -> {mineralDisplayLabel} storedIndex={targetMineral.Index} mineralTag={mineralTag} position=({targetMineral.Position.X:F2},{targetMineral.Position.Y:F2})");
                 if (mineralTag == 0) continue;
 
-                //commands.AddRange(Stop(worker.UnitTag));
-                commands.AddRange(MoveTo(worker.UnitTag, harvestPoint));
-                commands.AddRange(SmartTo(worker.UnitTag, mineralTag));
+                    commands.AddRange(BuildSharkyGatherSequence(
+                        worker.UnitTag,
+                        mineralTag,
+                        targetMineral,
+                        harvestPoint,
+                        relativeFrame));
             }
 
             Console.WriteLine($"[CCA Frame0] Issued {commands.Count} actions total.");
@@ -534,6 +903,105 @@ namespace BabySharkBot.Services
             {
                 X = mineralPosition.X - unitX * mineralOffset,
                 Y = mineralPosition.Y - unitY * mineralOffset
+            };
+        }
+
+        private static bool IsSharkySequenceFrame(int relativeFrame)
+        {
+            return relativeFrame == 0 || relativeFrame == 1 || relativeFrame == 14;
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> BuildSharkyGatherSequence(
+            ulong workerTag,
+            ulong mineralTag,
+            OrderedMineral mineral,
+            Point2D harvestPoint,
+            int relativeFrame)
+        {
+            if (workerTag == 0 || mineralTag == 0 || mineral == null || harvestPoint == null)
+            {
+                return Array.Empty<SC2APIProtocol.Action>();
+            }
+
+            var initialPoint = mineral.SmHarvestPoint != null
+                && (mineral.SmHarvestPoint.X != 0f || mineral.SmHarvestPoint.Y != 0f)
+                ? new Point2D { X = mineral.SmHarvestPoint.X, Y = mineral.SmHarvestPoint.Y }
+                : harvestPoint;
+            var midPoint = new Point2D
+            {
+                X = (initialPoint.X + harvestPoint.X) * 0.5f,
+                Y = (initialPoint.Y + harvestPoint.Y) * 0.5f
+            };
+            var returnPoint = mineral.SmReturnPoint != null
+                && (mineral.SmReturnPoint.X != 0f || mineral.SmReturnPoint.Y != 0f)
+                ? new Point2D { X = mineral.SmReturnPoint.X, Y = mineral.SmReturnPoint.Y }
+                : mineral.ReturnPoint == null
+                    ? null
+                    : new Point2D { X = mineral.ReturnPoint.X, Y = mineral.ReturnPoint.Y };
+
+            var actions = new List<SC2APIProtocol.Action>();
+            switch (relativeFrame)
+            {
+                case 0:
+                    actions.AddRange(MoveTo(workerTag, harvestPoint, false));
+                    break;
+                case 1:
+                    actions.AddRange(MoveTo(workerTag, midPoint, false));
+                    break;
+            }
+            return actions;
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> HarvestGatherTo(ulong tag, ulong targetTag, bool queued)
+        {
+            if (tag == 0 || targetTag == 0) return Array.Empty<SC2APIProtocol.Action>();
+
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.HARVEST_GATHER,
+                TargetUnitTag = targetTag,
+                QueueCommand = queued
+            };
+            command.UnitTags.Add(tag);
+            return new[]
+            {
+                new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = command } }
+            };
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> MoveTo(ulong tag, Point2D point, bool queued)
+        {
+            if (tag == 0 || point == null) return Array.Empty<SC2APIProtocol.Action>();
+
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.MOVE,
+                TargetWorldSpacePos = point,
+                QueueCommand = queued
+            };
+            command.UnitTags.Add(tag);
+            return new[]
+            {
+                new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = command } }
+            };
+        }
+
+        private IEnumerable<SC2APIProtocol.Action> SmartToImmediate(ulong tag, ulong targetTag)
+        {
+            if (tag == 0 || targetTag == 0) return Array.Empty<SC2APIProtocol.Action>();
+
+            var workerLabel = _workerLabelService?.GetLabel(tag) ?? string.Empty;
+            Console.WriteLine($"[MINING COMMAND5] phase=CCA frame=55 worker={tag} Label={workerLabel} command=SMART targetTag={targetTag} queued=false");
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.SMART,
+                TargetUnitTag = targetTag,
+                QueueCommand = false
+            };
+            command.UnitTags.Add(tag);
+            return new List<SC2APIProtocol.Action>
+            {
+                new SC2APIProtocol.Action { ActionRaw = new ActionRaw { UnitCommand = command } }
             };
         }
 

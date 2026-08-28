@@ -23,6 +23,8 @@ namespace BabySharkBot.Managers
         public DrawOnlyManager DrawOnlyWrapper => _drawOnlyWrapper;
         private readonly DrawOnlyManager _drawOnlyWrapper;
         private bool _unregistered;
+        private bool _frame55CommandsIssued;
+        private readonly bool _commandsOwnedByMiningManager = true;
         private int _allMiningConsecutiveFrames = 0;
         private const int AllMiningConfirmationFrames = 2;
 
@@ -67,6 +69,11 @@ namespace BabySharkBot.Managers
 
         public IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
         {
+            if (_commandsOwnedByMiningManager)
+            {
+                return Array.Empty<SC2APIProtocol.Action>();
+            }
+
             try
             {
                 var frame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
@@ -155,10 +162,36 @@ namespace BabySharkBot.Managers
                     return actions != null ? actions.ToList() : Array.Empty<SC2APIProtocol.Action>();
                 }
 
-                // The canonical 12-worker opening owns its scheduled MOVE/SMART sequence
-                // through the fixed frame-35 handoff; do not replace it with the recovery path.
+                // The canonical 12-worker opening keeps its existing frame-35 handoff.
+                // Magannatha issues its role-3 SMART at frame 55 and hands off on frame 105.
                 if (liveWorkers.Count == 12 || Settings.WorkerCount == 12)
                 {
+                    if (Settings.IsMagannatha12WorkerOverride)
+                    {
+                        if (relativeFrame == 55 && !_frame55CommandsIssued)
+                        {
+                            _frame55CommandsIssued = true;
+                            return actions != null ? actions.ToList() : Array.Empty<SC2APIProtocol.Action>();
+                        }
+
+                        if (relativeFrame >= 105 && !_unregistered)
+                        {
+                            Console.WriteLine("CcaManager: Magannatha 12-worker CCA handoff at frame 105.");
+                            try
+                            {
+                                _miningManager.SignalMiningStarted();
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"CcaManager: failed Magannatha 12-worker handoff: {ex.Message}");
+                            }
+
+                            HandleMiningStarted();
+                        }
+
+                        return actions != null ? actions.ToList() : Array.Empty<SC2APIProtocol.Action>();
+                    }
+
                     if (relativeFrame >= 35 && !_unregistered)
                     {
                         Console.WriteLine("CcaManager: 12-worker CCA handoff at frame 35.");

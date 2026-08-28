@@ -21,7 +21,7 @@ namespace BabySharkBot.MicroTasks
 
         public override System.Collections.Generic.IEnumerable<SC2APIProtocol.Action> PerformActions(int frame)
         {
-            // During CCA and steady-state JIT/Speed mining, BabySharkMiningManager and CcaManager own the commands.
+            // During CCA and steady-state JIT/Speed mining, BabySharkMiningManager owns the commands.
             // CustomMiningTask only exists to override Sharky's default debug drawing.
             return new System.Collections.Generic.List<SC2APIProtocol.Action>();
         }

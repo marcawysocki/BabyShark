@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using SC2APIProtocol;
 using Sharky;
@@ -42,6 +43,9 @@ namespace BabySharkBot.Managers
 
         private Dictionary<ulong, WorkerEntryDto> _previousSelfUnits = new();
         private HashSet<ulong> _previousVisibleTags = new();
+        private ulong _lastDebugDroneTag;
+        private uint _lastDebugDroneAbilityId;
+        private bool _hasLastDebugDroneAbility;
 
         public ObservationManager(
             ActiveUnitData activeUnitData,
@@ -153,9 +157,78 @@ namespace BabySharkBot.Managers
             }
 
             PublishAvailableUnits();
+            BreakForDroneAndVisibleMinerals(observation, currentSelfUnits);
 
             _previousSelfUnits = currentSelfUnits;
             _previousVisibleTags = currentVisibleTags;
+        }
+
+        private void BreakForDroneAndVisibleMinerals(ResponseObservation observation, Dictionary<ulong, WorkerEntryDto> currentSelfUnits)
+        {
+            if (!Debugger.IsAttached)
+            {
+                return;
+            }
+
+            var droneUnit = observation.Observation.RawData.Units.FirstOrDefault(unit =>
+                unit.Alliance == Alliance.Self && unit.UnitType == (uint)UnitTypes.ZERG_DRONE);
+            if (droneUnit == null || !currentSelfUnits.TryGetValue(droneUnit.Tag, out var droneWorker))
+            {
+                return;
+            }
+
+            // Named locals make the complete raw and normalized state easy to inspect in the debugger.
+            var droneRawUnit = droneUnit;
+            var droneWorkerEntry = droneWorker;
+            var observationSnapshot = Globals.CurrentObservation;
+            var visibleMinerals = observationSnapshot.VisibleMinerals;
+            var workerLabel = ResolveDebugDroneLabel(droneWorkerEntry);
+            var currentAbilityId = droneRawUnit.Orders?.FirstOrDefault()?.AbilityId ?? 0;
+            var abilityChanged = !_hasLastDebugDroneAbility
+                || _lastDebugDroneTag != droneRawUnit.Tag
+                || _lastDebugDroneAbilityId != currentAbilityId;
+
+            if (abilityChanged)
+            {
+                Console.WriteLine(
+                    $"[DRONE ABILITY CHANGED] frame={observationSnapshot.Frame} " +
+                    $"tag={droneRawUnit.Tag} Label={workerLabel} unitType={droneRawUnit.UnitType} " +
+                    $"alliance={droneRawUnit.Alliance} owner={droneRawUnit.Owner} " +
+                    $"pos=({droneRawUnit.Pos.X:F3},{droneRawUnit.Pos.Y:F3},{droneRawUnit.Pos.Z:F3}) " +
+                    $"health={droneRawUnit.Health:F1}/{droneRawUnit.HealthMax:F1} " +
+                    $"buildProgress={droneRawUnit.BuildProgress:F3} " +
+                    $"abilityId={currentAbilityId} orderCount={droneRawUnit.Orders?.Count ?? 0}");
+
+                _lastDebugDroneTag = droneRawUnit.Tag;
+                _lastDebugDroneAbilityId = currentAbilityId;
+                _hasLastDebugDroneAbility = true;
+                //Debugger.Break();
+            }
+        }
+
+        private string ResolveDebugDroneLabel(WorkerEntryDto droneWorker)
+        {
+            if (!string.IsNullOrWhiteSpace(droneWorker?.FinalLabel))
+            {
+                return droneWorker.FinalLabel;
+            }
+
+            if (!string.IsNullOrWhiteSpace(droneWorker?.Label))
+            {
+                return droneWorker.Label;
+            }
+
+            if (!string.IsNullOrWhiteSpace(droneWorker?.StartLabel))
+            {
+                return droneWorker.StartLabel;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var assignedWorker = Globals.CurrentMapData?.TeamPatchAssignments?
+                .ElementAtOrDefault(startIndex)?
+                .SelectMany(assignment => assignment.Workers ?? new List<WorkerEntryDto>())
+                .FirstOrDefault(worker => worker?.UnitTag == droneWorker?.UnitTag);
+            return assignedWorker?.FinalLabel ?? assignedWorker?.Label ?? assignedWorker?.StartLabel ?? string.Empty;
         }
 
         private void ClassifySelfUnit(Unit unit, int frame, Dictionary<ulong, WorkerEntryDto> currentSelfUnits)

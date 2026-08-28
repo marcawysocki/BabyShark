@@ -235,13 +235,13 @@ namespace BabySharkBot.Setup
                 {
                     // Magannatha custom role layout:
                     // Teal: W3/T1, W4/T2, W1/T3
-                    // Salmon: W5/S1, W6/S2, W12/S3
-                    // Blue: W7/B1, W2/B2, W10/B3
-                    // Yellow: W9/Y1, W8/Y2, W11/Y3
+                    // Salmon: W5/S1, W6/S2, W11/S3
+                    // Blue: W7/B1, W10/B2, W2/B3
+                    // Yellow: W9/Y1, W8/Y2, W12/Y3
                     AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W3", "W4", "W1" }, 1);
-                    AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W12" }, 2);
-                    AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W2", "W10" }, 3);
-                    AddTeamIfPossible(teams, minerals, workers, 6, 7, new[] { "W9", "W8", "W11" }, 4);
+                    AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W11" }, 2);
+                    AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W10", "W2" }, 3);
+                    AddTeamIfPossible(teams, minerals, workers, 6, 7, new[] { "W9", "W8", "W12" }, 4);
                 }
                 else
                 {
@@ -510,6 +510,53 @@ namespace BabySharkBot.Setup
             if (aMineral?.Position == null || bMineral?.Position == null)
             {
                 Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Missing {prefix}A/{prefix}B mineral labels for 12-worker assignment.");
+                return;
+            }
+
+            if (Settings.IsMagannatha12WorkerOverride)
+            {
+                var exactRoleByStartLabel = teamNumber switch
+                {
+                    1 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["W3"] = "T1",
+                        ["W4"] = "T2",
+                        ["W1"] = "T3"
+                    },
+                    2 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["W5"] = "S1",
+                        ["W6"] = "S2",
+                        ["W11"] = "S3"
+                    },
+                    3 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["W7"] = "B1",
+                        ["W10"] = "B2",
+                        ["W2"] = "B3"
+                    },
+                    4 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["W9"] = "Y1",
+                        ["W8"] = "Y2",
+                        ["W12"] = "Y3"
+                    },
+                    _ => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                };
+
+                foreach (var role in exactRoleByStartLabel)
+                {
+                    var worker = FindWorkerByStartLabel(teamWorkers, role.Key);
+                    if (worker == null)
+                    {
+                        Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Missing Magannatha worker {role.Key} for role {role.Value}.");
+                        continue;
+                    }
+
+                    AssignFinalLabel(worker, role.Value, workerLabelService);
+                }
+
+                SetNoPushFlag(mapData, startIndex, $"{prefix}NoPush");
                 return;
             }
 

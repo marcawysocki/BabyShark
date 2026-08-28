@@ -28,6 +28,7 @@ namespace BabySharkBot
         public SharkyOptions SharkyOptions { get; set; }
         public FrameToTimeConverter FrameToTimeConverter { get; set; }
         public List<IManager> Managers { get; set; }
+        public BabySharkMiningManager MiningManager => _miningManager;
 
         // Essential managers
         public DebugManager DebugManager { get; set; }
@@ -82,9 +83,9 @@ namespace BabySharkBot
             var observationManager = new ObservationManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.BaseData, _defaultBot.MapDataService, _defaultBot.UnitDataService, ccaService);
             Managers.Add(observationManager);
 
-            // BuildManager runs second and selects the 8/12-worker build at frame zero.
+            // BuildManager runs second and executes the BuildIne macro build.
             var buildManager = new BabySharkBuildManager(_defaultBot);
-            buildManager.SetBuild(new BabySharkBot.Builds.BuildTest12WorkerStart(_defaultBot));
+            buildManager.SetBuild(new BabySharkBot.Builds.BuildIne(_defaultBot));
             Managers.Add(buildManager);
 
             // Scouting consumes the observation prepared by the first manager.
@@ -386,6 +387,16 @@ namespace BabySharkBot
                         try
                         {
                             var mgrActions = manager.OnFrame(observation);
+                            if (manager is BabySharkMiningManager)
+                            {
+                                var observedWorkers = Globals.CurrentObservation?.SelfUnits?.Values
+                                    .Where(worker => worker != null && worker.UnitType == (uint)UnitTypes.ZERG_DRONE)
+                                    .ToList();
+                                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+                                var assignedWorkers = Globals.CurrentMapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                                    ?? new List<AssignedWorkerDto>();
+                                _owner._workerCommandTelemetry.LogWorkerObservations(observation, observedWorkers, assignedWorkers, manager.GetType().Name);
+                            }
                             if (mgrActions != null)
                             {
                                 actions.AddRange(mgrActions);

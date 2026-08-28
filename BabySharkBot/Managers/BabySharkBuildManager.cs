@@ -32,6 +32,9 @@ namespace BabySharkBot.Managers
         private bool _labelsInitialized;
         private int _greedyChainStartIndex = -1;
         private int _greedyChainWorkerCount = -1;
+        private bool _initialAssignmentLatched;
+        private bool _workerCountTransitionApplied;
+        private int _lastObservedWorkerCount = -1;
 
         public BabySharkBuildManager(DefaultSharkyBot defaultBot)
         {
@@ -45,6 +48,9 @@ namespace BabySharkBot.Managers
             _labelsInitialized = false;
             _greedyChainStartIndex = -1;
             _greedyChainWorkerCount = -1;
+            _initialAssignmentLatched = false;
+            _workerCountTransitionApplied = false;
+            _lastObservedWorkerCount = -1;
         }
 
         public void ConfigureLabelServices(
@@ -60,6 +66,9 @@ namespace BabySharkBot.Managers
             _spawningPoolPlacementService = spawningPoolPlacementService;
             _labelsInitialized = false;
             _greedyChainWorkerCount = -1;
+            _initialAssignmentLatched = false;
+            _workerCountTransitionApplied = false;
+            _lastObservedWorkerCount = -1;
         }
 
         public BabySharkBot.Builds.BabySharkBuild? ActiveBuild => _activeBuild;
@@ -69,7 +78,7 @@ namespace BabySharkBot.Managers
             if (_activeBuild == null) return Array.Empty<SC2APIProtocol.Action>();
 
             var frame = (int)observation.Observation.GameLoop;
-            BuildGreedyMineralChainFromObservation();
+            BuildGreedyMineralChainFromObservation(frame);
             UpdateRuntimeLabels();
 
             if (!_started)
@@ -96,7 +105,7 @@ namespace BabySharkBot.Managers
             }
 
             var frame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
-            BuildGreedyMineralChainFromObservation();
+            BuildGreedyMineralChainFromObservation(frame);
             UpdateRuntimeLabels();
             _activeBuild.OnStart(frame);
             _started = true;
@@ -107,11 +116,13 @@ namespace BabySharkBot.Managers
             List<WorkerEntryDto> liveWorkers,
             Vector2Dto mineralCenterOfMass,
             Vector2Dto townhallPosition,
-            int startIndex)
+            int startIndex,
+            List<HarvestReturnCargoPointDto> cargoPoints)
         {
             if (liveMinerals == null || liveMinerals.Count == 0
                 || liveWorkers == null || liveWorkers.Count == 0
-                || mineralCenterOfMass == null || townhallPosition == null)
+                || mineralCenterOfMass == null || townhallPosition == null
+                || cargoPoints == null || cargoPoints.Count == 0)
             {
                 return new List<OrderedMineral>();
             }
@@ -173,14 +184,24 @@ namespace BabySharkBot.Managers
                 var observed = mineralPositions.First(mineral => DistanceSquared(mineral.Position, position) <= 0.0001f);
                 var resources = (uint)Math.Max(0, observed.MineralContents);
                 var isLarge = resources == largeResourceValue;
-                var linePoints = BuildMineralLinePoints(position, townhallPosition);
+                var cargoPoint = cargoPoints.FirstOrDefault(point =>
+                    point?.ResourcePosition != null
+                    && DistanceSquared(point.ResourcePosition, observed.Position) <= 0.0001f);
+                if (cargoPoint == null
+                    || !HasNonZeroPoint(cargoPoint.HarvestPoint)
+                    || !HasNonZeroPoint(cargoPoint.ReturnPoint))
+                {
+                    Console.WriteLine($"BabySharkBuildManager: Start[{startIndex}] missing persisted cargo footprint for mineral tag={observed.UnitTag}; suppressing runtime assignments.");
+                    return new List<OrderedMineral>();
+                }
+
                 result.Add(new OrderedMineral
                 {
                     Position = new Vector2Dto(position.X, position.Y, position.Z),
-                    HarvestPoint = linePoints.HarvestPoint,
-                    SmHarvestPoint = linePoints.SmHarvestPoint,
-                    ReturnPoint = linePoints.ReturnPoint,
-                    SmReturnPoint = linePoints.SmReturnPoint,
+                    HarvestPoint = cargoPoint.HarvestPoint,
+                    SmHarvestPoint = cargoPoint.SmHarvestPoint,
+                    ReturnPoint = cargoPoint.ReturnPoint,
+                    SmReturnPoint = cargoPoint.SmReturnPoint,
                     Index = orderIndex + 1,
                     OriginalIndex = mineralPositions.IndexOf(observed),
                     DistanceFromCOM = Distance(observed.Position, mineralCenterOfMass),
@@ -196,6 +217,58 @@ namespace BabySharkBot.Managers
 
             Console.WriteLine($"BabySharkBuildManager: Start[{startIndex}] built runtime greedy minerals={result.Count} from live observation.");
             return result;
+        }
+
+        private static List<MiningPairCargoPointDto> BuildRuntimeJitCargoPoints(
+            List<OrderedMineral> orderedMinerals,
+            List<HarvestReturnCargoPointDto> cargoPoints)
+        {
+            var result = new List<MiningPairCargoPointDto>();
+            var ordered = orderedMinerals?.OrderBy(mineral => mineral.Index).ToList() ?? new List<OrderedMineral>();
+            if (ordered.Count == 0 || cargoPoints == null || cargoPoints.Count == 0)
+            {
+                return result;
+            }
+
+            for (var i = 0; i + 1 < ordered.Count; i += 2)
+            {
+                var first = ordered[i];
+                var second = ordered[i + 1];
+                var firstCargo = cargoPoints.FirstOrDefault(point => IsSamePosition(point?.ResourcePosition, first.Position));
+                var secondCargo = cargoPoints.FirstOrDefault(point => IsSamePosition(point?.ResourcePosition, second.Position));
+                if (firstCargo == null || secondCargo == null
+                    || !HasNonZeroPoint(firstCargo.HarvestPoint)
+                    || !HasNonZeroPoint(secondCargo.HarvestPoint))
+                {
+                    return new List<MiningPairCargoPointDto>();
+                }
+
+                var firstReturn = firstCargo.ReturnPoint;
+                var secondReturn = secondCargo.ReturnPoint;
+                result.Add(new MiningPairCargoPointDto
+                {
+                    PairIndex = i / 2 + 1,
+                    Label = $"{first.FinalLabel}/{second.FinalLabel}",
+                    FirstMineralPosition = first.Position,
+                    SecondMineralPosition = second.Position,
+                    JitReturnPoint = new Vector2Dto(
+                        (firstReturn.X + secondReturn.X) * 0.5f,
+                        (firstReturn.Y + secondReturn.Y) * 0.5f,
+                        (firstReturn.Z + secondReturn.Z) * 0.5f),
+                    FirstHarvestPoint = firstCargo.HarvestPoint,
+                    SecondHarvestPoint = secondCargo.HarvestPoint,
+                    FirstReturnPoint = firstReturn,
+                    SecondReturnPoint = secondReturn
+                });
+            }
+
+            return result;
+        }
+
+        private static bool IsSamePosition(Vector2Dto first, Vector2Dto second)
+        {
+            return first != null && second != null
+                && DistanceSquared(first, second) <= 0.0001f;
         }
 
         private static List<Vector2Dto> BuildClosestTraversal(
@@ -241,16 +314,41 @@ namespace BabySharkBot.Managers
             return traversal;
         }
 
-        private void BuildGreedyMineralChainFromObservation()
+        private void BuildGreedyMineralChainFromObservation(int frame)
         {
             var mapData = Globals.CurrentMapData;
             var snapshot = Globals.CurrentObservation;
             var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
             var workerCount = snapshot.SelfUnits?.Values.Count(worker => worker != null && IsWorkerType(worker.UnitType)) ?? 0;
-            if (mapData == null || snapshot == null || startIndex < 0
-                || (_greedyChainStartIndex == startIndex && _greedyChainWorkerCount == workerCount))
+            var relativeFrame = Settings.GetRelativeFrame(frame);
+            if (mapData == null || snapshot == null || startIndex < 0)
             {
                 return;
+            }
+
+            if (_initialAssignmentLatched)
+            {
+                if (_greedyChainStartIndex != startIndex)
+                {
+                    return;
+                }
+
+                if (_lastObservedWorkerCount == workerCount)
+                {
+                    return;
+                }
+
+                if (Settings.IsMagannathaMap && workerCount != 12)
+                {
+                    _lastObservedWorkerCount = workerCount;
+                    return;
+                }
+
+                if (relativeFrame > 0 && _workerCountTransitionApplied)
+                {
+                    _lastObservedWorkerCount = workerCount;
+                    return;
+                }
             }
 
             if (mapData.StartingTownHall == null || startIndex >= mapData.StartingTownHall.Length)
@@ -277,7 +375,8 @@ namespace BabySharkBot.Managers
                 return;
             }
 
-            var ordered = BuildRuntimeGreedyMinerals(visibleMinerals, workers, com, townhall, startIndex);
+            var cargoPoints = mapData.MainMineralCargoPoints?.ElementAtOrDefault(startIndex);
+            var ordered = BuildRuntimeGreedyMinerals(visibleMinerals, workers, com, townhall, startIndex, cargoPoints);
             if (ordered.Count != visibleMinerals.Count)
             {
                 return;
@@ -289,6 +388,12 @@ namespace BabySharkBot.Managers
                 mapData.OrderedMainMinerals.Add(new List<OrderedMineral>());
             }
             mapData.OrderedMainMinerals[startIndex] = ordered;
+            mapData.MainMineralJitCargoPoints ??= new List<List<MiningPairCargoPointDto>>();
+            while (mapData.MainMineralJitCargoPoints.Count <= startIndex)
+            {
+                mapData.MainMineralJitCargoPoints.Add(new List<MiningPairCargoPointDto>());
+            }
+            mapData.MainMineralJitCargoPoints[startIndex] = BuildRuntimeJitCargoPoints(ordered, cargoPoints);
             mapData.StartingMinerals ??= new List<List<OrderedMineral>>();
             while (mapData.StartingMinerals.Count <= startIndex)
             {
@@ -323,8 +428,18 @@ namespace BabySharkBot.Managers
             PopulateAssignedWorkersAndCrossTable(mapData, startIndex, mapData.TeamPatchAssignments[startIndex], townhall, currentTownHallUnitId);
             _greedyChainStartIndex = startIndex;
             _greedyChainWorkerCount = workersForAssignment.Count;
+            if (!_initialAssignmentLatched)
+            {
+                _initialAssignmentLatched = true;
+                _lastObservedWorkerCount = workersForAssignment.Count;
+            }
+            else
+            {
+                _workerCountTransitionApplied = true;
+                _lastObservedWorkerCount = workersForAssignment.Count;
+            }
 
-            Console.WriteLine($"BabySharkBuildManager: built greedy mineral chain for start[{startIndex}] from {ordered.Count} observed minerals for workerCount={_greedyChainWorkerCount}.");
+            Console.WriteLine($"BabySharkBuildManager: built greedy mineral chain for start[{startIndex}] from {ordered.Count} observed minerals for workerCount={_greedyChainWorkerCount} initialLatched={_initialAssignmentLatched} transitionApplied={_workerCountTransitionApplied}.");
         }
 
         private void OrderRuntimeVespeneChain(
@@ -477,7 +592,7 @@ namespace BabySharkBot.Managers
                             townHallUnitId,
                             !isInitial,
                             !isInitial);
-                        if (workerCount == 12 && HasNonZeroPoint(assignment.JitReturnPoint))
+                        if ((workerCount == 12 || Settings.IsMagannathaMap) && HasNonZeroPoint(assignment.JitReturnPoint))
                         {
                             miningTarget.ReturnPoint = assignment.JitReturnPoint;
                         }
@@ -529,7 +644,7 @@ namespace BabySharkBot.Managers
 
         private static IReadOnlyList<string> GetInstructionLabels(string role, int teamNumber, int workerCount)
         {
-            if (workerCount == 12)
+            if (workerCount == 12 || Settings.IsMagannathaMap)
             {
                 if (string.IsNullOrWhiteSpace(role) || role.Length != 2)
                 {
@@ -565,7 +680,6 @@ namespace BabySharkBot.Managers
 
         private static MiningTargetDto CreateMiningTarget(OrderedMineral from, OrderedMineral to, Vector2Dto townhall, ulong townHallUnitId, bool speedMining, bool abSwitch)
         {
-            var harvest = speedMining ? from.HarvestPoint : to.HarvestPoint;
             var returnPoint = speedMining ? from.ReturnPoint : to.ReturnPoint;
             return new MiningTargetDto
             {
@@ -575,8 +689,12 @@ namespace BabySharkBot.Managers
                 ResourceUnitId = to.UnitTag,
                 ResourcePosition = to.Position,
                 TownHallUnitId = townHallUnitId,
-                HarvestPoint = harvest,
+                FromHarvestPoint = from.HarvestPoint,
+                ToHarvestPoint = to.HarvestPoint,
+                HarvestPoint = to.HarvestPoint,
+                SmHarvestPoint = speedMining ? from.SmHarvestPoint : to.SmHarvestPoint,
                 ReturnPoint = returnPoint,
+                SmReturnPoint = speedMining ? from.SmReturnPoint : to.SmReturnPoint,
                 IsSpeedMining = speedMining,
                 IsABSwitch = abSwitch,
                 IsInitialMineralAssignment = !abSwitch

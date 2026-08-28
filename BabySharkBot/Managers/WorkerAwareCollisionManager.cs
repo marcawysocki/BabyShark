@@ -39,6 +39,11 @@ namespace BabySharkBot.Managers
 
         public IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
         {
+            _workersInCollision.Clear();
+            _temporaryMineralWalkers.Clear();
+            return Array.Empty<SC2APIProtocol.Action>();
+
+            /*
             var frame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
             if (Settings.ccaMining || Settings.SimulatedStartActive)
             {
@@ -132,9 +137,12 @@ namespace BabySharkBot.Managers
             }
 
             return actions;
+            */
         }
 
         public void OnEnd(ResponseObservation observation, Result result)
+
+
         {
         }
 

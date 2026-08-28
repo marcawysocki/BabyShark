@@ -108,10 +108,12 @@ namespace BabySharkBot
 
             var sharkyExampleBot = babySharkBot.CreateBot();
 
+            Settings.BaseDtosLoadedBeforeGameConnection = Settings.SerializeDataLoaded && Settings.MapDataLoaded;
+            Console.WriteLine($"BabySharkBot: BaseDtos loaded before GameConnection opened={Settings.BaseDtosLoadedBeforeGameConnection}");
+
             var myRace = Race.Zerg;
             if (args.Length == 0)
             {
-                 gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild).Wait();
                  gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild).Wait();
             }
             else

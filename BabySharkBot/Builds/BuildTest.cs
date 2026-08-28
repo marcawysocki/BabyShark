@@ -64,7 +64,7 @@ namespace Sharky.Builds.Zerg
                 if (!File.Exists(_logFile))
                 {
                     // Header includes frame-zero worker count and canonical M[1]-M[8] contents.
-                    File.WriteAllText(_logFile, "Test,TimestampUTC,GameSeconds,Minerals,Frame,Worker.Count,M[1].content,M[2].content,M[3].content,M[4].content,M[5].content,M[6].content,M[7].content,M[8].content" + Environment.NewLine);
+                    File.WriteAllText(_logFile, "Loaded,TimestampUTC,GameSeconds,Minerals,Frame,Worker.Count,M[1].content,M[2].content,M[3].content,M[4].content,M[5].content,M[6].content,M[7].content,M[8].content" + Environment.NewLine);
                 }
             }
             catch
@@ -122,7 +122,9 @@ namespace Sharky.Builds.Zerg
             if (MacroData != null)
             {
                 var currentMinerals = MacroData.Minerals;
-                var currentFrame = MacroData.Frame;
+                var currentFrame = observation?.Observation == null
+                    ? MacroData.Frame
+                    : (int)observation.Observation.GameLoop;
 
                 if (_prevMinerals == -1)
                 {
@@ -274,7 +276,8 @@ namespace Sharky.Builds.Zerg
             var contents = _frameZeroContentsCaptured
                 ? $",{_frameZeroWorkerCount},{string.Join(",", _frameZeroMineralContents)}"
                 : ",,,,,,,,,";
-            var line = $"{TestNumber},{DateTime.UtcNow:o},{gameSeconds:F3},{minerals},{frame}{contents}{Environment.NewLine}";
+            var loadedStatus = Settings.BaseDtosLoadedBeforeGameConnection ? "loaded:true" : "loaded:false";
+            var line = $"{loadedStatus},{DateTime.UtcNow:o},{gameSeconds:F3},{minerals},{frame}{contents}{Environment.NewLine}";
 
             try
             {

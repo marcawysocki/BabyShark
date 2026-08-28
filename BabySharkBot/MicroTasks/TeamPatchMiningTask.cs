@@ -57,7 +57,7 @@ namespace BabySharkBot.MicroTasks
 
             if (Settings.ccaMining)
             {
-                // CcaManager owns the command generation during CCA phase.
+                // BabySharkMiningManager owns the command generation during CCA phase.
                 return commands;
             }
 

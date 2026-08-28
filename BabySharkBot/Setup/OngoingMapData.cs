@@ -39,7 +39,10 @@ namespace BabySharkBot.Setup
 
             var startIndex = Globals.CurrentStartIndex;
             var workerCount = snapshot.AvailableWorkers.Count + snapshot.SelfUnits.Count(u => !snapshot.AvailableWorkers.Contains(u.Key) && u.Value.UnitType == (uint)UnitTypes.ZERG_DRONE); // Rough estimate
-            Settings.WorkerCount = workerCount;
+            if (!Settings.IsMagannathaMap || Settings.WorkerCount != 12)
+            {
+                Settings.WorkerCount = workerCount;
+            }
 
             var currentAssignments = ResolveTeamAssignments(mapData, startIndex);
             var orderedMinerals = currentAssignments
