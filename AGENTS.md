@@ -62,6 +62,7 @@ Unresolved rules in `PROJECT_CANON.md` are intentionally unresolved. Add diagnos
 - NEVER add fallback, failsafe, recovery, nearest-match, substitute-target, default-mining, or made-up behavior unless the owner explicitly requests it.
 - NEVER silently reinterpret a missing or incomplete assignment as permission to select another worker, mineral, coordinate, route, or spawn.
 - If the instructed assignment cannot be executed exactly, preserve the assignment contract, report the concrete missing data, and stop that command path.
+- If fallback code appears necessary, assume the architecture or manager execution order has been misunderstood; required data must be available before the owning manager executes.
 - Do not describe an invented fallback as a safety improvement. It is an unauthorized behavior change.
 
 ## Change discipline

@@ -122,6 +122,10 @@ namespace BabySharkBot.Setup
         /// Small return point, 1u inward from ReturnPoint.
         /// </summary>
         public Vector2Dto SmReturnPoint { get; set; } = new Vector2Dto();
+        /// <summary>
+        /// Role 3 CCAw point: one unit farther from the mineral center than the JIT harvest point.
+        /// </summary>
+        public Vector2Dto CcaWaitPoint { get; set; } = new Vector2Dto();
 
         /// <summary>
         /// One-based position in the canonical greedy chain.
@@ -268,6 +272,7 @@ namespace BabySharkBot.Setup
         public Vector2Dto SmHarvestPoint { get; set; } = new Vector2Dto();
         public Vector2Dto ReturnPoint { get; set; } = new Vector2Dto();
         public Vector2Dto SmReturnPoint { get; set; } = new Vector2Dto();
+        public Vector2Dto CcaWaitPoint { get; set; } = new Vector2Dto();
 
         [MemoryPackConstructor]
         public HarvestReturnCargoPointDto() { }

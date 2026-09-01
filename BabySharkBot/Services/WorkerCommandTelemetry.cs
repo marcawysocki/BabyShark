@@ -15,6 +15,7 @@ namespace BabySharkBot.Services
         private readonly string _logFile;
         private readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions { WriteIndented = false };
         private long _commandTraceSequence;
+        private readonly Dictionary<ulong, List<int>> _lastObservedOrderAbilityIds = new Dictionary<ulong, List<int>>();
         private readonly Dictionary<ulong, HarvestTimingState> _harvestTimingStates = new Dictionary<ulong, HarvestTimingState>();
 
         public WorkerCommandTelemetry()
@@ -28,6 +29,55 @@ namespace BabySharkBot.Services
             catch
             {
                 _logFile = null;
+            }
+        }
+
+        public void LogObservedOrderAbilityChanges(
+            ResponseObservation observation,
+            IEnumerable<WorkerEntryDto> workers,
+            string sourceManager)
+        {
+            if (string.IsNullOrEmpty(_logFile)
+                || observation?.Observation?.RawData?.Units == null
+                || workers == null)
+            {
+                return;
+            }
+
+            var rawWorkers = observation.Observation.RawData.Units
+                .Where(unit => unit != null && unit.Alliance == Alliance.Self && IsWorker((UnitTypes)unit.UnitType))
+                .ToDictionary(unit => unit.Tag);
+            var frame = (int)observation.Observation.GameLoop;
+            foreach (var worker in workers)
+            {
+                if (worker == null || !rawWorkers.TryGetValue(worker.UnitTag, out var rawWorker))
+                {
+                    continue;
+                }
+
+                var currentAbilityIds = rawWorker.Orders?
+                    .Select(order => (int)order.AbilityId)
+                    .ToList() ?? new List<int>();
+                if (_lastObservedOrderAbilityIds.TryGetValue(worker.UnitTag, out var previousAbilityIds)
+                    && previousAbilityIds.SequenceEqual(currentAbilityIds))
+                {
+                    continue;
+                }
+
+                _lastObservedOrderAbilityIds[worker.UnitTag] = currentAbilityIds;
+                Append(new WorkerOrderAbilityChangeRecord
+                {
+                    RecordType = "WorkerOrderAbilityChange",
+                    Bot = "BabyShark",
+                    TimestampUtc = DateTime.UtcNow,
+                    GameFrame = frame,
+                    GameSeconds = frame / 22.4,
+                    SourceManager = sourceManager ?? string.Empty,
+                    WorkerTag = worker.UnitTag,
+                    WorkerLabel = worker.FinalLabel ?? worker.Label ?? worker.StartLabel ?? string.Empty,
+                    CurrentOrderAbilityIds = currentAbilityIds,
+                    TargetUnitTag = worker.TargetUnitTag == 0 ? null : worker.TargetUnitTag
+                });
             }
         }
 
@@ -92,7 +142,6 @@ namespace BabySharkBot.Services
                     IsCarrying = worker.IsCarrying,
                     WasCarrying = worker.WasCarrying,
                     JustPickedUp = worker.JustPickedUp,
-                    CurrentOrderAbilityIds = rawWorker.Orders?.Select(order => (int)order.AbilityId).ToList() ?? new List<int>(),
                     TargetUnitTag = worker.TargetUnitTag == 0 ? null : worker.TargetUnitTag
                 });
             }
@@ -284,6 +333,20 @@ namespace BabySharkBot.Services
             public int StartFrame { get; set; }
             public int EndFrame { get; set; }
             public int HarvestFrames { get; set; }
+        }
+
+        private sealed class WorkerOrderAbilityChangeRecord
+        {
+            public string RecordType { get; set; }
+            public string Bot { get; set; }
+            public DateTime TimestampUtc { get; set; }
+            public int GameFrame { get; set; }
+            public double GameSeconds { get; set; }
+            public string SourceManager { get; set; }
+            public ulong WorkerTag { get; set; }
+            public string WorkerLabel { get; set; }
+            public List<int> CurrentOrderAbilityIds { get; set; }
+            public ulong? TargetUnitTag { get; set; }
         }
 
         private sealed class WorkerObservationRecord

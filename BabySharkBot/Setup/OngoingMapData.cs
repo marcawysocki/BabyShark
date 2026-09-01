@@ -112,6 +112,18 @@ namespace BabySharkBot.Setup
             return new List<TeamPatchAssignmentDto>();
         }
 
+        private static string GetTeamPrefix(int teamNumber)
+        {
+            return teamNumber switch
+            {
+                1 => "T",
+                2 => "S",
+                3 => "B",
+                4 => "Y",
+                _ => string.Empty
+            };
+        }
+
         private static List<OrderedVespene> ResolveVespene(MawBaseLocationData mapData, int startIndex)
         {
             if (mapData.OrderedMainVespene.Count > startIndex && mapData.OrderedMainVespene[startIndex].Count > 0)

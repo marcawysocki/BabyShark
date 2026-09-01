@@ -46,24 +46,7 @@ namespace BabySharkBot.MicroTasks
                 return Array.Empty<SC2APIProtocol.Action>();
             }
 
-            var commands = new List<SC2APIProtocol.Action>();
-
-            // High priority: JIT Prepositioning for build orders.
-            var prepositionCommands = _jitPrepositionService.Update(frame, (uint)_defaultBot.MacroData.Minerals);
-            if (prepositionCommands.Any())
-            {
-                commands.AddRange(prepositionCommands);
-            }
-
-            if (Settings.ccaMining)
-            {
-                // BabySharkMiningManager owns the command generation during CCA phase.
-                return commands;
-            }
-
-            // After frame 35, the BabySharkMiningManager takes over the steady-state JIT rotations.
-            // The Task only handles the High-Priority prepositioning build orders.
-            return commands;
+            return Array.Empty<SC2APIProtocol.Action>();
         }
     }
 }

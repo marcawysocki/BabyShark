@@ -357,7 +357,7 @@
             readSettings();
             StartSC2Instance(5678);
             await Connect(5678);
-            await CreateGame(map, opponentRace, opponentDifficulty, aIBuild, randomSeed, realTime);
+            await CreateGame(map, opponentRace, opponentDifficulty, aIBuild, randomSeed, realTime, botName);
             var playerId = await JoinGame(myRace);
             await Run(bot, playerId, opponentID, botName);
         }

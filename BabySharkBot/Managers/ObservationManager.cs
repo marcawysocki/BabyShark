@@ -254,8 +254,25 @@ namespace BabySharkBot.Managers
             entry.BecameVisible = becameVisible;
             entry.IsMorphing = unit.BuildProgress < 1.0f && ut != UnitTypes.ZERG_LARVA;
             entry.IsCompleted = unit.BuildProgress >= 1.0f;
+            var observedAbilityId = unit.Orders?.FirstOrDefault() == null
+                ? -1
+                : Convert.ToInt32(unit.Orders.First().AbilityId);
             entry.OrderAbilityIds = unit.Orders?.Select(order => Convert.ToInt32(order.AbilityId)).ToList() ?? new List<int>();
             entry.TargetUnitTag = unit.Orders?.FirstOrDefault()?.TargetUnitTag ?? 0;
+
+            if (WorkerTypes.Contains(ut))
+            {
+                if (!Settings.RuntimeWorkers.TryGetValue(unit.Tag, out var runtimeWorker))
+                {
+                    runtimeWorker = new RuntimeWorkerState { UnitTag = unit.Tag };
+                    Settings.RuntimeWorkers[unit.Tag] = runtimeWorker;
+                }
+
+                runtimeWorker.PreviousAbilityId = runtimeWorker.CurrentAbilityId;
+                runtimeWorker.CurrentAbilityId = observedAbilityId;
+                runtimeWorker.Position = new Vector2Dto(unit.Pos.X, unit.Pos.Y, unit.Pos.Z);
+                runtimeWorker.WasCarrying = runtimeWorker.IsCarrying;
+            }
 
             if (unit.UnitType == (uint)UnitTypes.ZERG_HATCHERY
                 || unit.UnitType == (uint)UnitTypes.TERRAN_COMMANDCENTER
@@ -283,6 +300,12 @@ namespace BabySharkBot.Managers
             entry.WasCarrying = wasCarrying;
             entry.IsCarrying = isCarrying;
             entry.JustPickedUp = isCarrying && !wasCarrying;
+
+            if (WorkerTypes.Contains(ut) && Settings.RuntimeWorkers.TryGetValue(unit.Tag, out var observedWorker))
+            {
+                observedWorker.WasCarrying = wasCarrying;
+                observedWorker.IsCarrying = isCarrying;
+            }
 
             currentSelfUnits[unit.Tag] = entry;
 

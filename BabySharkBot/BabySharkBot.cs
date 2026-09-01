@@ -45,6 +45,7 @@ namespace BabySharkBot
         private GameConnection _gameConnection;
         private DefaultSharkyBot _defaultBot;
         private BabySharkMiningManager _miningManager;
+        private readonly ExtractorTrickService _extractorTrickService;
         private readonly WorkerCommandTelemetry _workerCommandTelemetry;
 
         /// <summary>
@@ -76,16 +77,15 @@ namespace BabySharkBot
             DebugManager = _defaultBot.DebugManager;
             DebugService = _defaultBot.DebugService;
 
-            // Build the shared CCA service before ObservationManager so startup uses one instance.
-            var ccaService = new BabySharkBot.Services.chrisCrossAppleSause();
-
             // ObservationManager runs first so every later manager consumes the same frame snapshot.
-            var observationManager = new ObservationManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.BaseData, _defaultBot.MapDataService, _defaultBot.UnitDataService, ccaService);
+            // CCA remains available as dormant code but is not part of runtime command ownership.
+            var observationManager = new ObservationManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.BaseData, _defaultBot.MapDataService, _defaultBot.UnitDataService, null);
             Managers.Add(observationManager);
 
             // BuildManager runs second and executes the BuildIne macro build.
+            _extractorTrickService = new ExtractorTrickService(_defaultBot);
             var buildManager = new BabySharkBuildManager(_defaultBot);
-            buildManager.SetBuild(new BabySharkBot.Builds.BuildIne(_defaultBot));
+            buildManager.SetBuild(new BabySharkBot.Builds.BuildIne(_defaultBot, _extractorTrickService));
             Managers.Add(buildManager);
 
             // Scouting consumes the observation prepared by the first manager.
@@ -135,8 +135,8 @@ namespace BabySharkBot
             RegisterRequiredMicroTasks();
             InstallRlMicroControllerWrappers();
 
-            // Create BabySharkMiningManager with shared CCA service instance
-            _miningManager = new BabySharkMiningManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.CollisionCalculator, workerLabelService, crosshairService, mineralLabelService, vespeneLabelService, expansionCOMService, expansionPointService, expansionPointDrawService, provisionalExpansionService, MineralReturnRateTrackerService, FrameToTimeConverter, mapDataService, SpawningPoolPlacementService, ccaService);
+            // Create BabySharkMiningManager. CCA remains dormant and is not passed as a runtime owner.
+            _miningManager = new BabySharkMiningManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.CollisionCalculator, workerLabelService, crosshairService, mineralLabelService, vespeneLabelService, expansionCOMService, expansionPointService, expansionPointDrawService, provisionalExpansionService, MineralReturnRateTrackerService, FrameToTimeConverter, mapDataService, SpawningPoolPlacementService, null, _extractorTrickService);
             buildManager.ConfigureLabelServices(workerLabelService, mineralLabelService, vespeneLabelService, SpawningPoolPlacementService);
             Console.WriteLine("BabySharkAI: Created BabySharkMiningManager and configured BuildManager label ownership");
 
@@ -144,28 +144,19 @@ namespace BabySharkBot
             Managers.Add(_miningManager);
             Console.WriteLine("BabySharkAI: Registered BabySharkMiningManager for per-frame label registration and mining updates.");
 
-            // Create and register CCA manager to run bump/order logic in the manager lifecycle.
-            try
-            {
-                var ccaManager = new CcaManager(ccaService, _miningManager);
-                Managers.Add(ccaManager);
-                Managers.Add(ccaManager.DrawOnlyWrapper);
+            // Drawing is independent from CCA and must remain active after CCA is retired.
+            var drawOnlyManager = new DrawOnlyManager(_miningManager);
+            Managers.Add(drawOnlyManager);
+            Console.WriteLine("BabySharkAI: Registered DrawOnlyManager for worker and mineral labels.");
 
-                // Collision recovery runs after mining and CCA, only during steady-state.
-                var collisionManager = new WorkerAwareCollisionManager(_miningManager);
-                Managers.Add(collisionManager);
-                Console.WriteLine("BabySharkAI: Registered CcaManager, DrawOnlyManager, and steady-state WorkerAwareCollisionManager.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"BabySharkAI: Failed to register CcaManager: {ex.Message}");
-            }
+            // CCA is dormant. It is intentionally not registered in the runtime manager list.
+            Console.WriteLine("BabySharkAI: CCA runtime registration disabled; worker instructions own mining commands.");
 
             Console.WriteLine("BabySharkAI initialized with essential BabyShark managers");
         }
 
-        public CcaManager CcaManager => Managers.OfType<CcaManager>().FirstOrDefault();
-        public chrisCrossAppleSause CcaMiningService => CcaManager?.CcaMiningService;
+        public CcaManager CcaManager => null;
+        public chrisCrossAppleSause CcaMiningService => null;
 
         /// <summary>
         /// Register only the necessary microtasks for BabyShark operations.
@@ -238,6 +229,8 @@ namespace BabySharkBot
             ConsecrationofMyStarCraftIIBotProject.Invoke();
             Console.WriteLine("BabySharkAI: OnStart called");
             Settings.CurrentMapName = gameInfo?.MapName ?? Settings.CurrentMapName ?? string.Empty;
+            Settings.ResetRuntimeWorkers();
+            Settings.ccaMining = false;
             
             var workersCount = observation?.Observation?.RawData?.Units?.Count(u => u != null && u.Alliance == Alliance.Self && (u.UnitType == (uint)UnitTypes.ZERG_DRONE || u.UnitType == (uint)UnitTypes.TERRAN_SCV || u.UnitType == (uint)UnitTypes.PROTOSS_PROBE)) ?? 12;
             Settings.WorkerCount = workersCount;
@@ -384,9 +377,27 @@ namespace BabySharkBot
                         }
 
                         var beginManager = System.Diagnostics.Stopwatch.GetTimestamp();
+                        if (manager is BabySharkBuildManager)
+                        {
+                            Console.WriteLine($"[BUILD DISPATCH] frame={observation?.Observation?.GameLoop} manager={manager.GetType().Name}");
+                            if (System.Diagnostics.Debugger.IsAttached)
+                            {
+                                //System.Diagnostics.Debugger.Break();
+                            }
+                        }
                         try
                         {
                             var mgrActions = manager.OnFrame(observation);
+                            if (manager is ObservationManager)
+                            {
+                                var observedWorkers = Globals.CurrentObservation?.SelfUnits?.Values
+                                    .Where(worker => worker != null && worker.UnitType == (uint)UnitTypes.ZERG_DRONE)
+                                    .ToList();
+                                _owner._workerCommandTelemetry.LogObservedOrderAbilityChanges(
+                                    observation,
+                                    observedWorkers,
+                                    manager.GetType().Name);
+                            }
                             if (manager is BabySharkMiningManager)
                             {
                                 var observedWorkers = Globals.CurrentObservation?.SelfUnits?.Values

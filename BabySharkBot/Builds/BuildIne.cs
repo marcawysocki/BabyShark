@@ -7,6 +7,7 @@ using BabySharkBot.Setup;
 using System.Linq;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 
 namespace BabySharkBot.Builds
@@ -43,11 +44,11 @@ namespace BabySharkBot.Builds
         private readonly Dictionary<string, int> _frameZeroContentsByPosition = new Dictionary<string, int>();
         private bool _frameZeroObservationCaptured;
 
-        public BuildIne(DefaultSharkyBot defaultBot) : base(defaultBot)
+        public BuildIne(DefaultSharkyBot defaultBot, ExtractorTrickService extractorTrick = null) : base(defaultBot)
         {
             _buildingRequestCancellingService = defaultBot.BuildingRequestCancellingService;
             _droneMorph = new DroneMorphService(defaultBot) { DesiredDroneCount = DesiredDrones };
-            _extractorTrick = new ExtractorTrickService(defaultBot);
+            _extractorTrick = extractorTrick ?? new ExtractorTrickService(defaultBot);
             
             _step5Called = false;
             _stopTriggered = false;
@@ -138,8 +139,21 @@ namespace BabySharkBot.Builds
 
         public override IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
         {
+            var frame = observation?.Observation == null
+                ? -1
+                : (int)observation.Observation.GameLoop;
+            Console.WriteLine($"[BUILD INE ONFRAME ENTER] frame={frame} macroFrame={MacroData?.Frame} minerals={MacroData?.Minerals} foodLeft={MacroData?.FoodLeft}");
+            if (Debugger.IsAttached)
+            {
+                //Debugger.Break();
+            }
+
             var actions = new List<SC2APIProtocol.Action>();
-            int frame = (int)observation.Observation.GameLoop;
+            if (observation?.Observation == null)
+            {
+                Console.WriteLine($"[BUILD INE ONFRAME EXIT] frame={frame} reason=observation-null");
+                return actions;
+            }
 
             SelectTeamBuild();
 
@@ -184,7 +198,8 @@ namespace BabySharkBot.Builds
             actions.AddRange(_droneMorph.Update(frame, observation));
 
             // --- Phase 2: Extractor trick at 14 drones (for 15th worker supply) ---
-            actions.AddRange(_extractorTrick.Update(observation));
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            actions.AddRange(_extractorTrick.Update(observation, Globals.CurrentMapData, startIndex));
 
             // Early stop: when minerals exceed 275, trigger the build at the stored Step5 location (once)
             if (!_stopTriggered && MacroData != null && MacroData.Minerals > 275)

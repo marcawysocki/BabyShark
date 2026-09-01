@@ -16,7 +16,7 @@ namespace BabySharkBot.Setup
         public static string MiningCycleScorePath = "RLIntegration/data/mining_cycle_scores.jsonl";
 
         // Speed/mining/data schema version (semantic string). Update when heavy-generation or JSON schema changes.
-            public const string SpeedMiningVersion = "0.08";
+            public const string SpeedMiningVersion = "0.09";
 
             // Debug mode: enables console logging and debug prints. Can be true even in Release builds if needed.
             public static bool DebugMode = true;
@@ -61,8 +61,16 @@ namespace BabySharkBot.Setup
         public static List<ulong> AvailableOverLord { get; } = new List<ulong>();
         public static List<ulong> AvailableQueen { get; } = new List<ulong>();
 
-        public static bool ccaMining = true;
+        public static bool ccaMining = false;
         public static bool SimulatedStartActive = false;
+        public static Dictionary<ulong, RuntimeWorkerState> RuntimeWorkers { get; } = new Dictionary<ulong, RuntimeWorkerState>();
+        public static Dictionary<string, List<WorkerInstruction>> RuntimeInstructionSets { get; } = new Dictionary<string, List<WorkerInstruction>>(StringComparer.OrdinalIgnoreCase);
+
+        public static void ResetRuntimeWorkers()
+        {
+            RuntimeWorkers.Clear();
+            RuntimeInstructionSets.Clear();
+        }
         public static bool BuildOwnsWorkerCommands = false;
         public static int StartFrame = 0;
         public static bool CreateWorkerFrameZero = true;

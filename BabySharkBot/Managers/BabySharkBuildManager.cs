@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using SC2APIProtocol;
 using Sharky;
 using Sharky.Managers;
@@ -35,6 +36,10 @@ namespace BabySharkBot.Managers
         private bool _initialAssignmentLatched;
         private bool _workerCountTransitionApplied;
         private int _lastObservedWorkerCount = -1;
+        private bool _ccawStartupSummaryLogged;
+        private readonly HashSet<ulong> _jitMhStartupLogs = new HashSet<ulong>();
+        private readonly HashSet<ulong> _ccawStartupLogs = new HashSet<ulong>();
+        private readonly OngoingMapData _ongoingMapData = new OngoingMapData();
 
         public BabySharkBuildManager(DefaultSharkyBot defaultBot)
         {
@@ -51,6 +56,9 @@ namespace BabySharkBot.Managers
             _initialAssignmentLatched = false;
             _workerCountTransitionApplied = false;
             _lastObservedWorkerCount = -1;
+            _ccawStartupSummaryLogged = false;
+            _jitMhStartupLogs.Clear();
+            _ccawStartupLogs.Clear();
         }
 
         public void ConfigureLabelServices(
@@ -69,17 +77,40 @@ namespace BabySharkBot.Managers
             _initialAssignmentLatched = false;
             _workerCountTransitionApplied = false;
             _lastObservedWorkerCount = -1;
+            _ccawStartupSummaryLogged = false;
+            _jitMhStartupLogs.Clear();
+            _ccawStartupLogs.Clear();
         }
 
         public BabySharkBot.Builds.BabySharkBuild? ActiveBuild => _activeBuild;
 
         public IEnumerable<SC2APIProtocol.Action> OnFrame(ResponseObservation observation)
         {
-            if (_activeBuild == null) return Array.Empty<SC2APIProtocol.Action>();
+            var frame = observation?.Observation == null
+                ? -1
+                : (int)observation.Observation.GameLoop;
+            Console.WriteLine($"[BUILD MANAGER ONFRAME ENTER] frame={frame} activeBuild={_activeBuild?.BuildName ?? "<null>"} started={_started} skip={SkipFrame} neverSkip={NeverSkip}");
+            if (Debugger.IsAttached)
+            {
+                //Debugger.Break();
+            }
 
-            var frame = (int)observation.Observation.GameLoop;
+            if (_activeBuild == null)
+            {
+                Console.WriteLine($"[BUILD MANAGER ONFRAME EXIT] frame={frame} reason=activeBuild-null");
+                return Array.Empty<SC2APIProtocol.Action>();
+            }
             BuildGreedyMineralChainFromObservation(frame);
+            _ongoingMapData.RefreshMiningData(
+                null,
+                observation,
+                Globals.CurrentMapData,
+                _workerLabelService,
+                null,
+                _mineralLabelService,
+                _vespeneLabelService);
             UpdateRuntimeLabels();
+            SeedRuntimeWorkerInstructions(frame);
 
             if (!_started)
             {
@@ -87,7 +118,15 @@ namespace BabySharkBot.Managers
                 _started = true;
             }
 
+            Console.WriteLine($"[BUILD MANAGER CALLING BUILD] frame={frame} build={_activeBuild.BuildName} started={_started}");
+            if (Debugger.IsAttached)
+            {
+                //Debugger.Break();
+            }
+
             var actions = _activeBuild.OnFrame(observation) ?? Array.Empty<SC2APIProtocol.Action>();
+
+            Console.WriteLine($"[BUILD MANAGER BUILD RETURNED] frame={frame} build={_activeBuild.BuildName} actions={actions.Count()}");
 
             if (_activeBuild.ShouldTransition(frame))
             {
@@ -105,10 +144,209 @@ namespace BabySharkBot.Managers
             }
 
             var frame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
             BuildGreedyMineralChainFromObservation(frame);
+            CalculateCcaWaitPointsForCurrentSpawn();
+            _ongoingMapData.RefreshMiningData(
+                null,
+                observation,
+                Globals.CurrentMapData,
+                _workerLabelService,
+                null,
+                _mineralLabelService,
+                _vespeneLabelService);
             UpdateRuntimeLabels();
             _activeBuild.OnStart(frame);
+            SeedRuntimeWorkerInstructions(frame);
+            LogStartupInstructionSummary(startIndex);
             _started = true;
+        }
+
+        private void CalculateCcaWaitPointsForCurrentSpawn()
+        {
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var assignments = Globals.CurrentMapData?.TeamPatchAssignments?.ElementAtOrDefault(startIndex);
+            if (assignments == null || assignments.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var assignment in assignments)
+            {
+                var aMineral = assignment?.Minerals?.FirstOrDefault(mineral =>
+                    mineral?.FinalLabel?.EndsWith("A", StringComparison.OrdinalIgnoreCase) == true);
+                if (assignment == null || aMineral == null)
+                {
+                    continue;
+                }
+
+                var storedPoint = HasNonZeroPoint(aMineral.CcaWaitPoint)
+                    ? aMineral.CcaWaitPoint
+                    : HasNonZeroPoint(assignment.JitWaitPoint)
+                        ? assignment.JitWaitPoint
+                        : null;
+                if (storedPoint != null)
+                {
+                    aMineral.CcaWaitPoint = storedPoint;
+                    assignment.JitWaitPoint = storedPoint;
+                    Console.WriteLine(
+                        $"[BUILD START CCAW POINT REUSED] start={startIndex} team={assignment.TeamNumber} mineral={aMineral.FinalLabel} " +
+                        $"point=({storedPoint.X:F2},{storedPoint.Y:F2}) source=BaseDtos");
+                    continue;
+                }
+
+                if (!HasNonZeroPoint(aMineral.Position) || !HasNonZeroPoint(aMineral.HarvestPoint))
+                {
+                    continue;
+                }
+
+                var directionX = aMineral.HarvestPoint.X - aMineral.Position.X;
+                var directionY = aMineral.HarvestPoint.Y - aMineral.Position.Y;
+                var harvestDistance = MathF.Sqrt(directionX * directionX + directionY * directionY);
+                if (harvestDistance <= 0.0001f)
+                {
+                    continue;
+                }
+
+                // Calculate only when the current-spawn BaseDtos record has no point.
+                var scale = (harvestDistance + 1f) / harvestDistance;
+                var ccaWaitPoint = new Vector2Dto(
+                    aMineral.Position.X + directionX * scale,
+                    aMineral.Position.Y + directionY * scale,
+                    aMineral.HarvestPoint.Z);
+                aMineral.CcaWaitPoint = ccaWaitPoint;
+                assignment.JitWaitPoint = ccaWaitPoint;
+
+                Console.WriteLine(
+                    $"[BUILD START CCAW POINT CALCULATED] start={startIndex} team={assignment.TeamNumber} mineral={aMineral.FinalLabel} " +
+                    $"harvest=({aMineral.HarvestPoint.X:F2},{aMineral.HarvestPoint.Y:F2}) " +
+                    $"point=({ccaWaitPoint.X:F2},{ccaWaitPoint.Y:F2}) stored=BaseDtos");
+            }
+        }
+
+        private void SeedRuntimeWorkerInstructions(int frame)
+        {
+            var snapshot = Globals.CurrentObservation;
+            if (snapshot?.SelfUnits == null || Globals.CurrentMapData == null)
+            {
+                return;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var assignments = Globals.CurrentMapData.TeamPatchAssignments.ElementAtOrDefault(startIndex);
+            if (assignments == null)
+            {
+                return;
+            }
+
+            foreach (var assignment in assignments)
+            {
+                foreach (var assignedWorker in assignment?.Workers ?? new List<WorkerEntryDto>())
+                {
+                    if (assignedWorker == null || assignedWorker.UnitTag == 0 || !snapshot.SelfUnits.ContainsKey(assignedWorker.UnitTag))
+                    {
+                        continue;
+                    }
+
+                    if (Settings.RuntimeWorkers.TryGetValue(assignedWorker.UnitTag, out var runtimeWorker) && runtimeWorker.Instructions.Count > 0)
+                    {
+                        continue;
+                    }
+
+                    var role = assignedWorker.FinalLabel ?? assignedWorker.Label ?? string.Empty;
+                    var initialTarget = Globals.CurrentMapData.AssignedWorkers.ElementAtOrDefault(startIndex)?
+                        .FirstOrDefault(worker => worker?.UnitID == assignedWorker.UnitTag)?
+                        .MiningTargets?.FirstOrDefault();
+                    if (initialTarget == null || initialTarget.ResourceUnitId == 0)
+                    {
+                        continue;
+                    }
+
+                    runtimeWorker ??= new RuntimeWorkerState { UnitTag = assignedWorker.UnitTag };
+                    // Role 3 uses the isolated CCAw instruction path; other roles use jitMH.
+                    var roleThree = role.EndsWith("3", StringComparison.OrdinalIgnoreCase);
+                    var instructionSet = roleThree ? "CCAw" : "jitMH";
+                    var movementPoint = roleThree ? WorkerInstructionPoint.Staging : WorkerInstructionPoint.Harvest;
+                    var gatherFrame = roleThree ? 55 : 15;
+                    runtimeWorker.LoadInstructions(instructionSet, new[]
+                    {
+                        new WorkerInstruction
+                        {
+                            InstructionSet = instructionSet,
+                            Command = WorkerInstructionCommand.Move,
+                            Point = movementPoint,
+                            TargetId = initialTarget.ResourceUnitId,
+                            RelativeFrame = 0
+                        },
+                        new WorkerInstruction
+                        {
+                            InstructionSet = instructionSet,
+                            Command = WorkerInstructionCommand.Move,
+                            Point = movementPoint,
+                            TargetId = initialTarget.ResourceUnitId,
+                            RelativeFrame = 1
+                        },
+                        new WorkerInstruction
+                        {
+                            InstructionSet = instructionSet,
+                            Command = WorkerInstructionCommand.Move,
+                            Point = movementPoint,
+                            TargetId = initialTarget.ResourceUnitId,
+                            RelativeFrame = 14
+                        },
+                        new WorkerInstruction
+                        {
+                            InstructionSet = instructionSet,
+                            Command = WorkerInstructionCommand.Gather,
+                            Point = WorkerInstructionPoint.Harvest,
+                            TargetId = initialTarget.ResourceUnitId,
+                            RelativeFrame = gatherFrame,
+                            Queue = true
+                        }
+                    }, Settings.GetRelativeFrame(frame));
+                    Settings.RuntimeWorkers[assignedWorker.UnitTag] = runtimeWorker;
+                    var loaded = Settings.RuntimeWorkers.TryGetValue(assignedWorker.UnitTag, out var loadedWorker)
+                        && loadedWorker.Instructions.Count == 4
+                        && loadedWorker.Instructions.All(instruction =>
+                            string.Equals(instruction.InstructionSet, instructionSet, StringComparison.OrdinalIgnoreCase));
+                    if (!loaded)
+                    {
+                        continue;
+                    }
+
+                    if (roleThree)
+                    {
+                        _ccawStartupLogs.Add(assignedWorker.UnitTag);
+                    }
+                    else
+                    {
+                        _jitMhStartupLogs.Add(assignedWorker.UnitTag);
+                        Console.WriteLine($"[BUILD START INSTRUCTION LOADED] worker={assignedWorker.UnitTag} role={role} set=jitMH target={initialTarget.ResourceUnitId}");
+                    }
+                }
+            }
+        }
+
+        private void LogStartupInstructionSummary(int startIndex)
+        {
+            if (_ccawStartupSummaryLogged)
+            {
+                return;
+            }
+
+            var loadedWorkers = (Globals.CurrentMapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                    ?? new List<AssignedWorkerDto>())
+                .Where(worker => worker != null && worker.UnitID != 0)
+                .Select(worker => worker.UnitID)
+                .Distinct()
+                .ToList();
+            var roleThreeCount = loadedWorkers.Count(worker => _ccawStartupLogs.Contains(worker));
+            var jitMhCount = loadedWorkers.Count(worker => _jitMhStartupLogs.Contains(worker));
+            if (roleThreeCount == 4 && jitMhCount == 8)
+            {
+                Console.WriteLine($"[BUILD START INSTRUCTIONS] start={startIndex} CCAw loaded into four role 3 workers; jitMH loaded into eight workers.");
+                _ccawStartupSummaryLogged = true;
+            }
         }
 
         private static List<OrderedMineral> BuildRuntimeGreedyMinerals(
@@ -202,6 +440,7 @@ namespace BabySharkBot.Managers
                     SmHarvestPoint = cargoPoint.SmHarvestPoint,
                     ReturnPoint = cargoPoint.ReturnPoint,
                     SmReturnPoint = cargoPoint.SmReturnPoint,
+                    CcaWaitPoint = cargoPoint.CcaWaitPoint,
                     Index = orderIndex + 1,
                     OriginalIndex = mineralPositions.IndexOf(observed),
                     DistanceFromCOM = Distance(observed.Position, mineralCenterOfMass),
@@ -251,10 +490,7 @@ namespace BabySharkBot.Managers
                     Label = $"{first.FinalLabel}/{second.FinalLabel}",
                     FirstMineralPosition = first.Position,
                     SecondMineralPosition = second.Position,
-                    JitReturnPoint = new Vector2Dto(
-                        (firstReturn.X + secondReturn.X) * 0.5f,
-                        (firstReturn.Y + secondReturn.Y) * 0.5f,
-                        (firstReturn.Z + secondReturn.Z) * 0.5f),
+                    JitReturnPoint = firstReturn,
                     FirstHarvestPoint = firstCargo.HarvestPoint,
                     SecondHarvestPoint = secondCargo.HarvestPoint,
                     FirstReturnPoint = firstReturn,
@@ -407,7 +643,12 @@ namespace BabySharkBot.Managers
             var workersForAssignment = WorkerLabelChainHelper.BuildGreedyWorkerEntries(workerTuples, com, _workerLabelService);
             OrderRuntimeVespeneChain(mapData, startIndex, snapshot.Vespene.Values.ToList(), workersForAssignment, townhall);
             // Rebuild the current game's assignment records from the current worker tags.
-            // The cached geometry is reusable; SC2 worker tags are not.
+            // Preserve MiningManager-owned frame-0 JIT geometry while refreshing worker tags.
+            var previousJitPoints = mapData.TeamPatchAssignments.ElementAtOrDefault(startIndex)?
+                .Where(assignment => assignment != null)
+                .ToDictionary(
+                    assignment => assignment.TeamNumber,
+                    assignment => (assignment.JitReturnPoint, assignment.JitWaitPoint));
             while (mapData.TeamPatchAssignments.Count <= startIndex)
             {
                 mapData.TeamPatchAssignments.Add(new List<TeamPatchAssignmentDto>());
@@ -421,6 +662,17 @@ namespace BabySharkBot.Managers
                 com,
                 _workerLabelService,
                 mapData.TeamPatchAssignments);
+            if (previousJitPoints != null)
+            {
+                foreach (var assignment in mapData.TeamPatchAssignments[startIndex])
+                {
+                    if (assignment != null && previousJitPoints.TryGetValue(assignment.TeamNumber, out var points))
+                    {
+                        assignment.JitReturnPoint = points.JitReturnPoint;
+                        assignment.JitWaitPoint = points.JitWaitPoint;
+                    }
+                }
+            }
             _labelsInitialized = false;
             var currentTownHallUnitId = Globals.CurrentObservation?.CurrentTownHalls?.Values
                 .FirstOrDefault(unit => unit?.Position != null

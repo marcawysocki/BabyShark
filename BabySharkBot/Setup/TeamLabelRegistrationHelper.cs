@@ -176,7 +176,11 @@ namespace BabySharkBot.Setup
                 }
 
                 var hatcheryPos = mapData.StartingTownHall[startIndex];
-                var jitPoints = CalculateJitPoints(mineralPair[0], mineralPair[1], hatcheryPos);
+                var aMineral = mineralPair.FirstOrDefault(mineral =>
+                    string.Equals(mineral?.FinalLabel, $"{GetTeamPrefix(teamNum, workers.Count)}A", StringComparison.OrdinalIgnoreCase));
+                var jitPoints = (
+                    ReturnPoint: new Vector2Dto(),
+                    WaitPoint: aMineral?.CcaWaitPoint ?? new Vector2Dto());
                 var teamId = $"{hatcheryPos.X:F1}_{hatcheryPos.Y:F1}_T{teamNum}";
 
                 result.Add(new TeamPatchAssignmentDto
@@ -195,32 +199,6 @@ namespace BabySharkBot.Setup
             return result;
         }
 
-        private static (Vector2Dto ReturnPoint, Vector2Dto WaitPoint) CalculateJitPoints(OrderedMineral mA, OrderedMineral mB, Vector2Dto townhall)
-        {
-            if (mA?.Position == null || mB?.Position == null || townhall == null)
-            {
-                return (new Vector2Dto(), new Vector2Dto());
-            }
-
-            // Return point: Average of A and B, then projected to townhall radius (approx 2.75u)
-            var avgX = (mA.Position.X + mB.Position.X) * 0.5f;
-            var avgY = (mA.Position.Y + mB.Position.Y) * 0.5f;
-
-            var dirX = avgX - townhall.X;
-            var dirY = avgY - townhall.Y;
-            var mag = MathF.Sqrt(dirX * dirX + dirY * dirY);
-            
-            // Townhall radius is roughly 2.75. We want to return at the edge.
-            var returnX = townhall.X + (dirX / mag) * 2.8f;
-            var returnY = townhall.Y + (dirY / mag) * 2.8f;
-
-            // Wait point: 1.5u away from the return point towards the minerals
-            var waitX = returnX + (dirX / mag) * 1.5f;
-            var waitY = returnY + (dirY / mag) * 1.5f;
-
-            return (new Vector2Dto(returnX, returnY), new Vector2Dto(waitX, waitY));
-        }
-
         private static List<TeamLayout> BuildExplicitTeamLayouts(List<OrderedMineral> minerals, List<WorkerEntryDto> workers)
         {
             var teams = new List<TeamLayout>();
@@ -235,12 +213,12 @@ namespace BabySharkBot.Setup
                 {
                     // Magannatha custom role layout:
                     // Teal: W3/T1, W4/T2, W1/T3
-                    // Salmon: W5/S1, W6/S2, W11/S3
-                    // Blue: W7/B1, W10/B2, W2/B3
+                    // Salmon: W5/S1, W6/S2, W2/S3
+                    // Blue: W7/B1, W11/B2, W10/B3
                     // Yellow: W9/Y1, W8/Y2, W12/Y3
                     AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W3", "W4", "W1" }, 1);
-                    AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W11" }, 2);
-                    AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W10", "W2" }, 3);
+                    AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W2" }, 2);
+                    AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W11", "W10" }, 3);
                     AddTeamIfPossible(teams, minerals, workers, 6, 7, new[] { "W9", "W8", "W12" }, 4);
                 }
                 else
@@ -527,13 +505,13 @@ namespace BabySharkBot.Setup
                     {
                         ["W5"] = "S1",
                         ["W6"] = "S2",
-                        ["W11"] = "S3"
+                        ["W2"] = "S3"
                     },
                     3 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
                         ["W7"] = "B1",
-                        ["W10"] = "B2",
-                        ["W2"] = "B3"
+                        ["W11"] = "B2",
+                        ["W10"] = "B3"
                     },
                     4 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
@@ -595,9 +573,8 @@ namespace BabySharkBot.Setup
 
             if (teamNumber == 2)
             {
-                // Salmon keeps the fixed M[3]/M[4] targets. Magannatha changes the
-                // S3 anchor to W12; generic maps retain W1.
-                var s3 = FindWorkerByStartLabel(teamWorkers, Settings.IsMagannatha12WorkerOverride ? "W12" : "W1");
+                // Salmon keeps the fixed M[3]/M[4] targets. Magannatha assigns W2 to S3.
+                var s3 = FindWorkerByStartLabel(teamWorkers, Settings.IsMagannatha12WorkerOverride ? "W2" : "W1");
                 var w5 = FindWorkerByStartLabel(teamWorkers, "W5");
                 var w6 = FindWorkerByStartLabel(teamWorkers, "W6");
                 if (s3 == null || w5 == null || w6 == null)
@@ -615,11 +592,10 @@ namespace BabySharkBot.Setup
 
             if (teamNumber == 3)
             {
-                // Blue keeps the fixed M[5]/M[6] targets. Magannatha changes the
-                // B3 anchor to W10; generic maps retain W12.
+                // Blue keeps the fixed M[5]/M[6] targets. Magannatha assigns W10 to B3 and W11 to B2.
                 var b3 = FindWorkerByStartLabel(teamWorkers, Settings.IsMagannatha12WorkerOverride ? "W10" : "W12");
                 var w7 = FindWorkerByStartLabel(teamWorkers, "W7");
-                var w8 = FindWorkerByStartLabel(teamWorkers, Settings.IsMagannatha12WorkerOverride ? "W2" : "W8");
+                var w8 = FindWorkerByStartLabel(teamWorkers, Settings.IsMagannatha12WorkerOverride ? "W11" : "W8");
                 if (b3 == null || w7 == null || w8 == null)
                 {
                     Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Incomplete Blue fixed assignment for start[{startIndex}].");

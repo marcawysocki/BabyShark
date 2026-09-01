@@ -60,7 +60,7 @@ namespace BabySharkBot
             //var randomMap = "ThunderbirdAIE.SC2Map";
             //var randomMap = "UltraloveAIE_v2.SC2Map";
 
-
+            const string botName = "Saint Padre Pio";
 
             var mapNameForData = randomMap;
             if (args.Length != 0)
@@ -114,11 +114,11 @@ namespace BabySharkBot
             var myRace = Race.Zerg;
             if (args.Length == 0)
             {
-                 gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild).Wait();
+                gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild, botName: botName).Wait();
             }
             else
             {
-                gameConnection.RunLadder(sharkyExampleBot, myRace, args).Wait();
+                gameConnection.RunLadder(sharkyExampleBot, myRace, args, botName: botName).Wait();
             }
 
             var miningManager = babySharkBot.Managers.OfType<BabySharkMiningManager>().FirstOrDefault();
