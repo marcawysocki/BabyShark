@@ -542,7 +542,7 @@ namespace BabySharkBot.Managers
             _currentFrame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
             if (_currentFrame > 0 && _currentFrame % 5 == 0)
             {
-                //Debugger.Break();
+                Debugger.Break();
             }
 
             var relativeFrame = Settings.GetRelativeFrame(_currentFrame);
@@ -966,7 +966,7 @@ namespace BabySharkBot.Managers
                 var oldCount = assignedWorker.MiningTargets.Count;
                 AdvanceAssignedWorkerTarget(assignedWorker);
                 ReloadRuntimeMiningInstructions(assignedWorker, _currentFrame);
-                Console.WriteLine($"[ASSIGNED TARGET] worker={assignedWorker.UnitID} cargo-return mti={oldIndex}->{assignedWorker.Mti} targets={oldCount}->{assignedWorker.MiningTargets.Count} current={(assignedWorker.MiningTargets.ElementAtOrDefault(assignedWorker.Mti)?.ToResourceLabel ?? "<none")} source=ObservationManager");
+                Console.WriteLine($"[ASSIGNED TARGET] worker={assignedWorker.UnitID} mti={oldIndex}->{assignedWorker.Mti} targets={oldCount}->{assignedWorker.MiningTargets.Count} current={(assignedWorker.MiningTargets.ElementAtOrDefault(assignedWorker.Mti)?.ToResourceLabel ?? "<none")} source=ObservationManager");
             }
         }
 

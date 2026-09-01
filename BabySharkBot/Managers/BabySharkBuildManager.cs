@@ -180,6 +180,11 @@ namespace BabySharkBot.Managers
                     continue;
                 }
 
+                // CCAw point ownership and radius-change procedure:
+                // - A non-zero CcaWaitPoint/JitWaitPoint in BaseDtos is authoritative; reuse it and do not recalculate.
+                // - Build is the only owner allowed to calculate a missing point and must store the result in both fields.
+                // - If the circle radius changes, invalidate the affected stored BaseDtos points first, then update the
+                //   radius offset below; the next Build start will calculate and persist the new geometry.
                 var storedPoint = HasNonZeroPoint(aMineral.CcaWaitPoint)
                     ? aMineral.CcaWaitPoint
                     : HasNonZeroPoint(assignment.JitWaitPoint)
@@ -208,8 +213,8 @@ namespace BabySharkBot.Managers
                     continue;
                 }
 
-                // Calculate only when the current-spawn BaseDtos record has no point.
-                var scale = (harvestDistance + 1f) / harvestDistance;
+                // Recalculate the current-spawn CCA wait point from the updated circle radius.
+                var scale = (harvestDistance + 0.8f) / harvestDistance;
                 var ccaWaitPoint = new Vector2Dto(
                     aMineral.Position.X + directionX * scale,
                     aMineral.Position.Y + directionY * scale,
