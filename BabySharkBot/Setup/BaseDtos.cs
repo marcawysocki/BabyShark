@@ -57,6 +57,7 @@ namespace BabySharkBot.Setup
         public bool IsCarrying { get; set; }
         public bool WasCarrying { get; set; }
         public bool JustPickedUp { get; set; }
+        public int PreviousOrderAbilityId { get; set; } = -1;
         public List<int> OrderAbilityIds { get; set; } = new();
         public ulong TargetUnitTag { get; set; }
     }
@@ -299,6 +300,28 @@ namespace BabySharkBot.Setup
         public MiningPairCargoPointDto() { }
     }
 
+    /// <summary>
+    /// Directed JIT pair geometry for two labelled resources. A route exists for every
+    /// resource-to-resource combination, including self routes and the spawning pool.
+    /// </summary>
+    [MemoryPackable]
+    public partial class JitPairReturnCalculationDto
+    {
+        public string PairKey { get; set; } = string.Empty;
+        public string FromResourceLabel { get; set; } = string.Empty;
+        public string ToResourceLabel { get; set; } = string.Empty;
+        public ulong FromResourceUnitTag { get; set; }
+        public ulong ToResourceUnitTag { get; set; }
+        public Vector2Dto WaitPointA { get; set; } = new Vector2Dto();
+        public Vector2Dto WaitPointB { get; set; } = new Vector2Dto();
+        public Vector2Dto HarvestA { get; set; } = new Vector2Dto();
+        public Vector2Dto HarvestB { get; set; } = new Vector2Dto();
+        public Vector2Dto ReturnPoint { get; set; } = new Vector2Dto();
+
+        [MemoryPackConstructor]
+        public JitPairReturnCalculationDto() { }
+    }
+
     [MemoryPackable]
     public partial class TeamPatchAssignmentDto
     {
@@ -337,6 +360,10 @@ namespace BabySharkBot.Setup
         public bool IsSpeedMining { get; set; }
         public bool IsABSwitch { get; set; }
         public bool IsInitialMineralAssignment { get; set; }
+        // The six retired Jit fields (JitPairKey/JitWaitPointA/B/JitHarvestA/B/JitReturnPoint)
+        // were deleted: store/use rows resolve their own TargetPointReference against the
+        // pair table; the Mining Manager reads stored coordinates and never copies pair
+        // geometry into per-target DTOs.
     }
 
     /// <summary>
@@ -350,6 +377,7 @@ namespace BabySharkBot.Setup
         public bool Calculated { get; set; }
         public List<string> ResourceLabels { get; set; } = new();
         public List<List<MiningTargetDto>> Routes { get; set; } = new();
+        public List<JitPairReturnCalculationDto> JitPairs { get; set; } = new();
     }
 
     /// <summary>
@@ -485,6 +513,7 @@ namespace BabySharkBot.Setup
         public List<List<MiningPairCargoPointDto>> MainMineralJitCargoPoints { get; set; } = new List<List<MiningPairCargoPointDto>>();
         public List<List<HarvestReturnCargoPointDto>> MainVespeneCargoPoints { get; set; } = new List<List<HarvestReturnCargoPointDto>>();
         public List<List<OrderedVespene>> OrderedMainVespene { get; set; } = new List<List<OrderedVespene>>();
+        public List<List<JitPairReturnCalculationDto>> MainJitPairReturnCalculations { get; set; } = new List<List<JitPairReturnCalculationDto>>();
         public Dictionary<string, string> MineralFinalLabelsByPosition { get; set; } = new Dictionary<string, string>();
         public Dictionary<string, string> VespeneFinalLabelsByPosition { get; set; } = new Dictionary<string, string>();
         public Dictionary<string, string> ExpansionMineralLabels { get; set; } = new Dictionary<string, string>();

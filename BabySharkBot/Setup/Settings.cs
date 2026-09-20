@@ -16,7 +16,9 @@ namespace BabySharkBot.Setup
         public static string MiningCycleScorePath = "RLIntegration/data/mining_cycle_scores.jsonl";
 
         // Speed/mining/data schema version (semantic string). Update when heavy-generation or JSON schema changes.
-            public const string SpeedMiningVersion = "0.09";
+        // 0.11: hatchery footprint radius corrected from 5.5 to 2.75 in stored return points; legacy
+        // MainMineralJitCargoPoints / ExpansionMineralJitCargoPoints generation removed.
+            public const string SpeedMiningVersion = "0.11";
 
             // Debug mode: enables console logging and debug prints. Can be true even in Release builds if needed.
             public static bool DebugMode = true;

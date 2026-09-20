@@ -257,6 +257,7 @@ namespace BabySharkBot.Managers
             var observedAbilityId = unit.Orders?.FirstOrDefault() == null
                 ? -1
                 : Convert.ToInt32(unit.Orders.First().AbilityId);
+            entry.PreviousOrderAbilityId = entry.OrderAbilityIds?.FirstOrDefault() ?? -1;
             entry.OrderAbilityIds = unit.Orders?.Select(order => Convert.ToInt32(order.AbilityId)).ToList() ?? new List<int>();
             entry.TargetUnitTag = unit.Orders?.FirstOrDefault()?.TargetUnitTag ?? 0;
 
@@ -272,6 +273,10 @@ namespace BabySharkBot.Managers
                 runtimeWorker.CurrentAbilityId = observedAbilityId;
                 runtimeWorker.Position = new Vector2Dto(unit.Pos.X, unit.Pos.Y, unit.Pos.Z);
                 runtimeWorker.WasCarrying = runtimeWorker.IsCarrying;
+                if (observedAbilityId == (int)Abilities.SMART)
+                {
+                    runtimeWorker.HasObservedSmart = true;
+                }
             }
 
             if (unit.UnitType == (uint)UnitTypes.ZERG_HATCHERY

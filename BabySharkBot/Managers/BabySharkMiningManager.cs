@@ -8,8 +8,10 @@ using BabySharkBot.Services;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Numerics;
+using System.Text.Json;
 using SC2Action = SC2APIProtocol.Action;
 
 #nullable enable
@@ -71,9 +73,13 @@ namespace BabySharkBot.Managers
         private int _allMiningConsecutiveFrames;
         private const int AllMiningConfirmationFrames = 2;
 
+        // Upper bound on instruction rows a single worker may execute within one frame.
+        // Legitimate same-frame chains are short (a NoCondition store/use row followed by a
+        // RelativeFrame=0 command row); this cap only guards against a Jump row cycling.
+        private const int MaxInstructionsPerWorkerFrame = 16;
+
         private bool _cargoReturnDebugBreakTriggered = false;
         private int _lastReachabilityConsoleFrame = -999999;
-        private int _lastCargoEvaluationConsoleFrame = -999999;
         
         // JIT per-worker state (replaces MiningTeamState)
         private class JitWorkerState
@@ -87,6 +93,7 @@ namespace BabySharkBot.Managers
         }
 
         private readonly Dictionary<ulong, string> _assignmentRoleByWorkerTag = new Dictionary<ulong, string>();
+        private readonly Dictionary<ulong, int> _previousObservedPrimaryAbilityByWorkerTag = new Dictionary<ulong, int>();
         private readonly Dictionary<ulong, GatherCycleState> _gatherCycleStates = new Dictionary<ulong, GatherCycleState>();
         private readonly Dictionary<ulong, MineralHarvestTimingState> _mineralHarvestTimings = new Dictionary<ulong, MineralHarvestTimingState>();
 
@@ -104,6 +111,11 @@ namespace BabySharkBot.Managers
         }
 
         private readonly Dictionary<ulong, JitWorkerState> _jitWorkerStates = new Dictionary<ulong, JitWorkerState>();
+        private readonly object _instructionTraceLock = new object();
+        private readonly JsonSerializerOptions _instructionTraceJsonOptions = new JsonSerializerOptions { WriteIndented = false };
+        private readonly string _instructionTraceFile;
+        private readonly Dictionary<ulong, string> _lastInstructionTraceState = new Dictionary<ulong, string>();
+        private long _miningCommandSequence;
         private Dictionary<ulong, PinkWorkerState> _pinkWorkerStates = new();
         private bool _speedMiningActive = false;
 
@@ -176,6 +188,16 @@ namespace BabySharkBot.Managers
             _ccaMiningService = ccaMiningService ?? new chrisCrossAppleSause();
             _extractorTrickService = extractorTrickService;
             _mapData = null;
+            try
+            {
+                var folder = Path.Combine(Directory.GetCurrentDirectory(), "data", "mining_tests");
+                Directory.CreateDirectory(folder);
+                _instructionTraceFile = Path.Combine(folder, $"worker_instruction_lists_{DateTime.Now:yyyyMMddHHmmss}.jsonl");
+            }
+            catch
+            {
+                _instructionTraceFile = null;
+            }
         }
 
         public WorkerLabelService WorkerLabelService => _workerLabelService;
@@ -231,6 +253,9 @@ namespace BabySharkBot.Managers
         public void OnStart(ResponseGameInfo gameInfo, ResponseData data, ResponsePing pingResponse, ResponseObservation observation, uint playerId, String opponentId)
         {
             _assignmentRoleByWorkerTag.Clear();
+            _lastInstructionTraceState.Clear();
+            _miningCommandSequence = 0;
+            _previousObservedPrimaryAbilityByWorkerTag.Clear();
             _gatherCycleStates.Clear();
             _mineralHarvestTimings.Clear();
             _scheduledMoveReplays.Clear();
@@ -249,86 +274,147 @@ namespace BabySharkBot.Managers
             Console.WriteLine($"BabySharkMiningManager: OnStart observed starting workers at frame {_currentFrame}; liveWorkers={liveWorkers.Count}. Labels are owned by BabySharkBuildManager.");
         }
 
-        private void DrawMineralTargetPoints()
+        private sealed class TeamPointMarker
         {
-            if (!ManagerDebugService.IsDebugEnabled || _mapData?.OrderedMainMinerals == null) return;
-            try
-            {
-                const float debugHeight = 12f;
-                for (var startIndex = 0; startIndex < _mapData.OrderedMainMinerals.Count; startIndex++)
-                {
-                    var orderedList = _mapData.OrderedMainMinerals[startIndex];
-                    if (orderedList == null) continue;
-
-                    var hatcheryPosition = _mapData.StartingTownHall != null && _mapData.StartingTownHall.Length > startIndex ? _mapData.StartingTownHall[startIndex] : null;
-                    if (hatcheryPosition != null)
-                    {
-                        DrawCircle(hatcheryPosition, 2.75f, new Color { R = 255, G = 255, B = 255 }, debugHeight);
-                    }
-
-                    var assignments = _mapData.TeamPatchAssignments?.ElementAtOrDefault(startIndex)
-                        ?? new List<TeamPatchAssignmentDto>();
-                    foreach (var mineral in orderedList)
-                    {
-                        if (mineral?.Position == null || mineral.HarvestPoint == null || mineral.ReturnPoint == null) continue;
-                        var finalLabel = !string.IsNullOrWhiteSpace(mineral.FinalLabel)
-                            ? mineral.FinalLabel
-                            : mineral.Label;
-                        var color = !string.IsNullOrWhiteSpace(finalLabel)
-                            ? ProcessVisableUnits.GetFinalLabelColor(finalLabel)
-                            : new Color { R = 255, G = 255, B = 255 };
-                        DrawCircle(mineral.Position, 1.0f, color, debugHeight);
-                        ManagerDebugService.DrawText("h", new Point { X = mineral.HarvestPoint.X, Y = mineral.HarvestPoint.Y, Z = debugHeight }, color, 10);
-                        ManagerDebugService.DrawText("r", new Point { X = mineral.ReturnPoint.X, Y = mineral.ReturnPoint.Y, Z = debugHeight }, color, 10);
-
-                        if (!finalLabel.EndsWith("A", StringComparison.OrdinalIgnoreCase))
-                        {
-                            continue;
-                        }
-
-                        DrawCircle(mineral.Position, 1.5f, color, debugHeight);
-                        var teamAssignment = assignments.FirstOrDefault(assignment =>
-                            assignment?.Minerals?.Any(teamMineral =>
-                                string.Equals(teamMineral?.FinalLabel, finalLabel, StringComparison.OrdinalIgnoreCase)) == true);
-                        var jitReturnPoint = teamAssignment?.JitReturnPoint;
-                        if (jitReturnPoint == null
-                            || (jitReturnPoint.X == 0f && jitReturnPoint.Y == 0f))
-                        {
-                            continue;
-                        }
-
-                        ManagerDebugService.DrawLine(
-                            new Point
-                            {
-                                X = mineral.HarvestPoint.X,
-                                Y = mineral.HarvestPoint.Y,
-                                Z = debugHeight
-                            },
-                            new Point
-                            {
-                                X = jitReturnPoint.X,
-                                Y = jitReturnPoint.Y,
-                                Z = debugHeight
-                            },
-                            color);
-                    }
-                }
-            }
-            catch (Exception ex) { Console.WriteLine($"Error in DrawMineralTargetPoints: {ex.Message}"); }
+            public string Role { get; init; } = string.Empty;
+            public Vector2Dto Point { get; init; } = new();
         }
 
-        private void DrawCircle(Vector2Dto center, float radius, Color color, float z, int segments = 24)
+        private readonly Dictionary<ulong, TeamPointMarker> _lastExplicitPointByWorker = new();
+
+        private void DrawTeamPointDiagnostics()
         {
-            if (center == null || segments < 3) return;
-            var step = Math.PI * 2.0 / segments;
-            Point? previous = null;
-            for (var i = 0; i <= segments; i++)
+            if (!ManagerDebugService.IsDebugEnabled || _mapData == null)
             {
-                var angle = i * step;
-                var point = new Point { X = center.X + (float)(Math.Cos(angle) * radius), Y = center.Y + (float)(Math.Sin(angle) * radius), Z = z };
-                if (previous != null) ManagerDebugService.DrawLine(previous, point, color);
-                previous = point;
+                return;
             }
+
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var assignments = _mapData.TeamPatchAssignments?.ElementAtOrDefault(startIndex);
+            var assignedWorkers = _mapData.AssignedWorkers?.ElementAtOrDefault(startIndex);
+            if (assignments == null || assignedWorkers == null)
+            {
+                return;
+            }
+
+            foreach (var assignment in assignments)
+            {
+                var prefix = GetTeamPrefix(assignment?.TeamNumber ?? 0);
+                if (assignment == null || string.IsNullOrWhiteSpace(prefix))
+                {
+                    continue;
+                }
+
+                var markers = new List<TeamPointMarker>();
+                foreach (var worker in assignment.Workers ?? new List<WorkerEntryDto>())
+                {
+                    var role = worker?.FinalLabel ?? worker?.Label ?? string.Empty;
+                    if (worker == null || string.IsNullOrWhiteSpace(role))
+                    {
+                        continue;
+                    }
+
+                    var runtimeWorker = Settings.RuntimeWorkers.TryGetValue(worker.UnitTag, out var state)
+                        ? state
+                        : null;
+                    var assignedWorker = assignedWorkers.FirstOrDefault(candidate => candidate?.UnitID == worker.UnitTag);
+                    var marker = ResolveFirstInstructionMarker(role, assignedWorker, runtimeWorker);
+                    if (marker != null)
+                    {
+                        _lastExplicitPointByWorker[worker.UnitTag] = marker;
+                        markers.Add(marker);
+                    }
+                    else if (_lastExplicitPointByWorker.TryGetValue(worker.UnitTag, out var lastMarker)
+                        && runtimeWorker?.CurInstrIdx > 0)
+                    {
+                        markers.Add(lastMarker);
+                    }
+                }
+
+                var color = TeamColorService.GetColorByPrefix(prefix);
+                foreach (var group in GroupTeamPointMarkers(markers))
+                {
+                    ManagerDebugService.DrawText(
+                        FormatTeamPointMarker(group.Select(marker => marker.Role)),
+                        new Point { X = group[0].Point.X, Y = group[0].Point.Y, Z = group[0].Point.Z + 0.75f },
+                        color,
+                        14);
+                }
+            }
+        }
+
+        private TeamPointMarker? ResolveFirstInstructionMarker(
+            string role,
+            AssignedWorkerDto worker,
+            RuntimeWorkerState runtimeWorker)
+        {
+            if (worker == null || runtimeWorker == null || runtimeWorker.Instructions.Count == 0)
+            {
+                return null;
+            }
+
+            var instruction = runtimeWorker.Instructions.ElementAtOrDefault(runtimeWorker.CurInstrIdx);
+            if (instruction == null
+                || (instruction.Command != WorkerInstructionCommand.StoreTargetPoint
+                    && instruction.Command != WorkerInstructionCommand.UseTargetPoint)
+                || !instruction.NoCondition
+                || string.IsNullOrWhiteSpace(instruction.TargetPointReference))
+            {
+                return null;
+            }
+
+            var point = ResolveInstructionPoint(runtimeWorker, worker, instruction);
+            return HasNonZeroPoint(point)
+                ? new TeamPointMarker { Role = role, Point = point }
+                : null;
+        }
+
+        private static IEnumerable<List<TeamPointMarker>> GroupTeamPointMarkers(List<TeamPointMarker> markers)
+        {
+            var groups = new List<List<TeamPointMarker>>();
+            foreach (var marker in markers)
+            {
+                var group = groups.FirstOrDefault(existing =>
+                    DistanceSquared(existing[0].Point, marker.Point) <= 0.01f);
+                if (group == null)
+                {
+                    groups.Add(new List<TeamPointMarker> { marker });
+                }
+                else
+                {
+                    group.Add(marker);
+                }
+            }
+
+            return groups;
+        }
+
+        private static string FormatTeamPointMarker(IEnumerable<string> roles)
+        {
+            var digits = roles
+                .Where(role => role?.Length == 2 && role[1] >= '1' && role[1] <= '3')
+                .Select(role => role[1])
+                .Distinct()
+                .OrderBy(digit => digit)
+                .ToList();
+            if (digits.Count >= 3)
+            {
+                return "#";
+            }
+
+            if (digits.Count == 2)
+            {
+                var pair = $"{digits[0]}{digits[1]}";
+                return pair switch
+                {
+                    "12" => "½",
+                    "13" => "⅓",
+                    "23" => "⅔",
+                    _ => $"{digits[0]}/{digits[1]}"
+                };
+            }
+
+            return digits.Count == 1 ? digits[0].ToString() : string.Empty;
         }
 
         private void DrawAllUnitLabels(ResponseObservation observation)
@@ -457,55 +543,6 @@ namespace BabySharkBot.Managers
             return int.TryParse(label.Substring(1), out var index) ? index : 0;
         }
 
-        private void DrawWorkerInstructions(ResponseObservation observation)
-        {
-            var snapshot = Globals.CurrentObservation;
-            if (!ManagerDebugService.IsDebugEnabled || snapshot == null) return;
-
-            foreach (var kvp in snapshot.SelfUnits)
-            {
-                var entry = kvp.Value;
-                var ut = (UnitTypes)entry.UnitType;
-                if (!WorkerTypes.Contains(ut)) continue;
-
-                var start = new Point { X = entry.Position.X, Y = entry.Position.Y, Z = entry.Position.Z + 0.25f };
-                var end = new Point { X = entry.Position.X, Y = entry.Position.Y, Z = entry.Position.Z + 1.25f };
-                DrawArrow(start, end, new Color { R = 255, G = 255, B = 255 });
-            }
-        }
-
-        private void DrawCcaWaitPoints()
-        {
-            if (!ManagerDebugService.IsDebugEnabled || _mapData?.TeamPatchAssignments == null)
-            {
-                return;
-            }
-
-            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-            var assignments = _mapData.TeamPatchAssignments.ElementAtOrDefault(startIndex);
-            if (assignments == null)
-            {
-                return;
-            }
-
-            foreach (var assignment in assignments)
-            {
-                if (assignment == null || assignment.JitWaitPoint == null || (assignment.JitWaitPoint.X == 0f && assignment.JitWaitPoint.Y == 0f))
-                {
-                    continue;
-                }
-
-                var teamPrefix = GetTeamPrefix(assignment.TeamNumber);
-                var color = ProcessVisableUnits.GetFinalLabelColor($"{teamPrefix}3");
-                ManagerDebugService.DrawText("W", new Point
-                {
-                    X = assignment.JitWaitPoint.X,
-                    Y = assignment.JitWaitPoint.Y,
-                    Z = assignment.JitWaitPoint.Z + 0.75f
-                }, color, 14);
-            }
-        }
-
         private void DrawCenterOfMassLocations()
         {
             if (!ManagerDebugService.IsDebugEnabled || _crosshairService == null) return;
@@ -542,7 +579,7 @@ namespace BabySharkBot.Managers
             _currentFrame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
             if (_currentFrame > 0 && _currentFrame % 5 == 0)
             {
-                Debugger.Break();
+               Debugger.Break();
             }
 
             var relativeFrame = Settings.GetRelativeFrame(_currentFrame);
@@ -560,6 +597,7 @@ namespace BabySharkBot.Managers
             }
 
             ProcessFrameObservation(observation);
+            WriteInstructionTrace();
 
             var actions = new List<SC2Action>();
             if (Settings.SimulatedStartActive || Settings.BuildOwnsWorkerCommands)
@@ -571,13 +609,14 @@ namespace BabySharkBot.Managers
             // Update phase state (Speed Mining) based on current functional worker count.
             var workerCount = snapshot.SelfUnits.Values.Count(u => u != null && WorkerTypes.Contains((UnitTypes)u.UnitType) && u.IsCompleted);
             UpdatePhaseState(workerCount);
-            actions.AddRange(ExecuteRuntimeWorkerInstructions(observation));
+            var commandContexts = new List<InstructionCommandContext>();
+            actions.AddRange(ExecuteRuntimeWorkerInstructions(observation, commandContexts));
 
             UpdateScoutedMinerals(observation);
             UpdateMineralReturnRate(observation);
             PrintMineralReturnRateSummary(observation);
             PrintTwelveDroneMilestone(observation);
-            LogMiningCommands(actions);
+            LogMiningCommands(actions, commandContexts);
             return actions;
         }
 
@@ -609,10 +648,8 @@ namespace BabySharkBot.Managers
         {
             if (!ManagerDebugService.IsDebugEnabled) return;
 
-            DrawMineralTargetPoints();
+            DrawTeamPointDiagnostics();
             DrawAllUnitLabels(observation);
-            DrawWorkerInstructions(observation);
-            DrawCcaWaitPoints();
             DrawCenterOfMassLocations();
             DrawExpansionCOMCrosshairs();
             DrawCenterOfMass();
@@ -648,7 +685,6 @@ namespace BabySharkBot.Managers
             UpdateExtractorInstructionTransitions(currentStartIndex);
             UpdateGatherCycleStates(liveWorkers);
             RefreshBuildPlanLiveTags(buildAssignments, liveWorkers, currentStartIndex);
-            LoadJitReturnInstructionsOnObservedTransition(currentStartIndex);
             var currentAssignments = ResolveBuildGreedyAssignments(currentStartIndex);
             var assignedWorkersForLabels = _mapData?.AssignedWorkers?.ElementAtOrDefault(currentStartIndex)
                 ?? new List<AssignedWorkerDto>();
@@ -857,75 +893,6 @@ namespace BabySharkBot.Managers
             }
         }
 
-        private void LoadJitReturnInstructionsOnObservedTransition(int startIndex)
-        {
-            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
-            if (assignedWorkers == null)
-            {
-                return;
-            }
-
-            const int gatherAbilityId = (int)Abilities.HARVEST_GATHER_DRONE;
-            const int returnAbilityId = (int)Abilities.HARVEST_RETURN_DRONE;
-            foreach (var assignedWorker in assignedWorkers)
-            {
-                if (assignedWorker == null
-                    || assignedWorker.UnitID == 0
-                    || !Settings.RuntimeWorkers.TryGetValue(assignedWorker.UnitID, out var runtimeWorker)
-                    || runtimeWorker.PreviousAbilityId != gatherAbilityId
-                    || runtimeWorker.CurrentAbilityId != returnAbilityId)
-                {
-                    continue;
-                }
-
-                var target = assignedWorker.MiningTargets?.ElementAtOrDefault(assignedWorker.Mti);
-                if (target == null || target.ResourceUnitId == 0 || !HasNonZeroPoint(target.ReturnPoint))
-                {
-                    Console.WriteLine($"[JITRM NOT LOADED] worker={assignedWorker.UnitID} transition=1183->1184 reason=missing stored ReturnPoint source=BaseDtos");
-                    continue;
-                }
-
-                runtimeWorker.LoadInstructions("jitRM", new[]
-                {
-                    new WorkerInstruction
-                    {
-                        InstructionSet = "jitRM",
-                        Command = WorkerInstructionCommand.Move,
-                        Point = WorkerInstructionPoint.Return,
-                        TargetId = target.ResourceUnitId,
-                        RelativeFrame = 0
-                    },
-                    new WorkerInstruction
-                    {
-                        InstructionSet = "jitRM",
-                        Command = WorkerInstructionCommand.Move,
-                        Point = WorkerInstructionPoint.Return,
-                        TargetId = target.ResourceUnitId,
-                        RelativeFrame = 1
-                    },
-                    new WorkerInstruction
-                    {
-                        InstructionSet = "jitRM",
-                        Command = WorkerInstructionCommand.Move,
-                        Point = WorkerInstructionPoint.Return,
-                        TargetId = target.ResourceUnitId,
-                        RelativeFrame = 14
-                    },
-                    new WorkerInstruction
-                    {
-                        InstructionSet = "jitRM",
-                        Command = WorkerInstructionCommand.Return,
-                        Point = WorkerInstructionPoint.Return,
-                        TargetId = target.ResourceUnitId,
-                        RelativeFrame = 15,
-                        Queue = true
-                    }
-                }, Settings.GetRelativeFrame(_currentFrame));
-
-                Console.WriteLine($"[JITRM LOADED] worker={assignedWorker.UnitID} transition=1183->1184 target={target.ToResourceLabel} set=jitRM execute=+0");
-            }
-        }
-
         private void UpdateAssignedWorkerObservationState(int startIndex, ObservationSnapshotDto snapshot)
         {
             var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
@@ -941,7 +908,6 @@ namespace BabySharkBot.Managers
                     continue;
                 }
 
-                var wasAssignedWorkerCarrying = observedWorker.WasCarrying;
                 assignedWorker.CurrentXY = observedWorker.Position;
                 assignedWorker.CurrentTargetUnitID = observedWorker.TargetUnitTag;
                 assignedWorker.CurrentAbilityID = (uint)(observedWorker.OrderAbilityIds?.FirstOrDefault() ?? 0);
@@ -951,8 +917,9 @@ namespace BabySharkBot.Managers
                     continue;
                 }
 
-                var carryingReturnTransition = wasAssignedWorkerCarrying && !observedWorker.IsCarrying;
-                if (!carryingReturnTransition)
+                if (!Settings.RuntimeWorkers.TryGetValue(assignedWorker.UnitID, out var runtimeWorker)
+                    || runtimeWorker.CurrentAbilityId != (int)Abilities.HARVEST_RETURN_DRONE
+                    || runtimeWorker.PreviousAbilityId != (int)Abilities.MOVE)
                 {
                     continue;
                 }
@@ -962,11 +929,9 @@ namespace BabySharkBot.Managers
                     continue;
                 }
 
-                var oldIndex = assignedWorker.Mti;
-                var oldCount = assignedWorker.MiningTargets.Count;
-                AdvanceAssignedWorkerTarget(assignedWorker);
-                ReloadRuntimeMiningInstructions(assignedWorker, _currentFrame);
-                Console.WriteLine($"[ASSIGNED TARGET] worker={assignedWorker.UnitID} mti={oldIndex}->{assignedWorker.Mti} targets={oldCount}->{assignedWorker.MiningTargets.Count} current={(assignedWorker.MiningTargets.ElementAtOrDefault(assignedWorker.Mti)?.ToResourceLabel ?? "<none")} source=ObservationManager");
+                var currentIndex = assignedWorker.Mti;
+                var target = assignedWorker.MiningTargets.ElementAtOrDefault(currentIndex);
+                Console.WriteLine($"[ASSIGNED TARGET] worker={assignedWorker.UnitID} mti={currentIndex} targets={assignedWorker.MiningTargets.Count} current={(target?.ToResourceLabel ?? "<none")} source=instruction-list");
             }
         }
 
@@ -988,112 +953,6 @@ namespace BabySharkBot.Managers
             }
         }
 
-        private static void AdvanceAssignedWorkerTarget(AssignedWorkerDto assignedWorker)
-        {
-            if (assignedWorker.MiningTargets.Count <= 1)
-            {
-                assignedWorker.Mti = 0;
-                return;
-            }
-
-            if (assignedWorker.MiningTargets.Count == 2)
-            {
-                // The 12-worker A/B plan is a true cycle: A -> B -> A.
-                assignedWorker.Mti = assignedWorker.Mti == 0 ? 1 : 0;
-                return;
-            }
-
-            if (assignedWorker.Mti < assignedWorker.MiningTargets.Count - 1)
-            {
-                assignedWorker.Mti++;
-                return;
-            }
-
-            var switchTargets = assignedWorker.MiningTargets
-                .Where(target => target.IsABSwitch)
-                .ToList();
-            if (switchTargets.Count == 0)
-            {
-                assignedWorker.Mti = assignedWorker.MiningTargets.Count - 1;
-                return;
-            }
-
-            assignedWorker.MiningTargets = switchTargets;
-            assignedWorker.Mti = 0;
-        }
-
-        private void ReloadRuntimeMiningInstructions(AssignedWorkerDto assignedWorker, int frame)
-        {
-            if (assignedWorker == null
-                || assignedWorker.UnitID == 0
-                || assignedWorker.MiningTargets == null
-                || assignedWorker.MiningTargets.Count == 0
-                || !Settings.RuntimeWorkers.TryGetValue(assignedWorker.UnitID, out var runtimeWorker)
-                || runtimeWorker.Instructions == null
-                || runtimeWorker.Instructions.Count == 0)
-            {
-                return;
-            }
-
-            var target = assignedWorker.MiningTargets.ElementAtOrDefault(assignedWorker.Mti);
-            if (target == null || target.ResourceUnitId == 0)
-            {
-                ReportInstructionFailure(
-                    Settings.RuntimeWorkers.TryGetValue(assignedWorker.UnitID, out var invalidWorker)
-                        ? invalidWorker
-                        : new RuntimeWorkerState { UnitTag = assignedWorker.UnitID },
-                    "A/B switch has no valid active mineral target",
-                    null);
-                return;
-            }
-
-            // Build Manager owns the one-time Role 3 CCAw startup load.
-            // Every mining reload, including Role 3 target switches, is jitMH.
-            const string instructionSet = "jitMH";
-            const WorkerInstructionPoint movementPoint = WorkerInstructionPoint.Harvest;
-            const int gatherFrame = 15;
-            var nextInstructions = new List<WorkerInstruction>
-            {
-                new WorkerInstruction
-                {
-                    InstructionSet = instructionSet,
-                    Command = WorkerInstructionCommand.Move,
-                    Point = movementPoint,
-                    TargetId = target.ResourceUnitId,
-                    RelativeFrame = 0
-                },
-                new WorkerInstruction
-                {
-                    InstructionSet = instructionSet,
-                    Command = WorkerInstructionCommand.Move,
-                    Point = movementPoint,
-                    TargetId = target.ResourceUnitId,
-                    RelativeFrame = 1
-                },
-                new WorkerInstruction
-                {
-                    InstructionSet = instructionSet,
-                    Command = WorkerInstructionCommand.Move,
-                    Point = movementPoint,
-                    TargetId = target.ResourceUnitId,
-                    RelativeFrame = 14
-                },
-                new WorkerInstruction
-                {
-                    InstructionSet = instructionSet,
-                    Command = WorkerInstructionCommand.Gather,
-                    Point = WorkerInstructionPoint.Harvest,
-                    TargetId = target.ResourceUnitId,
-                    RelativeFrame = gatherFrame,
-                    Queue = true
-                }
-            };
-
-            runtimeWorker.LoadInstructions(instructionSet, nextInstructions, Settings.GetRelativeFrame(frame));
-
-            Console.WriteLine($"[INSTRUCTION TARGET SWITCH] worker={assignedWorker.UnitID} mti={assignedWorker.Mti} mineral={target.ResourceUnitId} label={target.ToResourceLabel} instructionSet={instructionSet} frame={frame}");
-        }
-
         private List<TeamPatchAssignmentDto> ResolveBuildGreedyAssignments(int startIndex)
         {
             if (_mapData?.TeamPatchAssignments == null
@@ -1109,7 +968,108 @@ namespace BabySharkBot.Managers
                 ?? new List<TeamPatchAssignmentDto>();
         }
 
-        private List<SC2Action> ExecuteRuntimeWorkerInstructions(ResponseObservation observation)
+        private void WriteInstructionTrace()
+        {
+            if (string.IsNullOrEmpty(_instructionTraceFile))
+            {
+                return;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?? new List<AssignedWorkerDto>();
+            foreach (var assignedWorker in assignedWorkers)
+            {
+                if (assignedWorker == null
+                    || assignedWorker.UnitID == 0
+                    || !Settings.RuntimeWorkers.TryGetValue(assignedWorker.UnitID, out var runtimeWorker))
+                {
+                    continue;
+                }
+
+                var state = string.Join("|", new object[]
+                {
+                    runtimeWorker.CurInstrIdx,
+                    assignedWorker.Mti,
+                    runtimeWorker.PreviousAbilityId,
+                    runtimeWorker.CurrentAbilityId,
+                    runtimeWorker.IsCarrying,
+                    runtimeWorker.WasCarrying
+                });
+                var isFirstSnapshot = !_lastInstructionTraceState.ContainsKey(runtimeWorker.UnitTag);
+                var stateChanged = !_lastInstructionTraceState.TryGetValue(runtimeWorker.UnitTag, out var previousState)
+                    || !string.Equals(previousState, state, StringComparison.Ordinal);
+                if (!isFirstSnapshot && !stateChanged)
+                {
+                    continue;
+                }
+
+                _lastInstructionTraceState[runtimeWorker.UnitTag] = state;
+                AppendInstructionTrace(new
+                {
+                    RecordType = isFirstSnapshot ? "WorkerInstructionList" : "WorkerInstructionState",
+                    TimestampUtc = DateTime.UtcNow,
+                    GameFrame = _currentFrame,
+                    StartIndex = startIndex,
+                    WorkerTag = runtimeWorker.UnitTag,
+                    WorkerLabel = assignedWorker.Role,
+                    InstructionSet = runtimeWorker.Instructions.FirstOrDefault()?.InstructionSet ?? string.Empty,
+                    CurrentInstructionIndex = runtimeWorker.CurInstrIdx,
+                    InstructionStartFrame = runtimeWorker.InstructionStartFrame,
+                    CurrentTargetIndex = assignedWorker.Mti,
+                    PreviousAbilityId = runtimeWorker.PreviousAbilityId,
+                    CurrentAbilityId = runtimeWorker.CurrentAbilityId,
+                    IsCarrying = runtimeWorker.IsCarrying,
+                    WasCarrying = runtimeWorker.WasCarrying,
+                    Instructions = isFirstSnapshot
+                        ? runtimeWorker.Instructions.Select((instruction, index) => new
+                        {
+                            Index = index,
+                            Set = instruction?.InstructionSet ?? string.Empty,
+                            Command = instruction?.Command.ToString() ?? string.Empty,
+                            Point = instruction?.Point.ToString() ?? string.Empty,
+                            TargetId = instruction?.TargetId ?? 0,
+                            RelativeFrame = instruction?.RelativeFrame ?? -1,
+                            PreviousAbilityId = instruction?.PreviousAbilityId ?? -1,
+                            TargetAbilityId = instruction?.TargetAbilityId ?? -1,
+                            NextTargetIndex = instruction?.NextTargetIndex ?? -1,
+                            JumpToInstructionIndex = instruction?.JumpToInstructionIndex ?? -1,
+                            Queue = instruction?.Queue ?? false,
+                            PositionTolerance = instruction?.PositionTolerance ?? 0f
+                        }).ToList() : null
+                });
+            }
+        }
+
+        private void AppendInstructionTrace(object record)
+        {
+            try
+            {
+                var line = JsonSerializer.Serialize(record, _instructionTraceJsonOptions) + Environment.NewLine;
+                lock (_instructionTraceLock)
+                {
+                    File.AppendAllText(_instructionTraceFile, line);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// Executes each worker's instruction list, consuming every row whose condition is already
+        /// satisfied this frame and stopping at the first row that must wait for a frame, an ability
+        /// transition, or a position.
+        /// </summary>
+        /// <param name="observation">Current frame observation.</param>
+        /// <param name="contexts">
+        /// One entry per emitted action, in emission order, naming the instruction row that produced
+        /// it. Kept separate from the action list because a single worker can emit more than one
+        /// action in one frame, so context cannot be recovered from the advanced index afterwards.
+        /// </param>
+        private List<SC2Action> ExecuteRuntimeWorkerInstructions(
+            ResponseObservation observation,
+            List<InstructionCommandContext> contexts)
         {
             var actions = new List<SC2Action>();
             var snapshot = Globals.CurrentObservation;
@@ -1136,78 +1096,223 @@ namespace BabySharkBot.Managers
                     continue;
                 }
 
-                if (runtimeWorker.CurInstrIdx < 0 || runtimeWorker.CurInstrIdx > runtimeWorker.Instructions.Count)
-                {
-                    ReportInstructionFailure(runtimeWorker, "invalid instruction index", null);
-                    continue;
-                }
+                runtimeWorker.Position = assignedWorker.CurrentXY ?? runtimeWorker.Position;
 
-                if (runtimeWorker.CurInstrIdx >= runtimeWorker.Instructions.Count)
+                // A worker keeps consuming rows while each row's condition is already met, and stops
+                // only at a row that must wait for a frame, an ability transition, or a position.
+                // Without this loop a NoCondition store/use row consumes the frame's only execution
+                // slot, so the RelativeFrame=0 move that follows it is delayed to the next frame and
+                // no command is ever issued on frame 0.
+                for (var executed = 0; executed < MaxInstructionsPerWorkerFrame; executed++)
                 {
-                    continue;
-                }
+                    if (runtimeWorker.CurInstrIdx < 0 || runtimeWorker.CurInstrIdx > runtimeWorker.Instructions.Count)
+                    {
+                        ReportInstructionFailure(runtimeWorker, "invalid instruction index", null);
+                        break;
+                    }
 
-                var instruction = runtimeWorker.Instructions[runtimeWorker.CurInstrIdx];
-                if (instruction == null)
-                {
-                    ReportInstructionFailure(runtimeWorker, "current instruction is null", null);
-                    continue;
-                }
+                    if (runtimeWorker.CurInstrIdx >= runtimeWorker.Instructions.Count)
+                    {
+                        ReportInstructionFailure(runtimeWorker, "instruction list ended without a jump row", null);
+                        break;
+                    }
 
-                var relativeFrame = Settings.GetRelativeFrame(_currentFrame) - runtimeWorker.InstructionStartFrame;
-                var frameSatisfied = instruction.RelativeFrame >= 0 && relativeFrame >= instruction.RelativeFrame;
-                var abilitySatisfied = instruction.TargetAbilityId >= 0
-                    && runtimeWorker.PreviousAbilityId != instruction.TargetAbilityId
-                    && runtimeWorker.CurrentAbilityId == instruction.TargetAbilityId;
-                var targetPoint = ResolveInstructionPoint(assignedWorker, instruction);
-                var positionSatisfied = targetPoint != null
-                    && DistanceSquared(runtimeWorker.Position, targetPoint) <= instruction.PositionTolerance * instruction.PositionTolerance;
+                    if (!AdvanceSatisfiedControlInstructions(runtimeWorker, assignedWorker))
+                    {
+                        break;
+                    }
 
-                if (!frameSatisfied && !abilitySatisfied && !positionSatisfied)
-                {
-                    continue;
-                }
+                    if (runtimeWorker.CurInstrIdx >= runtimeWorker.Instructions.Count)
+                    {
+                        ReportInstructionFailure(runtimeWorker, "instruction list ended after control row", null);
+                        break;
+                    }
 
-                var action = ExecuteWorkerInstruction(runtimeWorker, instruction, assignedWorker, targetPoint);
-                if (action == null)
-                {
-                    ReportInstructionFailure(runtimeWorker, "instruction execution returned no action", instruction);
-                    continue;
-                }
+                    var instruction = runtimeWorker.Instructions[runtimeWorker.CurInstrIdx];
+                    if (instruction == null)
+                    {
+                        ReportInstructionFailure(runtimeWorker, "current instruction is null", null);
+                        break;
+                    }
 
-                if (string.Equals(instruction.InstructionSet, "CCAw", StringComparison.OrdinalIgnoreCase)
-                    && instruction.Command == WorkerInstructionCommand.Move
-                    && targetPoint != null)
-                {
-                    Console.WriteLine($"[CCAW MOVE] frame={_currentFrame} worker={runtimeWorker.UnitTag} role={assignedWorker.Role} point=({targetPoint.X:F2},{targetPoint.Y:F2}) relative={relativeFrame} instruction={runtimeWorker.CurInstrIdx}");
-                }
-                else if (string.Equals(instruction.InstructionSet, "jitRM", StringComparison.OrdinalIgnoreCase)
-                    && runtimeWorker.CurInstrIdx == 0
-                    && relativeFrame >= 0)
-                {
-                    Console.WriteLine($"[JITRM EXECUTE +0] frame={_currentFrame} worker={runtimeWorker.UnitTag} target={assignedWorker.Mti} command={instruction.Command} relative={relativeFrame}");
-                }
+                    var relativeFrame = Settings.GetRelativeFrame(_currentFrame) - runtimeWorker.InstructionStartFrame;
+                    var frameSatisfied = instruction.RelativeFrame >= 0 && relativeFrame >= instruction.RelativeFrame;
+                    var abilitySatisfied = instruction.TargetAbilityId >= 0
+                        && (instruction.PreviousAbilityId < 0 || runtimeWorker.PreviousAbilityId == instruction.PreviousAbilityId)
+                        && runtimeWorker.CurrentAbilityId == instruction.TargetAbilityId;
+                    var targetPoint = ResolveInstructionPoint(runtimeWorker, assignedWorker, instruction);
+                    if ((instruction.StoreTargetPoint || instruction.Command == WorkerInstructionCommand.UseTargetPoint)
+                        && targetPoint == null)
+                    {
+                        ReportInstructionFailure(runtimeWorker, "stored target point could not be resolved", instruction);
+                        break;
+                    }
 
-                actions.Add(action);
-                runtimeWorker.CurInstrIdx++;
-                if (runtimeWorker.CurInstrIdx < runtimeWorker.Instructions.Count)
-                {
-                    runtimeWorker.TargetAbilityId = runtimeWorker.Instructions[runtimeWorker.CurInstrIdx].TargetAbilityId;
+                    var positionSatisfied = targetPoint != null
+                        && DistanceSquared(runtimeWorker.Position, targetPoint) <= instruction.PositionTolerance * instruction.PositionTolerance;
+                    if (instruction.NoCondition)
+                    {
+                        positionSatisfied = true;
+                    }
+
+                    if (!frameSatisfied && !abilitySatisfied && !positionSatisfied)
+                    {
+                        break;
+                    }
+
+                    var action = ExecuteWorkerInstruction(runtimeWorker, instruction, assignedWorker, targetPoint, out var followUpAction);
+                    if (action == null
+                        && instruction.Command != WorkerInstructionCommand.StoreTargetPoint
+                        && instruction.Command != WorkerInstructionCommand.UseTargetPoint)
+                    {
+                        ReportInstructionFailure(runtimeWorker, "instruction execution returned no action", instruction);
+                        break;
+                    }
+
+                    if (string.Equals(instruction.InstructionSet, "CCAw", StringComparison.OrdinalIgnoreCase)
+                        && instruction.Command == WorkerInstructionCommand.Move
+                        && targetPoint != null)
+                    {
+                        Console.WriteLine($"[CCAW MOVE] frame={_currentFrame} worker={runtimeWorker.UnitTag} role={assignedWorker.Role} point=({targetPoint.X:F2},{targetPoint.Y:F2}) relative={relativeFrame} instruction={runtimeWorker.CurInstrIdx}");
+                    }
+                    else if (string.Equals(instruction.InstructionSet, "jitRM", StringComparison.OrdinalIgnoreCase)
+                        && runtimeWorker.CurInstrIdx == 0
+                        && relativeFrame >= 0)
+                    {
+                        Console.WriteLine($"[JITRM EXECUTE +0] frame={_currentFrame} worker={runtimeWorker.UnitTag} target={assignedWorker.Mti} command={instruction.Command} relative={relativeFrame}");
+                    }
+
+                    var executedIndex = runtimeWorker.CurInstrIdx;
+                    if (action != null)
+                    {
+                        actions.Add(action);
+                        contexts.Add(new InstructionCommandContext
+                        {
+                            WorkerTag = runtimeWorker.UnitTag,
+                            InstructionSet = instruction.InstructionSet,
+                            InstructionIndex = executedIndex,
+                            InstructionCommand = instruction.Command.ToString(),
+                            InstructionPoint = instruction.Point.ToString()
+                        });
+                    }
+                    if (followUpAction != null)
+                    {
+                        actions.Add(followUpAction);
+                        contexts.Add(new InstructionCommandContext
+                        {
+                            WorkerTag = runtimeWorker.UnitTag,
+                            InstructionSet = instruction.InstructionSet,
+                            InstructionIndex = executedIndex,
+                            InstructionCommand = instruction.Command.ToString(),
+                            InstructionPoint = instruction.Point.ToString()
+                        });
+                    }
+
+                    runtimeWorker.CurInstrIdx++;
+                    if (runtimeWorker.CurInstrIdx < runtimeWorker.Instructions.Count)
+                    {
+                        runtimeWorker.TargetAbilityId = runtimeWorker.Instructions[runtimeWorker.CurInstrIdx].TargetAbilityId;
+                    }
                 }
             }
 
             return actions;
         }
 
+        private bool AdvanceSatisfiedControlInstructions(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker)
+        {
+            while (runtimeWorker.CurInstrIdx >= 0 && runtimeWorker.CurInstrIdx < runtimeWorker.Instructions.Count)
+            {
+                var instruction = runtimeWorker.Instructions[runtimeWorker.CurInstrIdx];
+                if (instruction == null)
+                {
+                    ReportInstructionFailure(runtimeWorker, "control instruction is null", null);
+                    return false;
+                }
+
+                var relativeFrame = Settings.GetRelativeFrame(_currentFrame) - runtimeWorker.InstructionStartFrame;
+                var frameSatisfied = instruction.RelativeFrame >= 0 && relativeFrame >= instruction.RelativeFrame;
+                var abilitySatisfied = instruction.TargetAbilityId >= 0
+                    && (instruction.PreviousAbilityId < 0 || runtimeWorker.PreviousAbilityId == instruction.PreviousAbilityId)
+                    && runtimeWorker.CurrentAbilityId == instruction.TargetAbilityId;
+                var unconditionalJump = instruction.Command == WorkerInstructionCommand.Jump
+                    && instruction.RelativeFrame < 0
+                    && instruction.TargetAbilityId < 0;
+                if (!frameSatisfied && !abilitySatisfied && !unconditionalJump)
+                {
+                    return true;
+                }
+
+                if (instruction.Command == WorkerInstructionCommand.Wait)
+                {
+                    if (instruction.NextTargetIndex >= 0 && instruction.NextTargetIndex < assignedWorker.MiningTargets.Count)
+                    {
+                        assignedWorker.Mti = instruction.NextTargetIndex;
+                    }
+
+                    runtimeWorker.CurInstrIdx++;
+                    runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
+                    continue;
+                }
+
+                if (instruction.Command != WorkerInstructionCommand.Jump)
+                {
+                    return true;
+                }
+
+                if (instruction.JumpToInstructionIndex < 0 || instruction.JumpToInstructionIndex >= runtimeWorker.Instructions.Count)
+                {
+                    ReportInstructionFailure(runtimeWorker, "jump row has invalid target index", instruction);
+                    return false;
+                }
+
+                runtimeWorker.CurInstrIdx = instruction.JumpToInstructionIndex;
+                runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
+            }
+
+            return runtimeWorker.CurInstrIdx < runtimeWorker.Instructions.Count;
+        }
+
         private SC2Action? ExecuteWorkerInstruction(
             RuntimeWorkerState runtimeWorker,
             WorkerInstruction instruction,
             AssignedWorkerDto assignedWorker,
-            Vector2Dto? targetPoint)
+            Vector2Dto? targetPoint,
+            out SC2Action? followUpAction)
         {
+            followUpAction = null;
             if (runtimeWorker.UnitTag == 0)
             {
                 return null;
+            }
+
+            if (instruction.StoreTargetPoint && targetPoint != null)
+            {
+                runtimeWorker.StoredTargetPoint = new Vector2Dto(targetPoint.X, targetPoint.Y, targetPoint.Z);
+            }
+
+            if (instruction.Command == WorkerInstructionCommand.GatherAndMove && targetPoint != null && instruction.TargetId != 0)
+            {
+                var gatherAction = CreateInstructionGatherAction(runtimeWorker.UnitTag, instruction.TargetId, false, instruction.TargetAbilityId);
+                if (gatherAction == null)
+                {
+                    return null;
+                }
+
+                followUpAction = CreateInstructionMoveAction(
+                    runtimeWorker.UnitTag,
+                    new Point2D { X = targetPoint.X, Y = targetPoint.Y },
+                    false);
+                return gatherAction;
+            }
+
+            if (instruction.Command == WorkerInstructionCommand.MoveAndGather && targetPoint != null && instruction.TargetId != 0)
+            {
+                followUpAction = CreateInstructionGatherAction(runtimeWorker.UnitTag, instruction.TargetId, true);
+                return CreateInstructionMoveAction(
+                    runtimeWorker.UnitTag,
+                    new Point2D { X = targetPoint.X, Y = targetPoint.Y },
+                    false);
             }
 
             return instruction.Command switch
@@ -1220,10 +1325,27 @@ namespace BabySharkBot.Managers
                     runtimeWorker.UnitTag,
                     instruction.TargetId,
                     instruction.Queue),
+                WorkerInstructionCommand.BuildExtractor when instruction.TargetId != 0 => CreateInstructionBuildExtractorAction(
+                    runtimeWorker.UnitTag,
+                    instruction.TargetId,
+                    instruction.Queue),
                 WorkerInstructionCommand.Return => CreateInstructionReturnAction(runtimeWorker.UnitTag, instruction.Queue),
+                WorkerInstructionCommand.StoreTargetPoint => null,
+                WorkerInstructionCommand.UseTargetPoint => StoreReferencedTargetPoint(runtimeWorker, targetPoint, instruction),
                 WorkerInstructionCommand.LoadInstructionSet => LoadNextInstructionSet(runtimeWorker, instruction, assignedWorker),
                 _ => null
             };
+        }
+
+        private SC2Action? StoreReferencedTargetPoint(RuntimeWorkerState runtimeWorker, Vector2Dto? targetPoint, WorkerInstruction instruction)
+        {
+            if (targetPoint == null || runtimeWorker == null || string.IsNullOrWhiteSpace(instruction.TargetPointReference))
+            {
+                return null;
+            }
+
+            runtimeWorker.StoredTargetPoint = new Vector2Dto(targetPoint.X, targetPoint.Y, targetPoint.Z);
+            return null;
         }
 
         private SC2Action? LoadNextInstructionSet(RuntimeWorkerState runtimeWorker, WorkerInstruction instruction, AssignedWorkerDto assignedWorker)
@@ -1241,19 +1363,18 @@ namespace BabySharkBot.Managers
             }
 
             var firstInstruction = runtimeWorker.Instructions[0];
-            var targetPoint = ResolveInstructionPoint(assignedWorker, firstInstruction);
-            return ExecuteWorkerInstruction(runtimeWorker, firstInstruction, assignedWorker, targetPoint);
+            var targetPoint = ResolveInstructionPoint(runtimeWorker, assignedWorker, firstInstruction);
+            return ExecuteWorkerInstruction(runtimeWorker, firstInstruction, assignedWorker, targetPoint, out _);
         }
 
-        private Vector2Dto? ResolveInstructionPoint(AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        private Vector2Dto? ResolveInstructionPoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
         {
             if (instruction == null || instruction.Point == WorkerInstructionPoint.None || assignedWorker == null)
             {
                 return null;
             }
 
-            var target = assignedWorker.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId)
-                ?? assignedWorker.MiningTargets?.ElementAtOrDefault(assignedWorker.Mti);
+            var target = assignedWorker.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId);
             if (target == null)
             {
                 return null;
@@ -1269,14 +1390,167 @@ namespace BabySharkBot.Managers
             var teamAssignment = currentAssignments
                 .FirstOrDefault(assignment => assignment?.Workers?.Any(worker => worker?.UnitTag == assignedWorker.UnitID) == true);
 
+            // List-driven resolution: a StoreTargetPoint / UseTargetPoint row carries its own
+            // "{miningBase}-{labelA}-{labelB}.{Property}" reference. The Mining Manager reads the
+            // stored coordinate from the pair table -- it does not look ahead, does not calculate
+            // points, and does not use the retired per-target Jit fields (jitHarvestA/B are not
+            // valid; workers get instructions from a list, not an A/B swap).
+            if (!string.IsNullOrWhiteSpace(instruction.TargetPointReference))
+            {
+                var referencedPoint = ResolvePairTablePoint(instruction.TargetPointReference);
+                if (referencedPoint != null)
+                {
+                    return referencedPoint;
+                }
+            }
+
             return instruction.Point switch
             {
                 WorkerInstructionPoint.Harvest => _speedMiningActive && HasNonZeroPoint(target.SmHarvestPoint) ? target.SmHarvestPoint : target.HarvestPoint,
                 WorkerInstructionPoint.Return => _speedMiningActive && HasNonZeroPoint(target.SmReturnPoint) ? target.SmReturnPoint : target.ReturnPoint,
+                WorkerInstructionPoint.StoredTarget when HasNonZeroPoint(runtimeWorker?.StoredTargetPoint) => runtimeWorker.StoredTargetPoint,
                 WorkerInstructionPoint.Staging when teamAssignment != null
+                    => ResolveCcaWaitPoint(teamAssignment, assignedWorker.Role),
+                WorkerInstructionPoint.BumpPartner => ResolveObservedBumpPartner(assignedWorker, assignedWorker.Role),
+                WorkerInstructionPoint.BumpMidpoint => ResolveObservedBumpMidpoint(assignedWorker, assignedWorker.Role, target),
+                WorkerInstructionPoint.BumpHarvestCircle => ResolveBumpHarvestCirclePoint(assignedWorker, target),
+                WorkerInstructionPoint.BumpCcaWaitCircle when teamAssignment != null
                     => ResolveCcaWaitPoint(teamAssignment, assignedWorker.Role),
                 _ => null
             };
+        }
+
+        // Reference form: "{miningBase}-{labelA}-{labelB}.{Property}", canonical order,
+        // matching the PairKey written by BabySharkBuildManager.PopulateJitPairReturnCalculations.
+        private static Vector2Dto? ResolvePairTablePoint(string reference)
+        {
+            var dotIndex = reference.LastIndexOf('.');
+            if (dotIndex <= 0 || dotIndex == reference.Length - 1)
+            {
+                return null;
+            }
+
+            var pairKey = reference.Substring(0, dotIndex);
+            var property = reference.Substring(dotIndex + 1);
+            var startIndex = Globals.CurrentStartIndex >= 0
+                ? Globals.CurrentStartIndex
+                : Settings.CurrentSpawnIndex;
+            var pairs = Globals.CurrentMapData?.MainJitPairReturnCalculations?.ElementAtOrDefault(startIndex);
+            var pair = pairs?.FirstOrDefault(candidate => candidate != null
+                && string.Equals(candidate.PairKey, pairKey, StringComparison.OrdinalIgnoreCase));
+            if (pair == null)
+            {
+                return null;
+            }
+
+            return property switch
+            {
+                "HarvestA" when HasNonZeroPoint(pair.HarvestA) => pair.HarvestA,
+                "HarvestB" when HasNonZeroPoint(pair.HarvestB) => pair.HarvestB,
+                "ReturnPoint" when HasNonZeroPoint(pair.ReturnPoint) => pair.ReturnPoint,
+                "WaitPointA" when HasNonZeroPoint(pair.WaitPointA) => pair.WaitPointA,
+                "WaitPointB" when HasNonZeroPoint(pair.WaitPointB) => pair.WaitPointB,
+                _ => null
+            };
+        }
+
+        private Vector2Dto? ResolveObservedBumpPartner(AssignedWorkerDto assignedWorker, string workerRole)
+        {
+            if (!Settings.IsMagannatha12WorkerOverride || assignedWorker == null)
+            {
+                return null;
+            }
+
+            var partnerRole = workerRole.Equals("T3", StringComparison.OrdinalIgnoreCase) ? "T1"
+                : workerRole.Equals("Y3", StringComparison.OrdinalIgnoreCase) ? "Y1"
+                : string.Empty;
+            if (string.IsNullOrWhiteSpace(partnerRole))
+            {
+                return null;
+            }
+
+            var partner = _mapData?.AssignedWorkers?.ElementAtOrDefault(
+                    Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex)
+                ?.FirstOrDefault(worker => string.Equals(worker?.Role, partnerRole, StringComparison.OrdinalIgnoreCase));
+            return partner?.CurrentXY != null && (partner.CurrentXY.X != 0f || partner.CurrentXY.Y != 0f)
+                ? partner.CurrentXY
+                : null;
+        }
+
+        private Vector2Dto? ResolveObservedBumpMidpoint(
+            AssignedWorkerDto assignedWorker,
+            string workerRole,
+            MiningTargetDto target)
+        {
+            if (!Settings.IsMagannatha12WorkerOverride || assignedWorker == null || target == null)
+            {
+                return null;
+            }
+
+            var partnerRole = workerRole.Equals("T1", StringComparison.OrdinalIgnoreCase) ? "T3"
+                : workerRole.Equals("Y1", StringComparison.OrdinalIgnoreCase) ? "Y3"
+                : string.Empty;
+            if (string.IsNullOrWhiteSpace(partnerRole) || target.ResourceUnitId == 0)
+            {
+                return null;
+            }
+
+            var partner = _mapData?.AssignedWorkers?.ElementAtOrDefault(
+                    Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex)
+                ?.FirstOrDefault(worker => string.Equals(worker?.Role, partnerRole, StringComparison.OrdinalIgnoreCase));
+            if (partner?.CurrentXY == null || (partner.CurrentXY.X == 0f && partner.CurrentXY.Y == 0f))
+            {
+                return null;
+            }
+
+            if (!Globals.CurrentObservation.Minerals.TryGetValue(target.ResourceUnitId, out var observedMineral)
+                || observedMineral?.Position == null)
+            {
+                return null;
+            }
+
+            return new Vector2Dto(
+                (partner.CurrentXY.X + observedMineral.Position.X) / 2f,
+                (partner.CurrentXY.Y + observedMineral.Position.Y) / 2f,
+                observedMineral.Position.Z);
+        }
+
+        private Vector2Dto? ResolveBumpHarvestCirclePoint(AssignedWorkerDto assignedWorker, MiningTargetDto target)
+        {
+            if (assignedWorker?.CurrentXY == null || target?.HarvestPoint == null || target.ResourceUnitId == 0)
+            {
+                return null;
+            }
+
+            if (!Globals.CurrentObservation.Minerals.TryGetValue(target.ResourceUnitId, out var observedMineral)
+                || observedMineral?.Position == null)
+            {
+                return null;
+            }
+
+            var directionX = target.HarvestPoint.X - observedMineral.Position.X;
+            var directionY = target.HarvestPoint.Y - observedMineral.Position.Y;
+            var distance = MathF.Sqrt(directionX * directionX + directionY * directionY);
+            if (distance <= 0.0001f)
+            {
+                return null;
+            }
+
+            var workerDirectionX = assignedWorker.CurrentXY.X - observedMineral.Position.X;
+            var workerDirectionY = assignedWorker.CurrentXY.Y - observedMineral.Position.Y;
+            var workerDistance = MathF.Sqrt(workerDirectionX * workerDirectionX + workerDirectionY * workerDirectionY);
+            if (workerDistance <= 0.0001f)
+            {
+                workerDirectionX = directionX;
+                workerDirectionY = directionY;
+                workerDistance = distance;
+            }
+
+            var harvestRadius = distance;
+            return new Vector2Dto(
+                observedMineral.Position.X + workerDirectionX / workerDistance * harvestRadius,
+                observedMineral.Position.Y + workerDirectionY / workerDistance * harvestRadius,
+                target.HarvestPoint.Z);
         }
 
         private static Vector2Dto? ResolveCcaWaitPoint(
@@ -1315,64 +1589,20 @@ namespace BabySharkBot.Managers
         private void ReportInstructionFailure(RuntimeWorkerState runtimeWorker, string reason, WorkerInstruction instruction)
         {
             Console.WriteLine($"[WORKER INSTRUCTION FAILURE] frame={_currentFrame} worker={runtimeWorker.UnitTag} index={runtimeWorker.CurInstrIdx} set={instruction?.InstructionSet ?? "<none>"} reason={reason} previousAbility={runtimeWorker.PreviousAbilityId} currentAbility={runtimeWorker.CurrentAbilityId} targetAbility={runtimeWorker.TargetAbilityId}");
-            Debugger.Break();
+            //Debugger.Break();
         }
 
-        private List<SC2Action> ExecuteJustInTimeMining(ResponseObservation observation)
+        /// <summary>
+        /// Instruction row that produced an emitted command, used to attribute each logged command to
+        /// the row that ran rather than re-deriving it from the post-increment index.
+        /// </summary>
+        private sealed class InstructionCommandContext
         {
-            var actions = new List<SC2Action>();
-            var snapshot = Globals.CurrentObservation;
-            if (snapshot == null)
-            {
-                Console.WriteLine($"[MINING REACH] JIT skipped frame={_currentFrame}: snapshot is null");
-                return actions;
-            }
-
-            if (!TryResolveObservedSpawn(out var startIndex, out var townhallPosition))
-            {
-                Console.WriteLine($"[MINING TARGET] JIT suppressed frame={_currentFrame}: observed self town hall does not match cached starts.");
-                return actions;
-            }
-
-            var rawTeamAssignments = ResolveBuildGreedyAssignments(startIndex);
-            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
-                ?? new List<AssignedWorkerDto>();
-            var liveWorkers = snapshot.SelfUnits.Values
-                .Where(worker => worker != null && WorkerTypes.Contains((UnitTypes)worker.UnitType) && worker.UnitTag != 0)
-                .Select(worker => ToObservedUnit(worker))
-                .ToList();
-            RefreshBuildPlanLiveTags(rawTeamAssignments, liveWorkers, startIndex);
-
-            var teamAssignments = rawTeamAssignments;
-            if (_currentFrame % 25 == 0)
-            {
-                var directCount = _mapData?.TeamPatchAssignments?.ElementAtOrDefault(startIndex)?.Count ?? 0;
-                Console.WriteLine($"[MINING ASSIGNMENTS] frame={_currentFrame} source=BuildGreedyMineralChain startIndex={startIndex} raw={rawTeamAssignments.Count} validated={teamAssignments.Count} direct={directCount} workerCount={Settings.WorkerCount}");
-            }
-
-            if (liveWorkers.Count == 0)
-            {
-                Console.WriteLine($"[MINING REACH] JIT skipped frame={_currentFrame}: liveWorkers=0 startIndex={startIndex} snapshotWorkers={snapshot.SelfUnits.Count} availableWorkers={snapshot.AvailableWorkers.Count}");
-                return actions;
-            }
-
-            // Find the current-game town hall for the assigned return route.
-            var townhallEntry = snapshot.CurrentTownHalls.Values
-                .FirstOrDefault(unit => unit != null
-                    && unit.Position != null
-                    && Math.Abs(unit.Position.X - townhallPosition.X) < 1.0f
-                    && Math.Abs(unit.Position.Y - townhallPosition.Y) < 1.0f);
-            var townhallUnit = townhallEntry == null ? null : ToObservedUnit(townhallEntry);
-
-            if (_currentFrame - _lastCargoEvaluationConsoleFrame >= 25)
-            {
-                _lastCargoEvaluationConsoleFrame = _currentFrame;
-                var carryingWorkers = liveWorkers.Count(worker => worker.IsCarrying);
-                var previousCarryingWorkers = liveWorkers.Count(worker => worker.WasCarrying);
-                Console.WriteLine($"[MINING REACH] cargo-eval frame={_currentFrame} liveWorkers={liveWorkers.Count} carrying={carryingWorkers} previousCarrying={previousCarryingWorkers} teamAssignments={teamAssignments.Count} townhallTag={townhallUnit?.Tag ?? 0} source=raw-observation");
-            }
-
-            return actions;
+            public ulong WorkerTag { get; init; }
+            public string InstructionSet { get; init; } = string.Empty;
+            public int InstructionIndex { get; init; }
+            public string InstructionCommand { get; init; } = string.Empty;
+            public string InstructionPoint { get; init; } = string.Empty;
         }
 
         private sealed class SnapshotUnit
@@ -1778,7 +2008,11 @@ namespace BabySharkBot.Managers
             };
         }
 
-        private static SC2Action? CreateInstructionGatherAction(ulong workerTag, ulong mineralTag, bool queued)
+        private static SC2Action? CreateInstructionGatherAction(
+            ulong workerTag,
+            ulong mineralTag,
+            bool queued,
+            int abilityId = (int)Abilities.HARVEST_GATHER)
         {
             if (workerTag == 0 || mineralTag == 0)
             {
@@ -1787,7 +2021,7 @@ namespace BabySharkBot.Managers
 
             var command = new ActionRawUnitCommand
             {
-                AbilityId = (int)Abilities.HARVEST_GATHER,
+                AbilityId = abilityId,
                 TargetUnitTag = mineralTag,
                 QueueCommand = queued
             };
@@ -1808,6 +2042,26 @@ namespace BabySharkBot.Managers
             var command = new ActionRawUnitCommand
             {
                 AbilityId = (int)Abilities.HARVEST_RETURN,
+                QueueCommand = queued
+            };
+            command.UnitTags.Add(workerTag);
+            return new SC2Action
+            {
+                ActionRaw = new ActionRaw { UnitCommand = command }
+            };
+        }
+
+        private static SC2Action? CreateInstructionBuildExtractorAction(ulong workerTag, ulong geyserTag, bool queued)
+        {
+            if (workerTag == 0 || geyserTag == 0)
+            {
+                return null;
+            }
+
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.BUILD_EXTRACTOR,
+                TargetUnitTag = geyserTag,
                 QueueCommand = queued
             };
             command.UnitTags.Add(workerTag);
@@ -1838,38 +2092,85 @@ namespace BabySharkBot.Managers
             });
         }
 
-        private void LogMiningCommands(IEnumerable<SC2Action> actions)
+        /// <summary>
+        /// Logs every command issued to a worker this frame. Each command receives a unique trace id
+        /// that is written to both the console and the instruction trace file, so the two outputs can
+        /// be correlated directly instead of by frame and worker tag alone.
+        /// </summary>
+        /// <param name="actions">Actions emitted this frame, in emission order.</param>
+        /// <param name="contexts">
+        /// Instruction row that produced each action, positionally aligned with <paramref name="actions"/>.
+        /// </param>
+        private void LogMiningCommands(IReadOnlyList<SC2Action> actions, IReadOnlyList<InstructionCommandContext> contexts)
         {
-            foreach (var action in actions ?? Enumerable.Empty<SC2Action>())
+            if (actions == null)
             {
-                var command = action?.ActionRaw?.UnitCommand;
+                return;
+            }
+
+            for (var actionIndex = 0; actionIndex < actions.Count; actionIndex++)
+            {
+                var command = actions[actionIndex]?.ActionRaw?.UnitCommand;
                 if (command == null || command.UnitTags == null || command.UnitTags.Count == 0)
                 {
                     continue;
                 }
 
+                // Every issued command must be logged, so unknown abilities fall back to their
+                // enum name instead of being dropped.
                 var commandName = command.AbilityId switch
                 {
                     (int)Abilities.MOVE => "MOVE",
                     (int)Abilities.HARVEST_GATHER => "HARVEST_GATHER",
                     (int)Abilities.HARVEST_RETURN => "HARVEST_RETURN",
                     (int)Abilities.SMART => "SMART",
-                    _ => string.Empty
+                    _ => ((Abilities)command.AbilityId).ToString()
                 };
                 if (string.IsNullOrEmpty(commandName))
                 {
                     continue;
                 }
 
+                var context = contexts != null && actionIndex < contexts.Count ? contexts[actionIndex] : null;
+                var instructionSet = context?.InstructionSet ?? string.Empty;
+                var instructionIndex = context == null ? -1 : context.InstructionIndex;
+                var instructionCommand = context?.InstructionCommand ?? string.Empty;
+                var instructionPoint = context?.InstructionPoint ?? string.Empty;
+
                 var target = command.TargetWorldSpacePos == null
                     ? string.Empty
                     : $" pos=({command.TargetWorldSpacePos.X:F2},{command.TargetWorldSpacePos.Y:F2})";
                 var targetTag = command.TargetUnitTag != 0 ? $" targetTag={command.TargetUnitTag}" : string.Empty;
                 var queued = command.QueueCommand ? " queued=true" : " queued=false";
+                var relativeFrame = Settings.GetRelativeFrame(_currentFrame);
+
                 foreach (var workerTag in command.UnitTags)
                 {
                     var workerLabel = ResolveWorkerRole(null, workerTag);
-                    Console.WriteLine($"[MINING COMMAND1] frame={_currentFrame} worker={workerTag} Label={workerLabel} command={commandName}{target}{targetTag}{queued}");
+                    var commandTraceId = System.Threading.Interlocked.Increment(ref _miningCommandSequence);
+
+                    Console.WriteLine($"[MINING COMMAND{commandTraceId}] frame={_currentFrame} relative={relativeFrame} worker={workerTag} Label={workerLabel} command={commandName}{target}{targetTag}{queued} set={instructionSet} idx={instructionIndex} instr={instructionCommand} point={instructionPoint}");
+
+                    AppendInstructionTrace(new
+                    {
+                        RecordType = "MiningCommand",
+                        TimestampUtc = DateTime.UtcNow,
+                        GameFrame = _currentFrame,
+                        RelativeFrame = relativeFrame,
+                        CommandTraceId = commandTraceId,
+                        WorkerTag = workerTag,
+                        WorkerLabel = workerLabel,
+                        InstructionSet = instructionSet,
+                        InstructionIndex = instructionIndex,
+                        InstructionCommand = instructionCommand,
+                        InstructionPoint = instructionPoint,
+                        AbilityId = command.AbilityId,
+                        Ability = commandName,
+                        QueueCommand = command.QueueCommand,
+                        TargetUnitTag = command.TargetUnitTag == 0 ? (ulong?)null : command.TargetUnitTag,
+                        TargetX = command.TargetWorldSpacePos?.X,
+                        TargetY = command.TargetWorldSpacePos?.Y
+                    });
                 }
             }
         }
@@ -2184,7 +2485,7 @@ namespace BabySharkBot.Managers
 
         private void DrawCenterOfMass()
         {
-            if (_mapData != null) foreach (var com in _mapData.MineralCenterOfMass) { if (com == null) continue; DrawCircle(com, 0.5f, new Color { R = 0, G = 255, B = 0 }, 12f); }
+            if (_mapData != null) foreach (var com in _mapData.MineralCenterOfMass) { if (com == null) continue; DrawDebugCircle(com, 0.5f, new Color { R = 0, G = 255, B = 0 }, 12f); }
         }
 
         private void DrawMineralLabels()
@@ -2262,9 +2563,23 @@ namespace BabySharkBot.Managers
             }
         }
 
+        private void DrawDebugCircle(Vector2Dto center, float radius, Color color, float z, int segments = 24)
+        {
+            if (center == null || segments < 3) return;
+            var step = Math.PI * 2.0 / segments;
+            Point? previous = null;
+            for (var i = 0; i <= segments; i++)
+            {
+                var angle = i * step;
+                var point = new Point { X = center.X + (float)(Math.Cos(angle) * radius), Y = center.Y + (float)(Math.Sin(angle) * radius), Z = z };
+                if (previous != null) ManagerDebugService.DrawLine(previous, point, color);
+                previous = point;
+            }
+        }
+
         private void DrawExpansionPoints()
         {
-            if (_mapData?.ExpansionPoints != null) foreach (var kvp in _mapData.ExpansionPoints) { if (kvp.Value?.ExpansionPoint == null) continue; DrawCircle(kvp.Value.ExpansionPoint, 2.5f, new Color { R = 0, G = 0, B = 255 }, 12f); ManagerDebugService.DrawText($"Exp {kvp.Key}", new Point { X = kvp.Value.ExpansionPoint.X, Y = kvp.Value.ExpansionPoint.Y, Z = 13f }, new Color { R = 255, G = 255, B = 255 }, 12); }
+            if (_mapData?.ExpansionPoints != null) foreach (var kvp in _mapData.ExpansionPoints) { if (kvp.Value?.ExpansionPoint == null) continue; DrawDebugCircle(kvp.Value.ExpansionPoint, 2.5f, new Color { R = 0, G = 0, B = 255 }, 12f); ManagerDebugService.DrawText($"Exp {kvp.Key}", new Point { X = kvp.Value.ExpansionPoint.X, Y = kvp.Value.ExpansionPoint.Y, Z = 13f }, new Color { R = 255, G = 255, B = 255 }, 12); }
         }
 
         private void DrawSpawningPoolPlacement()
@@ -2282,7 +2597,7 @@ namespace BabySharkBot.Managers
             }
 
             var color = new Color { R = 255, G = 0, B = 0 };
-            DrawCircle(placement, 1.5f, color, 12f);
+            DrawDebugCircle(placement, 1.5f, color, 12f);
             ManagerDebugService.DrawText("SpawningPool", new Point
             {
                 X = placement.X,
@@ -2336,8 +2651,6 @@ namespace BabySharkBot.Managers
         }
 
         private List<WorkerEntryDto>? GetStoredWorkersForStart(int startIndex) => (startIndex >= 0 && _mapData?.StartingUnits != null && startIndex < _mapData.StartingUnits.Count) ? _mapData.StartingUnits[startIndex] : null;
-
-        private void DrawArrow(Point start, Point end, Color color) { ManagerDebugService.DrawLine(start, end, color); }
 
         private (Vector2Dto ReturnPoint, Vector2Dto WaitPoint) CalculateJitPoints(MineralNode mA, MineralNode mB, Vector2Dto townhall)
         {

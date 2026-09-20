@@ -931,16 +931,6 @@ namespace BabySharkBot.Setup
             }
 
 
-            try
-            {
-                tempBaseDto.MainMineralJitCargoPoints = BuildMultiLocationJitCargoPoints(orderedMainMinerals, tempBaseDto.MainMineralCargoPoints);
-                Console.WriteLine($"InitialMapData: Calculated JIT mineral cargo geometry for all start locations");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"InitialMapData: Failed to calculate JIT mineral cargo geometry: {ex.Message}");
-            }
-
             // InitialMapData discovers and preserves all vespene positions only.
             // Worker-dependent V1/V2 ordering belongs to BabySharkBuildManager after
             // ObservationManager has supplied the runtime worker chain.
@@ -1005,11 +995,9 @@ namespace BabySharkBot.Setup
                 Settings.M8IsFar = tempBaseDto.M8IsFar;
                 tempBaseDto.MainMineralCargoPoints = BuildMultiLocationCargoPoints(multiMainMinerals, startingTownHalls);
                 tempBaseDto.MainVespeneCargoPoints = BuildMultiLocationCargoPoints(multiMainVespene, startingTownHalls);
-                tempBaseDto.MainMineralJitCargoPoints = BuildMultiLocationJitCargoPoints(tempBaseDto.OrderedMainMinerals, tempBaseDto.MainMineralCargoPoints);
                 tempBaseDto.ExpansionMineralCargoPoints = _expansionMineralCargoPoints;
                 tempBaseDto.ExpansionVespeneCargoPoints = _expansionVespeneCargoPoints;
                 tempBaseDto.ExpansionMineralCenterOfMass = (tempBaseDto.ExpansionTownhalls ?? new List<Vector2Dto>()).Select(t => t == null ? null : new Vector2Dto(t.X, t.Y, t.Z)).Where(v => v != null).ToList();
-                tempBaseDto.ExpansionMineralJitCargoPoints = BuildMultiLocationJitCargoPoints(tempBaseDto.OrderedMainMinerals, tempBaseDto.MainMineralCargoPoints, tempBaseDto.ExpansionMineralCargoPoints);
 
                 Settings.CurrentSpawnIndex = startLocationIndex;
                 Settings.CurrentSpawnLocation = startLocationIndex < startingTownHalls.Length && startingTownHalls[startLocationIndex] != null
@@ -1046,93 +1034,6 @@ namespace BabySharkBot.Setup
             }
 
             return cargoPoints;
-        }
-
-        private List<List<MiningPairCargoPointDto>> BuildMultiLocationJitCargoPoints(List<List<OrderedMineral>> orderedMinerals, List<List<HarvestReturnCargoPointDto>> mainCargoPoints, List<List<HarvestReturnCargoPointDto>> expansionCargoPoints = null)
-        {
-            var jitPoints = new List<List<MiningPairCargoPointDto>>();
-
-            if (orderedMinerals == null)
-            {
-                return jitPoints;
-            }
-
-            for (int i = 0; i < orderedMinerals.Count; i++)
-            {
-                var minerals = orderedMinerals[i] ?? new List<OrderedMineral>();
-                var cargoPoints = mainCargoPoints != null && i < mainCargoPoints.Count ? mainCargoPoints[i] : new List<HarvestReturnCargoPointDto>();
-                jitPoints.Add(BuildJitPairCargoPoints(minerals, cargoPoints));
-            }
-
-            if (expansionCargoPoints != null && expansionCargoPoints.Count > 0)
-            {
-                for (int i = 0; i < expansionCargoPoints.Count; i++)
-                {
-                    var cargoPoints = expansionCargoPoints[i] ?? new List<HarvestReturnCargoPointDto>();
-                    if (jitPoints.Count <= i)
-                    {
-                        jitPoints.Add(BuildJitPairCargoPoints(new List<OrderedMineral>(), cargoPoints));
-                    }
-                    else if (jitPoints[i].Count == 0)
-                    {
-                        jitPoints[i] = BuildJitPairCargoPoints(new List<OrderedMineral>(), cargoPoints);
-                    }
-                }
-            }
-
-            return jitPoints;
-        }
-
-        private List<MiningPairCargoPointDto> BuildJitPairCargoPoints(List<OrderedMineral> orderedMinerals, List<HarvestReturnCargoPointDto> cargoPoints)
-        {
-            var jitPairs = new List<MiningPairCargoPointDto>();
-
-            if (orderedMinerals == null || orderedMinerals.Count == 0 || cargoPoints == null || cargoPoints.Count == 0)
-            {
-                return jitPairs;
-            }
-
-            var orderedByIndex = orderedMinerals
-                .Where(m => m != null && m.Position != null)
-                .OrderBy(m => m.Index)
-                .ToList();
-
-            for (int i = 0; i + 1 < orderedByIndex.Count; i += 2)
-            {
-                var first = orderedByIndex[i];
-                var second = orderedByIndex[i + 1];
-                var firstCargo = cargoPoints.FirstOrDefault(c => IsSamePosition(c?.ResourcePosition, first.Position));
-                var secondCargo = cargoPoints.FirstOrDefault(c => IsSamePosition(c?.ResourcePosition, second.Position));
-
-                var firstReturn = firstCargo?.ReturnPoint ?? first.ReturnPoint ?? new Vector2Dto(first.Position.X, first.Position.Y, first.Position.Z);
-                var secondReturn = secondCargo?.ReturnPoint ?? second.ReturnPoint ?? new Vector2Dto(second.Position.X, second.Position.Y, second.Position.Z);
-                var jitReturn = new Vector2Dto((firstReturn.X + secondReturn.X) * 0.5f, (firstReturn.Y + secondReturn.Y) * 0.5f, (firstReturn.Z + secondReturn.Z) * 0.5f);
-
-                jitPairs.Add(new MiningPairCargoPointDto
-                {
-                    PairIndex = i / 2 + 1,
-                    Label = $"M{first.Index}/M{second.Index}",
-                    FirstMineralPosition = first.Position,
-                    SecondMineralPosition = second.Position,
-                    JitReturnPoint = jitReturn,
-                    FirstHarvestPoint = firstCargo?.HarvestPoint ?? first.HarvestPoint ?? new Vector2Dto(first.Position.X, first.Position.Y, first.Position.Z),
-                    SecondHarvestPoint = secondCargo?.HarvestPoint ?? second.HarvestPoint ?? new Vector2Dto(second.Position.X, second.Position.Y, second.Position.Z),
-                    FirstReturnPoint = firstReturn,
-                    SecondReturnPoint = secondReturn
-                });
-            }
-
-            return jitPairs;
-        }
-
-        private bool IsSamePosition(Vector2Dto a, Vector2Dto b)
-        {
-            if (a == null || b == null)
-            {
-                return false;
-            }
-
-            return Math.Abs(a.X - b.X) < 0.01f && Math.Abs(a.Y - b.Y) < 0.01f;
         }
 
         private List<HarvestReturnCargoPointDto> BuildHarvestReturnCargoPoints(IEnumerable<Vector2Dto> resources, Vector2Dto townhallPosition)
@@ -1355,7 +1256,9 @@ namespace BabySharkBot.Setup
             }
 
             var unitDirection = Vector2.Normalize(direction);
-            const float hatcheryRadius = 5.5f;
+            // Hatchery footprint: 5.5u diameter, 2.75u radius. A worker cannot stand closer than the
+            // footprint; the return point is the intersection of the path line with this circle.
+            const float hatcheryRadius = 2.75f;
             const float mineralRadius = 1.0f;
             const float smallInset = 1.75f;
 

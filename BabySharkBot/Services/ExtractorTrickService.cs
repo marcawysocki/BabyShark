@@ -192,7 +192,16 @@ namespace BabySharkBot.Services
             {
                 CreateMoveInstruction("prepW", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 0),
                 CreateMoveInstruction("prepW", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 1),
-                CreateMoveInstruction("prepW", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 14)
+                CreateMoveInstruction("prepW", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 14),
+                new WorkerInstruction
+                {
+                    InstructionSet = "prepW",
+                    Command = WorkerInstructionCommand.BuildExtractor,
+                    Point = WorkerInstructionPoint.Harvest,
+                    TargetId = target.ResourceUnitId,
+                    RelativeFrame = 0,
+                    RequireResources = true
+                }
             }, Settings.GetRelativeFrame(frame));
 
             TraceBuildInstructionInsertion("prepW", _request.WorkerTag, frame, runtimeWorker.Instructions.Count);
@@ -361,12 +370,21 @@ namespace BabySharkBot.Services
                 return false;
             }
 
-            actions.Add(CreateUnitCommand(
-                Abilities.BUILD_EXTRACTOR,
-                _request.WorkerTag,
-                _request.GeyserTag,
-                null));
-            Console.WriteLine($"[EXTRACTOR BUILD] worker={_request.WorkerTag} geyser={_request.GeyserTag} minerals={_defaultBot.MacroData.Minerals}");
+            if (!Settings.RuntimeWorkers.TryGetValue(_request.WorkerTag, out var runtimeWorker)
+                || runtimeWorker.CurInstrIdx < 0
+                || runtimeWorker.CurInstrIdx >= runtimeWorker.Instructions.Count)
+            {
+                return false;
+            }
+
+            var instruction = runtimeWorker.Instructions[runtimeWorker.CurInstrIdx];
+            if (instruction == null || instruction.Command != WorkerInstructionCommand.BuildExtractor)
+            {
+                return false;
+            }
+
+            _request.Phase = ExtractorPhase.ExtractorConfirmed;
+            Console.WriteLine($"[EXTRACTOR BUILD INSTRUCTION READY] worker={_request.WorkerTag} geyser={_request.GeyserTag} minerals={_defaultBot.MacroData.Minerals}");
             return true;
         }
 
@@ -449,9 +467,9 @@ namespace BabySharkBot.Services
             assignedWorker.Mti = _request.TemporaryTargetIndex;
             runtimeWorker.LoadInstructions("jitMH", new[]
             {
-                CreateMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 0),
-                CreateMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 1),
-                CreateMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 14),
+                CreateGatherAndMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 0),
+                CreateGatherAndMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 1),
+                CreateGatherAndMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 14),
                 new WorkerInstruction
                 {
                     InstructionSet = "jitMH",
@@ -503,6 +521,20 @@ namespace BabySharkBot.Services
                 Point = point,
                 TargetId = targetId,
                 RelativeFrame = frame
+            };
+        }
+
+        private static WorkerInstruction CreateGatherAndMoveInstruction(string set, ulong targetId, WorkerInstructionPoint point, int frame)
+        {
+            return new WorkerInstruction
+            {
+                InstructionSet = set,
+                Command = WorkerInstructionCommand.GatherAndMove,
+                Point = point,
+                TargetId = targetId,
+                TargetAbilityId = (int)Abilities.HARVEST_GATHER_DRONE,
+                RelativeFrame = frame,
+                Queue = false
             };
         }
 

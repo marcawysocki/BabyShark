@@ -212,14 +212,14 @@ namespace BabySharkBot.Setup
                 if (Settings.IsMagannatha12WorkerOverride)
                 {
                     // Magannatha custom role layout:
-                    // Teal: W3/T1, W4/T2, W1/T3
-                    // Salmon: W5/S1, W6/S2, W2/S3
-                    // Blue: W7/B1, W11/B2, W10/B3
-                    // Yellow: W9/Y1, W8/Y2, W12/Y3
-                    AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W3", "W4", "W1" }, 1);
-                    AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W2" }, 2);
-                    AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W11", "W10" }, 3);
-                    AddTeamIfPossible(teams, minerals, workers, 6, 7, new[] { "W9", "W8", "W12" }, 4);
+                    // Teal: W3/T1, W4/T2, W2/T3
+                    // Salmon: W5/S1, W6/S2, W1/S3
+                    // Blue: W7/B1, W11/B2, W12/B3
+                    // Yellow: W9/Y1, W8/Y2, W10/Y3
+                    AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W3", "W4", "W2" }, 1);
+                    AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W1" }, 2);
+                    AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W11", "W12" }, 3);
+                    AddTeamIfPossible(teams, minerals, workers, 6, 7, new[] { "W9", "W8", "W10" }, 4);
                 }
                 else
                 {
@@ -499,25 +499,25 @@ namespace BabySharkBot.Setup
                     {
                         ["W3"] = "T1",
                         ["W4"] = "T2",
-                        ["W1"] = "T3"
+                        ["W2"] = "T3"
                     },
                     2 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
                         ["W5"] = "S1",
                         ["W6"] = "S2",
-                        ["W2"] = "S3"
+                        ["W1"] = "S3"
                     },
                     3 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
                         ["W7"] = "B1",
                         ["W11"] = "B2",
-                        ["W10"] = "B3"
+                        ["W12"] = "B3"
                     },
                     4 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
                         ["W9"] = "Y1",
                         ["W8"] = "Y2",
-                        ["W12"] = "Y3"
+                        ["W10"] = "Y3"
                     },
                     _ => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 };

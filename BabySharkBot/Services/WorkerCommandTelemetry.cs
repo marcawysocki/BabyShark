@@ -181,6 +181,7 @@ namespace BabySharkBot.Services
                     TimestampUtc = DateTime.UtcNow,
                     GameFrame = frame,
                     GameSeconds = frame / 22.4,
+                    CommandTraceId = traceId,
                     SourceManager = sourceManager ?? string.Empty,
                     WorkerTag = worker.Tag,
                     WorkerType = ((UnitTypes)worker.UnitType).ToString(),
@@ -382,6 +383,7 @@ namespace BabySharkBot.Services
             public DateTime TimestampUtc { get; set; }
             public int GameFrame { get; set; }
             public double GameSeconds { get; set; }
+            public long CommandTraceId { get; set; }
             public string SourceManager { get; set; }
             public ulong WorkerTag { get; set; }
             public string WorkerType { get; set; }

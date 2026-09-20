@@ -6,8 +6,15 @@ namespace BabySharkBot.Setup
     public enum WorkerInstructionCommand
     {
         Move,
+        GatherAndMove,
+        MoveAndGather,
         Gather,
         Return,
+        BuildExtractor,
+        Wait,
+        Jump,
+        StoreTargetPoint,
+        UseTargetPoint,
         LoadInstructionSet
     }
 
@@ -16,7 +23,17 @@ namespace BabySharkBot.Setup
         None,
         Harvest,
         Return,
-        Staging
+        Staging,
+        BumpPartner,
+        BumpMidpoint,
+        BumpHarvestCircle,
+        BumpCcaWaitCircle,
+        JitHarvestA,
+        JitHarvestB,
+        JitWaitPointA,
+        JitWaitPointB,
+        JitReturnPoint,
+        StoredTarget
     }
 
     public sealed class WorkerInstruction
@@ -26,9 +43,16 @@ namespace BabySharkBot.Setup
         public WorkerInstructionPoint Point { get; set; }
         public ulong TargetId { get; set; }
         public int RelativeFrame { get; set; } = -1;
+        public int PreviousAbilityId { get; set; } = -1;
         public int TargetAbilityId { get; set; } = -1;
+        public bool RequireResources { get; set; }
         public float PositionTolerance { get; set; } = 0.25f;
         public bool Queue { get; set; }
+        public bool NoCondition { get; set; }
+        public bool StoreTargetPoint { get; set; }
+        public string TargetPointReference { get; set; } = string.Empty;
+        public int NextTargetIndex { get; set; } = -1;
+        public int JumpToInstructionIndex { get; set; } = -1;
         public string NextInstructionSet { get; set; } = string.Empty;
     }
 
@@ -42,8 +66,10 @@ namespace BabySharkBot.Setup
         public int PreviousAbilityId { get; set; } = -1;
         public int TargetAbilityId { get; set; } = -1;
         public Vector2Dto Position { get; set; } = new();
+        public Vector2Dto StoredTargetPoint { get; set; } = new();
         public bool IsCarrying { get; set; }
         public bool WasCarrying { get; set; }
+        public bool HasObservedSmart { get; set; }
         public bool CargoReturned => WasCarrying && !IsCarrying;
 
         public void LoadInstructions(string instructionSet, IReadOnlyList<WorkerInstruction> instructions, int relativeFrame)
