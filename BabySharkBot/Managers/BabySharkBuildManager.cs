@@ -333,7 +333,11 @@ namespace BabySharkBot.Managers
                     var movementPoint = isMagannathaBumpRole
                         ? ResolveBumpStartupPoint(role)
                         : useCcaw ? WorkerInstructionPoint.Staging : WorkerInstructionPoint.Harvest;
-                    var gatherFrame = useCcaw ? 55 : 15;
+                    // gatherFrame >= 0 keeps the first gather frame-based; only Role 3's initial
+                    // CCAw wait set uses that (frame 55). A negative gatherFrame makes the gather
+                    // position-gated: it fires when the worker is within 0.1u of the mineral
+                    // footprint point, however long the walk takes.
+                    var gatherFrame = useCcaw ? 55 : -1;
                     var startupInstructions = isMagannathaBumpRole
                         ? BuildBumpInstructions(instructionSet, role, initialTarget.ResourceUnitId)
                         : BuildStandardStartupInstructions(instructionSet, movementPoint, initialTarget.ResourceUnitId, gatherFrame);
@@ -438,12 +442,33 @@ namespace BabySharkBot.Managers
             var startupMovementPoint = movementPoint == WorkerInstructionPoint.Harvest
                 ? WorkerInstructionPoint.StoredTarget
                 : movementPoint;
+            // Role 3's initial CCAw set is the one exception to position-gated gathering: the
+            // worker stands on the 1.5u wait circle, outside the 0.1u footprint gate, so that
+            // gather keeps its frame condition. Every other gather fires when the worker is
+            // within 0.1u of the mineral footprint point.
+            var gather = new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.Harvest, TargetId = targetId, Queue = true };
+            if (gatherFrame >= 0)
+            {
+                gather.RelativeFrame = gatherFrame;
+            }
+            else
+            {
+                gather.RelativeFrame = -1;
+                // 0.1u is unreachable: mineral pathing radius + drone radius (~0.375)
+                // keep worker centers well outside the footprint circle. 0.5 covers it.
+                gather.PositionTolerance = 0.5f;
+                // Gate on the same stored pair point the startup moves walk to. Gating on the
+                // generic Harvest point strands the worker: the pair harvest point and the
+                // mineral-to-hatchery harvest point differ by more than 0.1u on most minerals.
+                gather.Point = WorkerInstructionPoint.StoredTarget;
+            }
+
             return new[]
             {
                 new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = startupMovementPoint, TargetId = targetId, RelativeFrame = 0 },
                 new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = startupMovementPoint, TargetId = targetId, RelativeFrame = 1 },
                 new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = startupMovementPoint, TargetId = targetId, RelativeFrame = 14 },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.Harvest, TargetId = targetId, RelativeFrame = gatherFrame, Queue = true }
+                gather
             };
         }
 
@@ -528,7 +553,6 @@ namespace BabySharkBot.Managers
 
             var firstGatherAbility = (int)Abilities.HARVEST_GATHER_DRONE;
             var returnAbility = (int)Abilities.HARVEST_RETURN_DRONE;
-            var moveAbility = (int)Abilities.MOVE;
 
             instructions.Add(new WorkerInstruction
             {
@@ -538,17 +562,18 @@ namespace BabySharkBot.Managers
                 TargetAbilityId = returnAbility
             });
             AddReturnInstructions(instructions, startIndex, firstTarget, secondTarget);
+            // Passes when the cargo hand-off is observed after the return command —
+            // see AdvanceSatisfiedControlInstructions. Previous/TargetAbilityId stay at
+            // the default -1 because (MOVE, RETURN_DRONE) never occurs once the return lands.
             instructions.Add(new WorkerInstruction
             {
                 InstructionSet = "wait",
                 Command = WorkerInstructionCommand.Wait,
-                PreviousAbilityId = moveAbility,
-                TargetAbilityId = returnAbility,
                 NextTargetIndex = 1
             });
 
             var secondHarvestIndex = instructions.Count;
-            AddHarvestInstructions(instructions, startIndex, "jitMH", secondTarget, firstTarget, WorkerInstructionPoint.JitHarvestB, 15);
+            AddHarvestInstructions(instructions, startIndex, "jitMH", secondTarget, firstTarget, WorkerInstructionPoint.JitHarvestB);
             instructions.Add(new WorkerInstruction
             {
                 InstructionSet = "wait",
@@ -557,17 +582,16 @@ namespace BabySharkBot.Managers
                 TargetAbilityId = returnAbility
             });
             AddReturnInstructions(instructions, startIndex, secondTarget, firstTarget);
+            // Passes when the cargo hand-off is observed — see AdvanceSatisfiedControlInstructions.
             instructions.Add(new WorkerInstruction
             {
                 InstructionSet = "wait",
                 Command = WorkerInstructionCommand.Wait,
-                PreviousAbilityId = moveAbility,
-                TargetAbilityId = returnAbility,
                 NextTargetIndex = 0
             });
 
             var firstHarvestIndex = instructions.Count;
-            AddHarvestInstructions(instructions, startIndex, "jitMH", firstTarget, secondTarget, WorkerInstructionPoint.JitHarvestA, 15);
+            AddHarvestInstructions(instructions, startIndex, "jitMH", firstTarget, secondTarget, WorkerInstructionPoint.JitHarvestA);
             instructions.Add(new WorkerInstruction
             {
                 InstructionSet = "wait",
@@ -576,13 +600,15 @@ namespace BabySharkBot.Managers
                 TargetAbilityId = returnAbility
             });
             AddReturnInstructions(instructions, startIndex, firstTarget, secondTarget);
+            // Passes when the cargo hand-off is observed — see AdvanceSatisfiedControlInstructions.
+            // The jump below loops back to the second harvest (MiningTargets[1]), so the
+            // target pointer must advance to 1 here; leaving it at 0 made the worker's
+            // CurrentTargetIndex disagree with the set it was about to run.
             instructions.Add(new WorkerInstruction
             {
                 InstructionSet = "wait",
                 Command = WorkerInstructionCommand.Wait,
-                PreviousAbilityId = moveAbility,
-                TargetAbilityId = returnAbility,
-                NextTargetIndex = 0
+                NextTargetIndex = 1
             });
             instructions.Add(new WorkerInstruction
             {
@@ -600,14 +626,24 @@ namespace BabySharkBot.Managers
             string instructionSet,
             MiningTargetDto target,
             MiningTargetDto pairedTarget,
-            WorkerInstructionPoint point,
-            int gatherFrame)
+            WorkerInstructionPoint point)
         {
             AddJitPairSetupInstruction(instructions, startIndex, instructionSet, target, pairedTarget, point, WorkerInstructionCommand.StoreTargetPoint, true);
             instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0 });
             instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1 });
             instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 14 });
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = point, TargetId = target.ResourceUnitId, RelativeFrame = gatherFrame, Queue = true });
+            // Position-gated gather, QUEUED — the same shape as the startup gather that
+            // provably works (BuildStandardStartupInstructions). The previous form fired
+            // unqueued on the SAME frame as the RelativeFrame=14 move, so the worker got
+            // Move+Gather in one batch; the game completed the move and discarded the
+            // gather, the worker went idle next to the mineral, and the following Wait row
+            // (HARVEST_GATHER_DRONE -> HARVEST_RETURN_DRONE) never passed, freezing the
+            // instruction pointer there for the rest of the game. Queued behind the moves,
+            // the gather executes when the walk finishes; the 0.5u gate fires it as soon as
+            // the worker reaches the stored pair point, and the lost-tread self-heal in
+            // ExecuteRuntimeWorkerInstructions still fires it if the worker goes idle short
+            // of the gate.
+            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = -1, PositionTolerance = 0.5f, Queue = true });
         }
 
         private static void AddReturnInstructions(List<WorkerInstruction> instructions, int startIndex, MiningTargetDto target, MiningTargetDto pairedTarget)
@@ -616,7 +652,10 @@ namespace BabySharkBot.Managers
             instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0 });
             instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1 });
             instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 14 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15, Queue = true });
+            // Position-gated return: fires when the worker is within 0.5u of the pair return
+            // point (0.1u is unreachable — unit radii), so cargo is handed off as soon as
+            // the worker arrives at the hatchery.
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = -1, PositionTolerance = 0.5f, Queue = true });
         }
 
         private static WorkerInstructionPoint ResolveFirstLinePoint(string instructionSet, string role)

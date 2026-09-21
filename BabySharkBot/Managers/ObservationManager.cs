@@ -46,6 +46,7 @@ namespace BabySharkBot.Managers
         private ulong _lastDebugDroneTag;
         private uint _lastDebugDroneAbilityId;
         private bool _hasLastDebugDroneAbility;
+        private readonly List<uint> _debugDroneAbilityHistory = new();
 
         public ObservationManager(
             ActiveUnitData activeUnitData,
@@ -190,6 +191,9 @@ namespace BabySharkBot.Managers
 
             if (abilityChanged)
             {
+                var abilityIdList = string.Join(",", _debugDroneAbilityHistory) +
+                    (_debugDroneAbilityHistory.Count > 0 ? "," : "") + currentAbilityId;
+
                 Console.WriteLine(
                     $"[DRONE ABILITY CHANGED] frame={observationSnapshot.Frame} " +
                     $"tag={droneRawUnit.Tag} Label={workerLabel} unitType={droneRawUnit.UnitType} " +
@@ -197,11 +201,17 @@ namespace BabySharkBot.Managers
                     $"pos=({droneRawUnit.Pos.X:F3},{droneRawUnit.Pos.Y:F3},{droneRawUnit.Pos.Z:F3}) " +
                     $"health={droneRawUnit.Health:F1}/{droneRawUnit.HealthMax:F1} " +
                     $"buildProgress={droneRawUnit.BuildProgress:F3} " +
-                    $"abilityId={currentAbilityId} orderCount={droneRawUnit.Orders?.Count ?? 0}");
+                    $"abilityId={abilityIdList} orderCount={droneRawUnit.Orders?.Count ?? 0}");
 
                 _lastDebugDroneTag = droneRawUnit.Tag;
                 _lastDebugDroneAbilityId = currentAbilityId;
                 _hasLastDebugDroneAbility = true;
+
+                _debugDroneAbilityHistory.Add(currentAbilityId);
+                if (_debugDroneAbilityHistory.Count > 10)
+                {
+                    _debugDroneAbilityHistory.RemoveAt(0);
+                }
                 //Debugger.Break();
             }
         }

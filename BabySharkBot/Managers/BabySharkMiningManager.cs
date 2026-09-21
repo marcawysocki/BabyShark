@@ -1157,7 +1157,25 @@ namespace BabySharkBot.Managers
 
                     if (!frameSatisfied && !abilitySatisfied && !positionSatisfied)
                     {
-                        break;
+                        // Lost-tread self-heal: SC2 completes a move early when the destination
+                        // cell is blocked (a parked worker sitting on the gate point), leaving
+                        // the worker idle short of the gate with no row left to re-issue the
+                        // walk — observed as workers freezing near the hatchery after a few
+                        // cycles. A position-gated Gather/Return targets a unit, so the game
+                        // walks the worker into range itself; fire it instead of stalling.
+                        if (instruction.RelativeFrame < 0
+                            && instruction.PositionTolerance > 0
+                            && targetPoint != null
+                            && runtimeWorker.CurrentAbilityId < 0
+                            && (instruction.Command == WorkerInstructionCommand.Gather
+                                || instruction.Command == WorkerInstructionCommand.Return))
+                        {
+                            positionSatisfied = true;
+                        }
+                        else
+                        {
+                            break;
+                        }
                     }
 
                     var action = ExecuteWorkerInstruction(runtimeWorker, instruction, assignedWorker, targetPoint, out var followUpAction);
@@ -1238,7 +1256,13 @@ namespace BabySharkBot.Managers
                 var unconditionalJump = instruction.Command == WorkerInstructionCommand.Jump
                     && instruction.RelativeFrame < 0
                     && instruction.TargetAbilityId < 0;
-                if (!frameSatisfied && !abilitySatisfied && !unconditionalJump)
+                // A Wait row following a return-cargo command has no ability signature for
+                // "the deposit finished": the drone's order list just goes idle. Let it pass
+                // on the observed cargo transition instead, so the next set's moves cannot
+                // overwrite a return that is still walking to the hatchery.
+                var cargoHandedOff = instruction.Command == WorkerInstructionCommand.Wait
+                    && runtimeWorker.CargoReturned;
+                if (!frameSatisfied && !abilitySatisfied && !unconditionalJump && !cargoHandedOff)
                 {
                     return true;
                 }
@@ -1329,7 +1353,10 @@ namespace BabySharkBot.Managers
                     runtimeWorker.UnitTag,
                     instruction.TargetId,
                     instruction.Queue),
-                WorkerInstructionCommand.Return => CreateInstructionReturnAction(runtimeWorker.UnitTag, instruction.Queue),
+                WorkerInstructionCommand.Return => CreateInstructionReturnAction(
+                    runtimeWorker.UnitTag,
+                    assignedWorker?.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId)?.TownHallUnitId ?? 0,
+                    instruction.Queue),
                 WorkerInstructionCommand.StoreTargetPoint => null,
                 WorkerInstructionCommand.UseTargetPoint => StoreReferencedTargetPoint(runtimeWorker, targetPoint, instruction),
                 WorkerInstructionCommand.LoadInstructionSet => LoadNextInstructionSet(runtimeWorker, instruction, assignedWorker),
@@ -2032,16 +2059,21 @@ namespace BabySharkBot.Managers
             };
         }
 
-        private static SC2Action? CreateInstructionReturnAction(ulong workerTag, bool queued)
+        private static SC2Action? CreateInstructionReturnAction(ulong workerTag, ulong townHallTag, bool queued)
         {
-            if (workerTag == 0)
+            if (workerTag == 0 || townHallTag == 0)
             {
                 return null;
             }
 
+            // Smart on the town hall is the return-cargo command (canon: workers receive a
+            // Smart command). HARVEST_RETURN (3667) declares Target: None -- the game drops
+            // it when a unit target is attached and does nothing reliable without one, which
+            // left the worker standing at the hatchery still carrying.
             var command = new ActionRawUnitCommand
             {
-                AbilityId = (int)Abilities.HARVEST_RETURN,
+                AbilityId = (int)Abilities.SMART,
+                TargetUnitTag = townHallTag,
                 QueueCommand = queued
             };
             command.UnitTags.Add(workerTag);
