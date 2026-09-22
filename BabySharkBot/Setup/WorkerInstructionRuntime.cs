@@ -13,6 +13,7 @@ namespace BabySharkBot.Setup
         BuildExtractor,
         Wait,
         Jump,
+        Stop,
         StoreTargetPoint,
         UseTargetPoint,
         LoadInstructionSet
@@ -28,6 +29,10 @@ namespace BabySharkBot.Setup
         BumpMidpoint,
         BumpHarvestCircle,
         BumpCcaWaitCircle,
+        // Alignment gate for the experiment-1 bump walk: resolves to the worker's own
+        // position while role 3 and its role-1 partner lie on the hatchery-to-A-mineral
+        // line (role 3 closer to the hatchery); null while unaligned, so the row waits.
+        BumpAlignedGate,
         JitHarvestA,
         JitHarvestB,
         JitWaitPointA,
@@ -54,6 +59,11 @@ namespace BabySharkBot.Setup
         public int NextTargetIndex { get; set; } = -1;
         public int JumpToInstructionIndex { get; set; } = -1;
         public string NextInstructionSet { get; set; } = string.Empty;
+        // Inverts a Jump row's position gate: the jump fires while the gate point is
+        // UNresolved (gate row still waiting) and passes through when it resolves.
+        // Used by the bump walk loop to re-issue the 1183 harvest every frame until
+        // the BumpAlignedGate resolves, then fall through to the stop row.
+        public bool InvertGate { get; set; }
     }
 
     public sealed class RuntimeWorkerState

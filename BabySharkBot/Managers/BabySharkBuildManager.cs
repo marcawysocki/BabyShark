@@ -313,8 +313,11 @@ namespace BabySharkBot.Managers
 
                     runtimeWorker ??= new RuntimeWorkerState { UnitTag = assignedWorker.UnitTag };
                     // Preserve existing startup behavior: non-Magannatha role 3 workers use CCAw.
-                    // Magannatha first trip: T3/Y3 use dedicated bump sets; T1/Y1 use one-time jitMHb; S3/B3 stay CCAw;
-                    // all remaining workers stay jitMH. Bump workers hand off to existing jitMR/jitMH after SMART.
+                    // Magannatha experiment 1: T3/Y3 use dedicated bump sets (1183 mineral walk,
+                    // alignment-gated stop, wait-point moves); T1/Y1 use one-time jitMHb; S3/B3 use
+                    // the harvest-first CCAw shape (1183 first, wait-point moves at frames 14/15);
+                    // all remaining workers stay jitMH. Bump workers hand off to existing
+                    // jitMR/jitMH after the A-mineral gather.
                     var roleThree = role.EndsWith("3", StringComparison.OrdinalIgnoreCase);
                     var isMagannathaBumpRole = Settings.IsMagannatha12WorkerOverride
                         && (string.Equals(role, "T3", StringComparison.OrdinalIgnoreCase)
@@ -330,17 +333,28 @@ namespace BabySharkBot.Managers
                         ? $"bump{role}"
                         : isMagannathaJitMhBRole ? "jitMHb"
                         : useCcaw ? "CCAw" : "jitMH";
-                    var movementPoint = isMagannathaBumpRole
-                        ? ResolveBumpStartupPoint(role)
-                        : useCcaw ? WorkerInstructionPoint.Staging : WorkerInstructionPoint.Harvest;
+                    var movementPoint = useCcaw ? WorkerInstructionPoint.Staging : WorkerInstructionPoint.Harvest;
                     // gatherFrame >= 0 keeps the first gather frame-based; only Role 3's initial
                     // CCAw wait set uses that (frame 55). A negative gatherFrame makes the gather
                     // position-gated: it fires when the worker is within 0.1u of the mineral
                     // footprint point, however long the walk takes.
                     var gatherFrame = useCcaw ? 55 : -1;
+                    // Magannatha experiment 1: the role-1 workers' first-trip gather keeps
+                    // the stored-point position gate but also fires at relative frame 20 —
+                    // T1's gate fires ~frame 20 after the T3 bump, and without the
+                    // fallback Y1 stalled on row 4 forever in the first run. Same stall
+                    // risk for S1/B1, so they get the identical unqueued frame-20 harvest.
+                    var isFrameTwentyRole = string.Equals(role, "Y1", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(role, "S1", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(role, "B1", StringComparison.OrdinalIgnoreCase);
+                    var gatherFallbackFrame = Settings.IsMagannatha12WorkerOverride && isFrameTwentyRole
+                        ? 20
+                        : -1;
                     var startupInstructions = isMagannathaBumpRole
-                        ? BuildBumpInstructions(instructionSet, role, initialTarget.ResourceUnitId)
-                        : BuildStandardStartupInstructions(instructionSet, movementPoint, initialTarget.ResourceUnitId, gatherFrame);
+                        ? BuildBumpInstructions(instructionSet, role, assignment, assignments, initialTarget.ResourceUnitId)
+                        : magannathaCcawRole
+                            ? BuildHarvestFirstWaitInstructions(instructionSet, initialTarget.ResourceUnitId)
+                            : BuildStandardStartupInstructions(instructionSet, movementPoint, initialTarget.ResourceUnitId, gatherFrame, gatherFallbackFrame);
                     var instructionList = BuildMineralInstructionList(
                         startIndex,
                         assignedWorker,
@@ -437,7 +451,8 @@ namespace BabySharkBot.Managers
             string instructionSet,
             WorkerInstructionPoint movementPoint,
             ulong targetId,
-            int gatherFrame)
+            int gatherFrame,
+            int gatherFallbackFrame = -1)
         {
             var startupMovementPoint = movementPoint == WorkerInstructionPoint.Harvest
                 ? WorkerInstructionPoint.StoredTarget
@@ -463,6 +478,19 @@ namespace BabySharkBot.Managers
                 gather.Point = WorkerInstructionPoint.StoredTarget;
             }
 
+            // Frame fallback on top of the position gate (Magannatha Y1): fires at the
+            // frame even when the walk has not reached the stored point yet. Unqueued so
+            // the harvest interrupts the still-running frame-14 move instead of waiting
+            // behind it in the order queue — that queue wait was the visible gap between
+            // the frame-20 command and Y1 actually starting on YA. Safe from the
+            // same-batch move+gather discard because this row fires at frame 20, six
+            // frames after the last move row.
+            if (gatherFallbackFrame >= 0)
+            {
+                gather.RelativeFrame = gatherFallbackFrame;
+                gather.Queue = false;
+            }
+
             return new[]
             {
                 new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = startupMovementPoint, TargetId = targetId, RelativeFrame = 0 },
@@ -472,57 +500,153 @@ namespace BabySharkBot.Managers
             };
         }
 
-        private static IReadOnlyList<WorkerInstruction> BuildBumpInstructions(string instructionSet, string role, ulong targetId)
+        // Experiment 1 (Magannatha) bump set for T3/Y3. Opens with the 1183 Smart Harvest
+        // on the walk mineral (T3: ordered [3] = 3-SA, Y3: ordered [5] = 5-BB). The
+        // inverted-gate jump re-issues that harvest every frame until both workers sit on
+        // the hatchery-to-A-mineral line with role 3 closer to the hatchery
+        // (BumpAlignedGate), then one stop frame, then moves onto the team's role-3 wait
+        // point, then a frame-gated gather on the A mineral hands off to the jit cycle
+        // appended by BuildMineralInstructionList.
+        private static IReadOnlyList<WorkerInstruction> BuildBumpInstructions(
+            string instructionSet,
+            string role,
+            TeamPatchAssignmentDto teamAssignment,
+            List<TeamPatchAssignmentDto> allAssignments,
+            ulong targetId)
         {
-            var isRoleThree = role.EndsWith("3", StringComparison.OrdinalIgnoreCase);
-            var movementPoint = isRoleThree ? WorkerInstructionPoint.BumpPartner : WorkerInstructionPoint.BumpMidpoint;
-            var instructions = new List<WorkerInstruction>();
-            for (var relativeFrame = 0; relativeFrame <= 14; relativeFrame++)
+            var walkMineralIndex = string.Equals(role, "T3", StringComparison.OrdinalIgnoreCase) ? 3 : 5;
+            var walkMineral = (allAssignments ?? new List<TeamPatchAssignmentDto>())
+                .SelectMany(assignment => assignment?.Minerals ?? new List<OrderedMineral>())
+                .FirstOrDefault(mineral => mineral != null && mineral.Index == walkMineralIndex);
+            var aMineral = teamAssignment?.Minerals?.FirstOrDefault(mineral =>
+                mineral != null
+                && !string.IsNullOrWhiteSpace(mineral.FinalLabel)
+                && mineral.FinalLabel.EndsWith("A", StringComparison.OrdinalIgnoreCase));
+            var harvestTargetId = aMineral?.UnitTag != 0 ? aMineral.UnitTag : targetId;
+            if (walkMineral?.UnitTag == 0 || harvestTargetId == 0)
             {
-                instructions.Add(new WorkerInstruction
+                // Missing walk/A mineral data: fall back to the plain jitMH walk rather
+                // than seeding a bump list that can never resolve its gate.
+                Console.WriteLine($"[BUILD START BUMP SET FALLBACK] role={role} set={instructionSet} walkIndex={walkMineralIndex} walkTag={walkMineral?.UnitTag ?? 0} aTag={harvestTargetId}");
+                return BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1);
+            }
+
+            Console.WriteLine($"[BUILD START BUMP SET] role={role} set={instructionSet} walkMineral=[{walkMineral.Index}]{walkMineral.FinalLabel} tag={walkMineral.UnitTag} aMineral={aMineral?.FinalLabel} aTag={harvestTargetId}");
+
+            return new List<WorkerInstruction>
+            {
+                // Frame 0 and every loop pass: 1183 Smart Harvest on the walk mineral.
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = walkMineral.UnitTag,
+                    NoCondition = true,
+                    Queue = false
+                },
+                // While unaligned, jump back to the harvest; when the gate resolves,
+                // pass through to the stop row below.
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Jump,
+                    Point = WorkerInstructionPoint.BumpAlignedGate,
+                    TargetId = harvestTargetId,
+                    JumpToInstructionIndex = 0,
+                    InvertGate = true
+                },
+                // Alignment reached: single-frame stop cancels the mineral walk.
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Stop,
+                    TargetId = harvestTargetId,
+                    RelativeFrame = 0
+                },
+                new WorkerInstruction
                 {
                     InstructionSet = instructionSet,
                     Command = WorkerInstructionCommand.Move,
-                    Point = movementPoint,
-                    TargetId = targetId,
-                    RelativeFrame = relativeFrame,
+                    Point = WorkerInstructionPoint.BumpCcaWaitCircle,
+                    TargetId = harvestTargetId,
+                    RelativeFrame = 1,
                     Queue = false
-                });
-            }
-
-            if (!isRoleThree)
-            {
-                instructions.Add(new WorkerInstruction
+                },
+                new WorkerInstruction
                 {
                     InstructionSet = instructionSet,
-                    Command = WorkerInstructionCommand.MoveAndGather,
-                    Point = WorkerInstructionPoint.BumpHarvestCircle,
+                    Command = WorkerInstructionCommand.Move,
+                    Point = WorkerInstructionPoint.BumpCcaWaitCircle,
+                    TargetId = harvestTargetId,
+                    RelativeFrame = 2,
+                    Queue = false
+                },
+                // Role 3 then takes the A mineral itself and the appended jit cycle
+                // (wait [1183->1184] -> jitRM -> jitMH ...) takes over.
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.Harvest,
+                    TargetId = harvestTargetId,
+                    RelativeFrame = 45,
+                    Queue = true
+                }
+            };
+        }
+
+        // Experiment 1 (Magannatha) S3/B3 first trip: open with the 1183 Smart Harvest on
+        // the A mineral (S3: SA, B3: BA), then at relative frames 14 and 15 switch to
+        // moves onto the role-3 wait point, then the frame-55 A-mineral gather the old
+        // CCAw set used. Same CCAw set name — only the first-trip shape changes; the
+        // appended jit cycle is untouched.
+        private static IReadOnlyList<WorkerInstruction> BuildHarvestFirstWaitInstructions(string instructionSet, ulong targetId)
+        {
+            return new List<WorkerInstruction>
+            {
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = targetId,
+                    NoCondition = true,
+                    Queue = false
+                },
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Move,
+                    Point = WorkerInstructionPoint.Staging,
+                    TargetId = targetId,
+                    RelativeFrame = 14,
+                    Queue = false
+                },
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Move,
+                    Point = WorkerInstructionPoint.Staging,
                     TargetId = targetId,
                     RelativeFrame = 15,
                     Queue = false
-                });
-                return instructions;
-            }
-
-            instructions.Add(new WorkerInstruction
-            {
-                InstructionSet = instructionSet,
-                Command = WorkerInstructionCommand.Move,
-                Point = WorkerInstructionPoint.BumpCcaWaitCircle,
-                TargetId = targetId,
-                RelativeFrame = 15,
-                Queue = false
-            });
-            instructions.Add(new WorkerInstruction
-            {
-                InstructionSet = instructionSet,
-                Command = WorkerInstructionCommand.Gather,
-                Point = WorkerInstructionPoint.Harvest,
-                TargetId = targetId,
-                RelativeFrame = 52,
-                Queue = true
-            });
-            return instructions;
+                },
+                // The A-mineral gather itself, same frame-gated shape the old CCAw wait
+                // set used (frame 55). The frame-0 harvest above is interrupted by the
+                // frame 14/15 moves, so without this row the worker never mines, never
+                // returns cargo, and the appended wait [1183->1184] row never passes —
+                // the worker stands at the wait point for the rest of the game.
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.Harvest,
+                    TargetId = targetId,
+                    RelativeFrame = 55,
+                    Queue = true
+                }
+            };
         }
 
         private static List<WorkerInstruction> BuildMineralInstructionList(
@@ -721,13 +845,6 @@ namespace BabySharkBot.Managers
                     ? string.Empty
                     : BuildPairReference(startIndex, target.ResourceLabel, pairedTarget.ResourceLabel, property)
             });
-        }
-
-        private static WorkerInstructionPoint ResolveBumpStartupPoint(string role)
-        {
-            return role.EndsWith("3", StringComparison.OrdinalIgnoreCase)
-                ? WorkerInstructionPoint.BumpPartner
-                : WorkerInstructionPoint.BumpMidpoint;
         }
 
         private void LogStartupInstructionSummary(int startIndex)

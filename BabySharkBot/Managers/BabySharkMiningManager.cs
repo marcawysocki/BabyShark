@@ -1253,6 +1253,33 @@ namespace BabySharkBot.Managers
                 var abilitySatisfied = instruction.TargetAbilityId >= 0
                     && (instruction.PreviousAbilityId < 0 || runtimeWorker.PreviousAbilityId == instruction.PreviousAbilityId)
                     && runtimeWorker.CurrentAbilityId == instruction.TargetAbilityId;
+
+                // Inverted-gate jump (bump walk loop): while the gate is unresolved the
+                // jump fires and re-issues the harvest; when the gate resolves the row
+                // passes through to the stop row. Only one command per frame comes out
+                // of the loop, so the harvest is re-issued once per frame, not spammed
+                // several times in the frame the jump runs.
+                if (instruction.Command == WorkerInstructionCommand.Jump && instruction.InvertGate)
+                {
+                    if (instruction.JumpToInstructionIndex < 0 || instruction.JumpToInstructionIndex >= runtimeWorker.Instructions.Count)
+                    {
+                        ReportInstructionFailure(runtimeWorker, "inverted-gate jump row has invalid target index", instruction);
+                        return false;
+                    }
+
+                    var gatePoint = ResolveInstructionPoint(runtimeWorker, assignedWorker, instruction);
+                    if (gatePoint != null)
+                    {
+                        runtimeWorker.CurInstrIdx++;
+                        runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
+                        continue;
+                    }
+
+                    runtimeWorker.CurInstrIdx = instruction.JumpToInstructionIndex;
+                    runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
+                    return false;
+                }
+
                 var unconditionalJump = instruction.Command == WorkerInstructionCommand.Jump
                     && instruction.RelativeFrame < 0
                     && instruction.TargetAbilityId < 0;
@@ -1357,6 +1384,7 @@ namespace BabySharkBot.Managers
                     runtimeWorker.UnitTag,
                     assignedWorker?.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId)?.TownHallUnitId ?? 0,
                     instruction.Queue),
+                WorkerInstructionCommand.Stop => CreateInstructionStopAction(runtimeWorker.UnitTag),
                 WorkerInstructionCommand.StoreTargetPoint => null,
                 WorkerInstructionCommand.UseTargetPoint => StoreReferencedTargetPoint(runtimeWorker, targetPoint, instruction),
                 WorkerInstructionCommand.LoadInstructionSet => LoadNextInstructionSet(runtimeWorker, instruction, assignedWorker),
@@ -1399,6 +1427,14 @@ namespace BabySharkBot.Managers
             if (instruction == null || instruction.Point == WorkerInstructionPoint.None || assignedWorker == null)
             {
                 return null;
+            }
+
+            // The alignment gate resolves from live observation (self, partner role-1,
+            // hatchery, and the A mineral), not from the worker's stored mining target,
+            // so it must run before the MiningTargets lookup below.
+            if (instruction.Point == WorkerInstructionPoint.BumpAlignedGate)
+            {
+                return ResolveBumpAlignedGatePoint(assignedWorker, instruction);
             }
 
             var target = assignedWorker.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId);
@@ -1480,6 +1516,99 @@ namespace BabySharkBot.Managers
                 _ => null
             };
         }
+
+        // Experiment-1 bump alignment gate. Resolves to the worker's own position when
+        // the bump walk is done (role 3 and its role-1 partner both on the
+        // hatchery-to-A-mineral line, role 3 closer to the hatchery); null while the
+        // pair is still unaligned, which holds the gate row — and the inverted-gate
+        // jump behind it — in the walk loop.
+        private Vector2Dto? ResolveBumpAlignedGatePoint(AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            if (!Settings.IsMagannatha12WorkerOverride || assignedWorker == null)
+            {
+                return null;
+            }
+
+            var workerRole = assignedWorker.Role ?? string.Empty;
+            var partnerRole = workerRole.Equals("T3", StringComparison.OrdinalIgnoreCase) ? "T1"
+                : workerRole.Equals("Y3", StringComparison.OrdinalIgnoreCase) ? "Y1"
+                : string.Empty;
+            if (string.IsNullOrWhiteSpace(partnerRole))
+            {
+                return null;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?? new List<AssignedWorkerDto>();
+
+            var partner = assignedWorkers.FirstOrDefault(worker =>
+                string.Equals(worker?.Role, partnerRole, StringComparison.OrdinalIgnoreCase));
+            var selfPosition = HasNonZeroPoint(assignedWorker.CurrentXY) ? assignedWorker.CurrentXY : null;
+            var partnerPosition = partner?.CurrentXY != null && HasNonZeroPoint(partner.CurrentXY) ? partner.CurrentXY : null;
+
+            var townHallTag = assignedWorker.TownHallUnitID != 0 ? assignedWorker.TownHallUnitID : partner?.TownHallUnitID ?? 0;
+            Vector2Dto hatcheryPosition = null;
+            if (townHallTag != 0 && Globals.CurrentObservation?.CurrentTownHalls != null
+                && Globals.CurrentObservation.CurrentTownHalls.TryGetValue(townHallTag, out var townHall)
+                && townHall?.Position != null)
+            {
+                hatcheryPosition = townHall.Position;
+            }
+
+            if (hatcheryPosition == null && startIndex >= 0 && _mapData?.StartingTownHall != null
+                && startIndex < _mapData.StartingTownHall.Length)
+            {
+                hatcheryPosition = _mapData.StartingTownHall[startIndex];
+            }
+
+            Vector2Dto mineralPosition = null;
+            if (instruction.TargetId != 0 && Globals.CurrentObservation?.Minerals != null
+                && Globals.CurrentObservation.Minerals.TryGetValue(instruction.TargetId, out var mineral)
+                && mineral?.Position != null)
+            {
+                mineralPosition = mineral.Position;
+            }
+
+            if (selfPosition == null || partnerPosition == null || hatcheryPosition == null || mineralPosition == null)
+            {
+                return null;
+            }
+
+            if (DistanceToLine(selfPosition, hatcheryPosition, mineralPosition) > BumpLineGateTolerance
+                || DistanceToLine(partnerPosition, hatcheryPosition, mineralPosition) > BumpLineGateTolerance)
+            {
+                return null;
+            }
+
+            // Role 3 stands between the hatchery and role 1; role 1 stays closer to the mineral.
+            if (Distance(hatcheryPosition, selfPosition) >= Distance(hatcheryPosition, partnerPosition))
+            {
+                return null;
+            }
+
+            return selfPosition;
+        }
+
+        private static float DistanceToLine(Vector2Dto point, Vector2Dto lineStart, Vector2Dto lineEnd)
+        {
+            var directionX = lineEnd.X - lineStart.X;
+            var directionY = lineEnd.Y - lineStart.Y;
+            var lengthSquared = directionX * directionX + directionY * directionY;
+            if (lengthSquared <= 0.0001f)
+            {
+                return Distance(point, lineStart);
+            }
+
+            var projection = ((point.X - lineStart.X) * directionX + (point.Y - lineStart.Y) * directionY) / lengthSquared;
+            var closestX = lineStart.X + projection * directionX;
+            var closestY = lineStart.Y + projection * directionY;
+            var dx = point.X - closestX;
+            var dy = point.Y - closestY;
+            return MathF.Sqrt(dx * dx + dy * dy);
+        }
+
+        private const float BumpLineGateTolerance = 0.5f;
 
         private Vector2Dto? ResolveObservedBumpPartner(AssignedWorkerDto assignedWorker, string workerRole)
         {
@@ -1725,6 +1854,16 @@ namespace BabySharkBot.Managers
         private static bool HasNonZeroPoint(Vector2Dto point)
         {
             return point != null && (point.X != 0f || point.Y != 0f);
+        }
+
+        private static float Distance(Vector2Dto first, Vector2Dto second)
+        {
+            if (first == null || second == null)
+            {
+                return float.MaxValue;
+            }
+
+            return MathF.Sqrt(DistanceSquared(first, second));
         }
 
         private static Vector2Dto? ResolveNonZeroPoint(Vector2Dto preferred, Vector2Dto fallback)
@@ -2027,6 +2166,27 @@ namespace BabySharkBot.Managers
                 AbilityId = (int)Abilities.MOVE,
                 TargetWorldSpacePos = target,
                 QueueCommand = queued
+            };
+            command.UnitTags.Add(workerTag);
+            return new SC2Action
+            {
+                ActionRaw = new ActionRaw { UnitCommand = command }
+            };
+        }
+
+        // Experiment-1 bump stop: cancels the mineral-walk harvest the frame the
+        // alignment gate resolves. Single frame, not queued — the wait-point moves
+        // behind it must override the walk, not line up behind it.
+        private static SC2Action? CreateInstructionStopAction(ulong workerTag)
+        {
+            if (workerTag == 0)
+            {
+                return null;
+            }
+
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.STOP
             };
             command.UnitTags.Add(workerTag);
             return new SC2Action
