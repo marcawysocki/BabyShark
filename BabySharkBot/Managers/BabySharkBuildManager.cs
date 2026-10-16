@@ -334,6 +334,11 @@ namespace BabySharkBot.Managers
             {
                 _macroHatcheryPlacementService?.DrawPlacement(_macroHatcheryPlacement);
             }
+
+            // Owner directive 2026-10-16: draw BOTH owner-table locations
+            // (North + South) every frame regardless of start, so he can
+            // compare both circles at once on frame zero.
+            _macroHatcheryPlacementService?.DrawAllOwnerPlacements();
         }
 
         // One-shot diagnostic: when the spec point is invalid and the spiral

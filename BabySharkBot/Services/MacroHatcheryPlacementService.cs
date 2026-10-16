@@ -234,8 +234,10 @@ namespace BabySharkBot.Services
 
             private static readonly Entry[] Entries =
             {
-                // Magannatha AIE — Start 0, SE base (owner: "try 115.5 27")
-                new Entry(127.5f, 24.5f, 115.5f, 27.0f),
+                // Magannatha AIE — Start 0, SE base (owner 2026-10-16 18:16:
+                // "UP about 1u, and Left 2u" from 115.5,27 — touches the
+                // inverted corner on the left edge)
+                new Entry(127.5f, 24.5f, 113.5f, 28.0f),
                 // Magannatha AIE — Start 1, NW base (owner-verified earlier)
                 new Entry(24.5f, 127.5f, 23.5f, 116.5f),
             };
@@ -264,6 +266,11 @@ namespace BabySharkBot.Services
                 }
                 return best != null && bestDist <= 9f ? best.Center : null;
             }
+
+            /// <summary>Owner directive 2026-10-16: "draw both North and South
+            /// Macro Hatchery Locations regardless of start location so I can
+            /// see both locations at once on frame zero."</summary>
+            public static IReadOnlyList<Entry> All => Entries;
         }
 
         /// <summary>Wall-flush candidate with its segment's door distance.</summary>
@@ -613,6 +620,32 @@ namespace BabySharkBot.Services
             foreach (var option in placement.LegalNearOwnerTarget)
             {
                 _defaultBot.DebugService.DrawSphere(new Point { X = option.X, Y = option.Y, Z = 12 }, 0.4f, cyan);
+            }
+        }
+
+        /// <summary>
+        /// Owner directive 2026-10-16: draw EVERY owner-table entry (both
+        /// starts) regardless of which start we spawned at, so he can see the
+        /// North and South Macro Hatchery locations at once on frame zero.
+        /// South (SE base) is drawn in orange, North (NW base) in purple.
+        /// </summary>
+        public void DrawAllOwnerPlacements()
+        {
+            if (_defaultBot?.DebugService == null)
+            {
+                return;
+            }
+
+            var orange = new Color { R = 255, G = 140, B = 0 };
+            var purple = new Color { R = 200, G = 0, B = 255 };
+            foreach (var entry in MacroHatcheryOwnerPlacements.All)
+            {
+                // SE bases are the low-x/low-y corner of the map; NW are high.
+                var isSouth = entry.Base.X < 64f && entry.Base.Y < 64f;
+                var color = isSouth ? orange : purple;
+                var label = isSouth ? "MacroHatchery SOUTH (owner)" : "MacroHatchery NORTH (owner)";
+                _defaultBot.DebugService.DrawSphere(new Point { X = entry.Center.X, Y = entry.Center.Y, Z = 12 }, HatcheryRadius, color);
+                _defaultBot.DebugService.DrawText(label, new Point { X = entry.Center.X, Y = entry.Center.Y, Z = 12.5f }, color, 12);
             }
         }
 
