@@ -43,7 +43,6 @@ namespace BabySharkBot.Managers
 
         private Dictionary<ulong, WorkerEntryDto> _previousSelfUnits = new();
         private HashSet<ulong> _previousVisibleTags = new();
-        private ulong _lastDebugDroneTag;
         private uint _lastDebugDroneAbilityId;
         private bool _hasLastDebugDroneAbility;
         private readonly List<uint> _debugDroneAbilityHistory = new();
@@ -159,10 +158,16 @@ namespace BabySharkBot.Managers
 
             PublishAvailableUnits();
             BreakForDroneAndVisibleMinerals(observation, currentSelfUnits);
+            CheckNoOrdersInvariant(frame, relativeFrame, currentSelfUnits);
 
             _previousSelfUnits = currentSelfUnits;
             _previousVisibleTags = currentVisibleTags;
         }
+
+        // The debug tracker latches onto the first drone seen and follows ONLY that tag,
+        // so the ability history is that drone's own — not a mix of whichever drone
+        // happened to be first in the raw unit list this frame.
+        private ulong _debugDroneTag;
 
         private void BreakForDroneAndVisibleMinerals(ResponseObservation observation, Dictionary<ulong, WorkerEntryDto> currentSelfUnits)
         {
@@ -173,7 +178,18 @@ namespace BabySharkBot.Managers
 
             var droneUnit = observation.Observation.RawData.Units.FirstOrDefault(unit =>
                 unit.Alliance == Alliance.Self && unit.UnitType == (uint)UnitTypes.ZERG_DRONE);
-            if (droneUnit == null || !currentSelfUnits.TryGetValue(droneUnit.Tag, out var droneWorker))
+            if (droneUnit == null)
+            {
+                return;
+            }
+
+            if (_debugDroneTag == 0)
+            {
+                _debugDroneTag = droneUnit.Tag;
+            }
+
+            if (droneUnit.Tag != _debugDroneTag
+                || !currentSelfUnits.TryGetValue(droneUnit.Tag, out var droneWorker))
             {
                 return;
             }
@@ -186,13 +202,29 @@ namespace BabySharkBot.Managers
             var workerLabel = ResolveDebugDroneLabel(droneWorkerEntry);
             var currentAbilityId = droneRawUnit.Orders?.FirstOrDefault()?.AbilityId ?? 0;
             var abilityChanged = !_hasLastDebugDroneAbility
-                || _lastDebugDroneTag != droneRawUnit.Tag
                 || _lastDebugDroneAbilityId != currentAbilityId;
 
             if (abilityChanged)
             {
-                var abilityIdList = string.Join(",", _debugDroneAbilityHistory) +
-                    (_debugDroneAbilityHistory.Count > 0 ? "," : "") + currentAbilityId;
+                // Show the change as from->to; "-" when no previous ability was recorded
+                // yet, "none" when the drone had no orders at that sample (ability 0 =
+                // empty order list).
+                var previousAbilityId = _hasLastDebugDroneAbility
+                    ? (_lastDebugDroneAbilityId == 0 ? "none" : _lastDebugDroneAbilityId.ToString())
+                    : "-";
+
+                // Recent-ability history: one entry per ability-change event, so an
+                // oscillating sequence (16,1183,16,1183,1184,...) keeps every repeat —
+                // only consecutive duplicates are collapsed. Capped at the last 10.
+                if (_debugDroneAbilityHistory.Count == 0
+                    || _debugDroneAbilityHistory[_debugDroneAbilityHistory.Count - 1] != currentAbilityId)
+                {
+                    _debugDroneAbilityHistory.Add(currentAbilityId);
+                    if (_debugDroneAbilityHistory.Count > 10)
+                    {
+                        _debugDroneAbilityHistory.RemoveAt(0);
+                    }
+                }
 
                 Console.WriteLine(
                     $"[DRONE ABILITY CHANGED] frame={observationSnapshot.Frame} " +
@@ -201,18 +233,72 @@ namespace BabySharkBot.Managers
                     $"pos=({droneRawUnit.Pos.X:F3},{droneRawUnit.Pos.Y:F3},{droneRawUnit.Pos.Z:F3}) " +
                     $"health={droneRawUnit.Health:F1}/{droneRawUnit.HealthMax:F1} " +
                     $"buildProgress={droneRawUnit.BuildProgress:F3} " +
-                    $"abilityId={abilityIdList} orderCount={droneRawUnit.Orders?.Count ?? 0}");
+                    $"ability={previousAbilityId}->{(currentAbilityId == 0 ? "none" : currentAbilityId.ToString())} " +
+                    $"last10=[{string.Join(",", _debugDroneAbilityHistory.Select(a => a == 0 ? "none" : a.ToString()))}] " +
+                    $"orderCount={droneRawUnit.Orders?.Count ?? 0}");
 
-                _lastDebugDroneTag = droneRawUnit.Tag;
                 _lastDebugDroneAbilityId = currentAbilityId;
                 _hasLastDebugDroneAbility = true;
-
-                _debugDroneAbilityHistory.Add(currentAbilityId);
-                if (_debugDroneAbilityHistory.Count > 10)
-                {
-                    _debugDroneAbilityHistory.RemoveAt(0);
-                }
                 //Debugger.Break();
+            }
+        }
+
+        // No-orders episode tracking for the invariant check: role 3 on its FIRST set
+        // (relative frame <= 55, waiting for role 1 to mine) is the only worker ever
+        // allowed to have an empty order list. Any other worker going orderless is a
+        // violation and is logged once per episode, with the duration when it ends.
+        private readonly Dictionary<ulong, int> _noOrderEpisodeStart = new();
+
+        private void CheckNoOrdersInvariant(int frame, int relativeFrame, Dictionary<ulong, WorkerEntryDto> currentSelfUnits)
+        {
+            foreach (var pair in currentSelfUnits)
+            {
+                var tag = pair.Key;
+                var worker = pair.Value;
+                if (worker.UnitType != (uint)UnitTypes.ZERG_DRONE)
+                {
+                    continue;
+                }
+
+                // Pickup flag: JustPickedUp is true only on the frame the carrying buff
+                // (271/272) first appears — the earliest moment the game reports the drone
+                // holding a mineral, which can precede the 1183->1184 order flip.
+                if (worker.JustPickedUp)
+                {
+                    var pickupLabel = ResolveDebugDroneLabel(worker);
+                    Console.WriteLine($"[DRONE PICKED UP] frame={frame} relative={relativeFrame} tag={tag} Label={pickupLabel} pos=({worker.Position.X:F3},{worker.Position.Y:F3}) orders=[{string.Join(",", worker.OrderAbilityIds)}]");
+                }
+
+                var hasOrders = worker.OrderAbilityIds != null && worker.OrderAbilityIds.Count > 0;
+                if (hasOrders)
+                {
+                    if (_noOrderEpisodeStart.TryGetValue(tag, out var startRelativeFrame))
+                    {
+                        _noOrderEpisodeStart.Remove(tag);
+                        var label = ResolveDebugDroneLabel(worker);
+                        Console.WriteLine($"[DRONE NO ORDERS] frame={frame} relative={relativeFrame} tag={tag} Label={label} event=END duration={relativeFrame - startRelativeFrame}f");
+                    }
+                    continue;
+                }
+
+                if (_noOrderEpisodeStart.ContainsKey(tag))
+                {
+                    continue; // episode already reported
+                }
+
+                var workerLabel = ResolveDebugDroneLabel(worker);
+                var role = workerLabel.Length >= 2 ? workerLabel[1].ToString() : "?";
+                var roleThreeFirstSet = role == "3" && relativeFrame <= 55;
+                if (roleThreeFirstSet)
+                {
+                    continue;
+                }
+
+                _noOrderEpisodeStart[tag] = relativeFrame;
+                var instrIdx = Settings.RuntimeWorkers != null && Settings.RuntimeWorkers.TryGetValue(tag, out var runtimeWorker)
+                    ? runtimeWorker.CurInstrIdx
+                    : -1;
+                Console.WriteLine($"[DRONE NO ORDERS] frame={frame} relative={relativeFrame} tag={tag} Label={workerLabel} role={role} pos=({worker.Position.X:F3},{worker.Position.Y:F3}) curInstrIdx={instrIdx} event=START");
             }
         }
 

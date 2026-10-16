@@ -1231,7 +1231,16 @@ namespace BabySharkBot.Managers
 
                 runtimeWorker.Position = assignedWorker.CurrentXY ?? runtimeWorker.Position;
 
-                if (Settings.WorkerCollisionAvoidance)
+                // 13-B3 extractor trick (run 2026-10-15 23:09): while the book is
+                // gate-held on the VaWalkRedirect row, a collision detour would
+                // replace the ONE walk gather with a detour SMART (frame 890: B3's
+                // walk to the walk mineral was overwritten by a walk to BB) and the
+                // redirect gate can never fire — the book issues no commands in this
+                // window to re-establish the walk, so B3 stranded on its self-
+                // perpetuating BB harvest. Skip collision intervention for this
+                // worker ONLY while that row is pending; the other worker of the
+                // pair still detours around B3 via its own pass.
+                if (Settings.WorkerCollisionAvoidance && !IsGateHeldVaWalkRedirect(runtimeWorker))
                 {
                     var intervention = _collisionAvoidanceService.GetIntervention(
                         runtimeWorker,
@@ -1820,12 +1829,20 @@ namespace BabySharkBot.Managers
             // IMMEDIATELY — same frame as the extractor build (75 + 50 = the 125 the
             // gated wait confirmed). When no idle larva is visible this frame the
             // trick driver retries from the next frame; the build itself arms the
-            // driver either way.
-            if (instruction.Command == WorkerInstructionCommand.BuildExtractor && instruction.TargetId != 0)
+            // driver either way. The geyser tag is re-resolved LIVE from the
+            // snapshot (run 23:09: the persisted OrderedMainVespene.UnitTag came
+            // from the map-data recording game, so the engine silently dropped the
+            // build order); the row's persisted tag is only a fallback.
+            if (instruction.Command == WorkerInstructionCommand.BuildExtractor)
             {
+                var geyserTag = ResolveLiveVaGeyserTag();
+                if (geyserTag == 0)
+                {
+                    geyserTag = instruction.TargetId;
+                }
                 var extractorBuildAction = CreateInstructionBuildExtractorAction(
                     runtimeWorker.UnitTag,
-                    instruction.TargetId,
+                    geyserTag,
                     instruction.Queue);
                 if (extractorBuildAction != null)
                 {
@@ -1836,7 +1853,7 @@ namespace BabySharkBot.Managers
                     {
                         _b3TrickPhase = 1;
                     }
-                    Console.WriteLine($"[EXTRACTOR TRICK] build issued worker={runtimeWorker.UnitTag} geyser={instruction.TargetId} minerals={_currentMinerals} morphSameFrame={followUpAction != null}");
+                    Console.WriteLine($"[EXTRACTOR TRICK] build issued worker={runtimeWorker.UnitTag} geyser={geyserTag} (rowTag={instruction.TargetId}) minerals={_currentMinerals} morphSameFrame={followUpAction != null}");
                 }
                 return extractorBuildAction;
             }
@@ -3651,6 +3668,24 @@ namespace BabySharkBot.Managers
 
         // --- 13-B3 extractor trick (owner spec 2026-10-15 22:20) -------------------
 
+        // True while the worker's book waits on the VaWalkRedirect gate row (the
+        // ONE redirect move that ends at VA). See the collision skip at the worker
+        // loop for why this window must be detour-free.
+        private static bool IsGateHeldVaWalkRedirect(RuntimeWorkerState runtimeWorker)
+        {
+            if (runtimeWorker == null
+                || runtimeWorker.CurInstrIdx < 0
+                || runtimeWorker.CurInstrIdx >= runtimeWorker.Instructions.Count)
+            {
+                return false;
+            }
+
+            var instruction = runtimeWorker.Instructions[runtimeWorker.CurInstrIdx];
+            return instruction != null
+                && instruction.Command == WorkerInstructionCommand.Move
+                && instruction.Point == WorkerInstructionPoint.VaWalkRedirect;
+        }
+
         // The main-base VA geyser for the current spawn (persisted ordering + label).
         private static OrderedVespene ResolveVaGeyserEntry()
         {
@@ -3658,6 +3693,26 @@ namespace BabySharkBot.Managers
             return Globals.CurrentMapData?.OrderedMainVespene?.ElementAtOrDefault(startIndex)?
                 .FirstOrDefault(candidate => candidate != null
                     && string.Equals(candidate.Label, "VA", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // The LIVE unit tag of the VA geyser, matched by position against the
+        // snapshot (same matching OngoingMapData uses for its tag refresh).
+        // Persisted OrderedMainVespene.UnitTag values come from the map-data
+        // recording game and are stale in a live game — the engine silently drops
+        // a build order that targets a dead tag.
+        private static ulong ResolveLiveVaGeyserTag()
+        {
+            var vaGeyser = ResolveVaGeyserEntry();
+            if (vaGeyser?.Position == null || !HasNonZeroPoint(vaGeyser.Position))
+            {
+                return 0;
+            }
+
+            var snapshot = Globals.CurrentObservation;
+            var live = snapshot?.Vespene?.Values.FirstOrDefault(vespene => vespene != null
+                && Math.Abs(vespene.Position.X - vaGeyser.Position.X) < 1.0f
+                && Math.Abs(vespene.Position.Y - vaGeyser.Position.Y) < 1.0f);
+            return live?.UnitTag ?? 0;
         }
 
         // Redirect gate for B3's ONE post-walk move (owner spec 2026-10-15 16:13):
@@ -3761,7 +3816,11 @@ namespace BabySharkBot.Managers
                     {
                         actions.Add(CreateRawUnitCommandAction(Abilities.CANCEL_BUILDINPROGRESS, extractor.Tag));
                         _b3TrickPhase = 2;
-                        Console.WriteLine($"[EXTRACTOR TRICK] cancel issued extractor={extractor.Tag} worker={_b3TrickWorkerTag} minerals={_currentMinerals} trigger: morphOrder={morphOrderObserved} bankBelow50={morphSpendObserved} frame={_currentFrame}");
+                        Settings.B3ExtractorTrickMorphBegun = morphOrderObserved || units.Any(unit => unit != null
+                            && unit.Tag == _b3TrickLarvaTag
+                            && unit.Orders.Any(order => order.AbilityId == (uint)Abilities.TRAIN_DRONE));
+                        Settings.B3ExtractorTrickDone = true;
+                        Console.WriteLine($"[EXTRACTOR TRICK] cancel issued extractor={extractor.Tag} worker={_b3TrickWorkerTag} minerals={_currentMinerals} trigger: morphOrder={morphOrderObserved} bankBelow50={morphSpendObserved} morphBegun={Settings.B3ExtractorTrickMorphBegun} frame={_currentFrame}");
                     }
                 }
                 else
@@ -3789,6 +3848,7 @@ namespace BabySharkBot.Managers
                             actions.Add(CreateRawUnitCommandAction(Abilities.CANCEL_BUILDINPROGRESS, stuckExtractor.Tag));
                             Console.WriteLine($"[EXTRACTOR TRICK] MORPH TIMEOUT — cancelling extractor worker={_b3TrickWorkerTag} frame={_currentFrame}");
                         }
+                        Settings.B3ExtractorTrickDone = true;
                         _b3TrickPhase = 2;
                     }
                 }

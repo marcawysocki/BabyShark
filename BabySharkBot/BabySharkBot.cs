@@ -84,10 +84,13 @@ namespace BabySharkBot
             var observationManager = new ObservationManager(_defaultBot.ActiveUnitData, _defaultBot.SharkyUnitData, _defaultBot.BaseData, _defaultBot.MapDataService, _defaultBot.UnitDataService, null);
             Managers.Add(observationManager);
 
-            // BuildManager runs second and executes the BuildIne macro build.
+            // BuildManager runs second and executes the selected opening build.
             _extractorTrickService = new ExtractorTrickService(_defaultBot);
             var buildManager = new BabySharkBuildManager(_defaultBot);
-            buildManager.SetBuild(new BabySharkBot.Builds.BuildIne(_defaultBot, _extractorTrickService));
+            buildManager.SetBuild(Settings.UseTwelvePoolBuild
+                ? new BabySharkBot.Builds.TwelvePoolBuild(_defaultBot)
+                : new BabySharkBot.Builds.BuildIne(_defaultBot, _extractorTrickService));
+            Console.WriteLine($"BabySharkAI: active opening build = {(Settings.UseTwelvePoolBuild ? "TwelvePoolBuild (12 pool, race to 200)" : "BuildIne (mining test)")}");
             Managers.Add(buildManager);
 
             // Scouting consumes the observation prepared by the first manager.
@@ -408,6 +411,7 @@ namespace BabySharkBot
                                 var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
                                 var assignedWorkers = Globals.CurrentMapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
                                     ?? new List<AssignedWorkerDto>();
+                                _owner._workerCommandTelemetry.LogWorkerAbilityChanges(observation, observedWorkers, manager.GetType().Name);
                                 _owner._workerCommandTelemetry.LogWorkerObservations(observation, observedWorkers, assignedWorkers, manager.GetType().Name);
                             }
                             if (mgrActions != null)

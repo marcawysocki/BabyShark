@@ -467,9 +467,9 @@ namespace BabySharkBot.Services
             assignedWorker.Mti = _request.TemporaryTargetIndex;
             runtimeWorker.LoadInstructions("jitMH", new[]
             {
-                CreateGatherAndMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 0),
-                CreateGatherAndMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 1),
-                CreateGatherAndMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 14),
+                CreateMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 0),
+                CreateMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 1),
+                CreateMoveInstruction("jitMH", target.ResourceUnitId, WorkerInstructionPoint.Harvest, 14),
                 new WorkerInstruction
                 {
                     InstructionSet = "jitMH",
@@ -521,20 +521,6 @@ namespace BabySharkBot.Services
                 Point = point,
                 TargetId = targetId,
                 RelativeFrame = frame
-            };
-        }
-
-        private static WorkerInstruction CreateGatherAndMoveInstruction(string set, ulong targetId, WorkerInstructionPoint point, int frame)
-        {
-            return new WorkerInstruction
-            {
-                InstructionSet = set,
-                Command = WorkerInstructionCommand.GatherAndMove,
-                Point = point,
-                TargetId = targetId,
-                TargetAbilityId = (int)Abilities.HARVEST_GATHER_DRONE,
-                RelativeFrame = frame,
-                Queue = false
             };
         }
 

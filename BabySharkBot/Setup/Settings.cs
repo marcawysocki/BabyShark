@@ -51,6 +51,10 @@ namespace BabySharkBot.Setup
         public static string CurrentMapName = string.Empty;
         public static bool IsMagannathaMap => CurrentMapName.Contains("Magannatha", StringComparison.OrdinalIgnoreCase);
         public static bool IsMagannatha12WorkerOverride => IsMagannathaMap;
+        // Experiment 2 ("5 by 5 starting teams"): two 6-worker teams (T1-T5 + S2, Y1-Y5 + B2)
+        // mining 3 minerals in perpetual rotation on Magannatha. Takes precedence over the
+        // experiment-1 (IsMagannatha12WorkerOverride) branches whenever it is active.
+        public static bool IsMagannatha5x5Rotation = true;
         public static Vector2Dto CurrentSpawnLocation = new Vector2Dto();
         public static Vector2Dto CurrentSpawnCOM = new Vector2Dto();
         public static bool CurrentBaseHasBeenPlayed = false;
@@ -74,6 +78,22 @@ namespace BabySharkBot.Setup
             RuntimeInstructionSets.Clear();
         }
         public static bool BuildOwnsWorkerCommands = false;
+        // Master switch selecting the active opening build in BabySharkBot. True = the
+        // 12-pool race (TwelvePoolBuild: no drone morphing past 12, pool at 200 minerals);
+        // false = the BuildIne mining-test build.
+        public static bool UseTwelvePoolBuild = true;
+        // Master switch for the worker-collision pass-through service inside
+        // BabySharkMiningManager. When true, a non-carrying worker about to bump a
+        // carrying worker is SMART-walked through its own mineral and the worker's
+        // instruction list resumes at the suspended row once the pair is clear.
+        public static bool WorkerCollisionAvoidance = true;
+        // 13-B3 extractor trick (owner spec 2026-10-15): set by the mining manager's
+        // trick driver, read by TwelvePoolBuild's drone morph gating. MorphBegun = the
+        // trick larva's TRAIN_DRONE order was observed (supply 14/14); Done = the
+        // extractor cancel was issued (either path) so temp morphing may resume.
+        public static bool B3ExtractorTrickMorphBegun = false;
+        public static bool B3ExtractorTrickDone = false;
+        public static bool B3ExtractorTrickOverlordQueued = false;
         public static int StartFrame = 0;
         public static bool CreateWorkerFrameZero = true;
 

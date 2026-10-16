@@ -20,6 +20,7 @@ namespace BabySharkBot
             Console.WriteLine("Starting BabySharkBot");
             Console.WriteLine($"[BUILD ID] ROOT-20260813-SPAWN-FIX assembly={typeof(Program).Assembly.Location} base={AppContext.BaseDirectory}");
             ConfigureRlModes(args);
+            Console.WriteLine($"BabySharkBot: 5x5 rotation experiment {(Settings.IsMagannatha5x5Rotation ? "ENABLED" : "disabled")}");
 
             var maps = new[]
             {
