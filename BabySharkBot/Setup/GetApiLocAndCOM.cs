@@ -81,6 +81,36 @@ namespace BabySharkBot.Setup
 
         public static int ResolveCurrentSpawnIndex(ResponseGameInfo gameInfo)
         {
+            // HARDCODED START ORDER (owner spec 2026-10-16): when the map has
+            // a table, the hardcoded SE-first clockwise order decides the
+            // slots — the API order (apiStarts) can change with map updates
+            // (e.g. starting at location 1 instead of 0) and must never be
+            // indexed directly here. AGENT VERIFY: see HardcodedStartOrders.
+            var hardcoded = HardcodedStartOrders.Get(gameInfo?.MapName);
+            if (hardcoded != null)
+            {
+                var ordered = HardcodedStartOrders.OrderClockwiseFromSouthEast(hardcoded.Starts);
+                var reference = Settings.CurrentSpawnLocation;
+                if (reference != null)
+                {
+                    var bestIndex = 0;
+                    var bestDistance = float.MaxValue;
+                    for (var i = 0; i < ordered.Count; i++)
+                    {
+                        var dx = reference.X - ordered[i].X;
+                        var dy = reference.Y - ordered[i].Y;
+                        var distance = dx * dx + dy * dy;
+                        if (distance < bestDistance)
+                        {
+                            bestDistance = distance;
+                            bestIndex = i;
+                        }
+                    }
+                    return bestIndex;
+                }
+                return 0;
+            }
+
             var apiStarts = gameInfo?.StartRaw?.StartLocations;
             if (apiStarts == null || apiStarts.Count == 0)
             {
@@ -135,6 +165,16 @@ namespace BabySharkBot.Setup
                 {
                     return new Vector2Dto(townHall.X, townHall.Y, townHall.Z);
                 }
+            }
+
+            // Hardcoded table wins over the API order here too (same reason:
+            // apiStarts indexing must not decide the slot on updated maps).
+            var hardcoded = HardcodedStartOrders.Get(gameInfo?.MapName);
+            if (hardcoded != null)
+            {
+                var ordered = HardcodedStartOrders.OrderClockwiseFromSouthEast(hardcoded.Starts);
+                var hardcodedSpawn = index >= 0 && ordered.Count > index ? ordered[index] : ordered.FirstOrDefault();
+                return hardcodedSpawn == null ? new Vector2Dto() : new Vector2Dto(hardcodedSpawn.X, hardcodedSpawn.Y, 0f);
             }
 
             var apiStarts = gameInfo?.StartRaw?.StartLocations;

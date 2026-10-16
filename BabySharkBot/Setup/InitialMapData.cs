@@ -111,10 +111,80 @@ namespace BabySharkBot.Setup
                 }
                 catch { }
 
+                // HARDCODED START ORDER (owner spec 2026-10-16): maps with a
+                // table in HardcodedStartOrders ALWAYS resolve Start[0] =
+                // South East corner, then CLOCKWISE — independent of the API
+                // order, which a map update can change (the API may start at
+                // location 1 instead of 0; apiStarts/apiLoc indices must
+                // never decide slot order). AGENT VERIFY: read the verify
+                // directive in HardcodedStartOrders before trusting a table
+                // for a non-ladder or updated map.
+                const float tol = 3f;
+                var hardcoded = HardcodedStartOrders.Get(gameInfo?.MapName);
+                if (hardcoded != null)
+                {
+                    var ordered = HardcodedStartOrders.OrderClockwiseFromSouthEast(hardcoded.Starts);
+                    startLocations.AddRange(ordered);
+                    if (apiStarts != null)
+                    {
+                        // The API sometimes exposes only the OTHER player's
+                        // start (seen on Magannatha: 1 of 2), so a lower API
+                        // count is a known response shape, not map drift.
+                        // Warn only on extra unknown starts or a start that
+                        // matches no hardcoded coordinate within tolerance.
+                        var unknown = apiStarts
+                            .Where(a => ordered.All(h =>
+                                Math.Abs(a.X - h.X) > tol || Math.Abs(a.Y - h.Y) > tol))
+                            .ToList();
+                        if (apiStarts.Count > ordered.Count || unknown.Count > 0)
+                        {
+                            Console.WriteLine($"[START ORDER] WARNING '{gameInfo?.MapName}' API starts [{string.Join(" ", apiStarts.Select(a => $"({a.X:F1},{a.Y:F1})"))}]"
+                                + $" do not match the {ordered.Count}-start hardcoded table [{string.Join(" ", ordered.Select(s => $"({s.X:F1},{s.Y:F1})"))}]"
+                                + " — map may have changed; AGENT VERIFY the table against a live game!");
+                        }
+                    }
+
+                    if (apiLoc != null)
+                    {
+                        var nearest = -1;
+                        var nearestDist = float.MaxValue;
+                        for (int i = 0; i < ordered.Count; i++)
+                        {
+                            var dx = ordered[i].X - apiLoc.X;
+                            var dy = ordered[i].Y - apiLoc.Y;
+                            var dist = dx * dx + dy * dy;
+                            if (dist <= tol * tol)
+                            {
+                                startLocationIndex = i;
+                                break;
+                            }
+                            if (dist < nearestDist)
+                            {
+                                nearestDist = dist;
+                                nearest = i;
+                            }
+                        }
+                        if (startLocationIndex < 0 && nearest >= 0)
+                        {
+                            // No start within tolerance — keep the game
+                            // running on the nearest slot, but flag loudly:
+                            // the table needs verification against this map.
+                            startLocationIndex = nearest;
+                            Console.WriteLine($"[START ORDER] WARNING observed townhall ({apiLoc.X:F1},{apiLoc.Y:F1}) matched no hardcoded start within {tol}u (nearest Start[{nearest}] at {MathF.Sqrt(nearestDist):F1}u) — AGENT VERIFY the table against a live game!");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("[START ORDER] WARNING no observed townhall (apiLoc null) — resolvedIndex stays -1; verify!");
+                    }
+
+                    Console.WriteLine($"[START ORDER] hardcoded '{gameInfo?.MapName}': "
+                        + string.Join(" ", ordered.Select((s, i) => $"Start[{i}]=({s.X:F1},{s.Y:F1})"))
+                        + $" resolvedIndex={startLocationIndex}");
+                }
                 // Preserve the API start ordering. Per-start mineral data and the runtime
                 // spawn index must use the same coordinate-indexed slots.
-                const float tol = 3f;
-                if (apiStarts != null && apiStarts.Count > 0)
+                else if (apiStarts != null && apiStarts.Count > 0)
                 {
                     for (int i = 0; i < apiStarts.Count; i++)
                     {
@@ -154,14 +224,15 @@ namespace BabySharkBot.Setup
                 var dataFolder = Path.Combine(Directory.GetCurrentDirectory(), "data", "base");
                 Directory.CreateDirectory(dataFolder);
                 var csvPath = Path.Combine(dataFolder, "InitialMapData.csv");
+                var start0 = startLocations.Count > 0 ? startLocations[0] : null;
                 var start1 = startLocations.Count > 1 ? startLocations[1] : null;
                 var start2 = startLocations.Count > 2 ? startLocations[2] : null;
                 var townHall = apiLoc;
                 var csvLine = string.Join(",", new[]
                 {
                     EscapeCsv(gameInfo?.MapName ?? string.Empty),
-                    "Start0", apiLoc != null ? apiLoc.X.ToString("F2") : "0",
-                    apiLoc != null ? apiLoc.Y.ToString("F2") : "0",
+                    "Start0", start0 != null ? start0.X.ToString("F2") : "0",
+                    start0 != null ? start0.Y.ToString("F2") : "0",
                     "Start1", start1 != null ? start1.X.ToString("F2") : "0",
                     start1 != null ? start1.Y.ToString("F2") : "0",
                     "Start2", start2 != null ? start2.X.ToString("F2") : "0",
