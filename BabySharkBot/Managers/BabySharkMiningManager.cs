@@ -696,7 +696,7 @@ namespace BabySharkBot.Managers
             _currentMinerals = observation?.Observation?.PlayerCommon == null ? 0 : (int)observation.Observation.PlayerCommon.Minerals;
             if ((_currentFrame > 0 && _currentFrame % 5 == 0) || _anyWorkerRed)
             {
-               Debugger.Break();
+               //Debugger.Break();
             }
 
             var relativeFrame = Settings.GetRelativeFrame(_currentFrame);
