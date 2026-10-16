@@ -96,6 +96,15 @@ namespace BabySharkBot.Setup
         {
             if (string.IsNullOrWhiteSpace(finalLabel)) return new Color { R = 255, G = 255, B = 255 };
 
+            // Far-B mineral overrides (owner spec 2026-10-13): the SB/BB/YB labels
+            // get unique colors so their miners are easy to identify — SB salmon,
+            // BB green, YB orange (workers matched in
+            // BabySharkMiningManager.ResolveWorkerDisplayColor).
+            if (string.Equals(finalLabel, "SB", System.StringComparison.OrdinalIgnoreCase)) return TeamColorService.Salmon;
+            if (string.Equals(finalLabel, "BB", System.StringComparison.OrdinalIgnoreCase)) return TeamColorService.Green;
+            if (string.Equals(finalLabel, "YB", System.StringComparison.OrdinalIgnoreCase)) return TeamColorService.Orange;
+            if (string.Equals(finalLabel, "SA", System.StringComparison.OrdinalIgnoreCase)) return TeamColorService.Purple;
+
             if (finalLabel.StartsWith("V", System.StringComparison.OrdinalIgnoreCase))
             {
                 return string.Equals(finalLabel, "VA", System.StringComparison.OrdinalIgnoreCase) ? TeamColorService.Teal

@@ -491,6 +491,75 @@ namespace BabySharkBot.Setup
                 return;
             }
 
+            if (Settings.IsMagannatha5x5Rotation && Settings.IsMagannathaMap)
+            {
+                // 5x5 rotation layout, Version 2 ("5 by 5 starting teams Version 2").
+                // Team patch membership is unchanged (proximity-based groups of 3);
+                // only the role labels differ. The two rotating teams span patches:
+                // teal = T1-T5 + temp S2, yellow = Y1-Y5 + temp B2. Books (built in
+                // BabySharkBuildManager.GetInstructionLabels), Version 2 orders:
+                //   T1: TA x2, then TB, TA once each, then SA -> TB -> TA
+                //                                       (owner spec 2026-10-13)
+                //   T2: TB x2, then TA -> SA -> TB        (owner spec 2026-10-13)
+                //   T3: SA x3, then TB -> TA -> SA        (owner spec 2026-10-13)
+                //   T4: bump T1, then TB (2nd miner), then TA -> SA -> TB
+                //   T5: SB once (SA-SB return), then SA -> TB -> TA
+                //   Y1: YA x2, then YB -> BA -> YA        (A-miner)
+                //   Y2: YB x2, then BA -> YA -> YB        (owner spec 2026-10-13)
+                //   Y3: BA x2, then YA -> YB -> BA        (A-miner)
+                //   Y4: bump Y1, then YB (2nd miner), then BA -> YA -> YB
+                //   Y5: BB once (BA-BB return), then BA -> YA -> YB
+                //   S2: speed-mines SB forever; B2: speed-mines BB forever (no A trip).
+                // Harvest-frame test case (owner spec 2026-10-11): W1 and W6 SWAP
+                // roles — W1 is the new T5 ({SB,SA,TB,TA} with new-logic staging
+                // waits on every mineral) and W6 is the new S2 (speed-mines SB
+                // forever, staged on its repeat approaches so it tests the new
+                // logic while W1 is mining).
+                var exactRoleByStartLabel5x5 = teamNumber switch
+                {
+                    1 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["W3"] = "T1",
+                        ["W4"] = "T2",
+                        ["W2"] = "T4"
+                    },
+                    2 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["W1"] = "T5",
+                        ["W5"] = "T3",
+                        ["W6"] = "S2"
+                    },
+                    3 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["W7"] = "Y5",
+                        ["W11"] = "Y4",
+                        ["W12"] = "B2"
+                    },
+                    4 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["W8"] = "Y3",
+                        ["W9"] = "Y2",
+                        ["W10"] = "Y1"
+                    },
+                    _ => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                };
+
+                foreach (var role in exactRoleByStartLabel5x5)
+                {
+                    var worker = FindWorkerByStartLabel(teamWorkers, role.Key);
+                    if (worker == null)
+                    {
+                        Console.WriteLine($"TeamLabelRegistrationHelper: [WARN] Missing Magannatha 5x5 worker {role.Key} for role {role.Value}.");
+                        continue;
+                    }
+
+                    AssignFinalLabel(worker, role.Value, workerLabelService);
+                }
+
+                SetNoPushFlag(mapData, startIndex, $"{prefix}NoPush");
+                return;
+            }
+
             if (Settings.IsMagannatha12WorkerOverride)
             {
                 var exactRoleByStartLabel = teamNumber switch

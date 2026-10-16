@@ -16,6 +16,14 @@ namespace BabySharkBot.Services
         public static readonly Color Blue   = new Color { R = 0,   G = 0,   B = 255 };
         public static readonly Color Yellow = new Color { R = 255, G = 255, B = 0   };
 
+        // Far-B mineral overrides (owner spec 2026-10-13): SB salmon, BB green,
+        // YB orange — both the mineral labels and the workers targeted on them.
+        public static readonly Color Green  = new Color { R = 0,   G = 255, B = 0   };
+        public static readonly Color Orange = new Color { R = 255, G = 165, B = 0   };
+        // SA and its miners (owner spec 2026-10-13 evening): purple (goldenrod
+        // read as too close to the yellow/orange palette).
+        public static readonly Color Purple = new Color { R = 128, G = 0, B = 128 };
+
         // --- Transition color for workers 13-15 ---
         public static readonly Color Pink   = new Color { R = 255, G = 192, B = 203 };
 
