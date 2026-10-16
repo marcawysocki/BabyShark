@@ -662,10 +662,23 @@ namespace BabySharkBot.Managers
         // walks/morphs.
         private const string B3ReturnInstructionSet = "b3ret";
         private const int B3TrickMorphTimeoutFrames = 900;
+        // Grace period after the extractor unit is first observed before the abort
+        // may fire (run9 postmortem): the extractor commit is what frees the supply
+        // point the larva morph needs, and the morph is issued the same frame — an
+        // abort without this grace kills a healthy trick one frame old.
+        private const int B3TrickAbortGraceFrames = 120;
         private int _b3TrickPhase; // 0 idle, 1 build issued, 2 cancel issued, 3 done
         private ulong _b3TrickWorkerTag;
         private ulong _b3TrickLarvaTag;
         private int _b3TrickBuildFrame = -1;
+        private int _b3TrickExtractorFirstSeenFrame = -1;
+        // Previous frame's mineral bank, for morph-spend drop detection: the
+        // larva morph spends 50 the frame it engages, a sudden ~50 drop at any
+        // bank level (run10: 120 -> 70, never below 50) — income is ~1/frame,
+        // so a drop in [45,70) is unambiguously the morph (the extractor's own
+        // 75 spend and the ideal both-same-frame 125 drop are excluded; the
+        // latter lands the bank under 50, caught by the bank check).
+        private int _b3TrickLastMinerals = -1;
 
         public IEnumerable<SC2Action> OnFrame(ResponseObservation observation)
         {
@@ -1240,7 +1253,18 @@ namespace BabySharkBot.Managers
                 // perpetuating BB harvest. Skip collision intervention for this
                 // worker ONLY while that row is pending; the other worker of the
                 // pair still detours around B3 via its own pass.
-                if (Settings.WorkerCollisionAvoidance && !IsGateHeldVaWalkRedirect(runtimeWorker))
+                // Trick-commit window (owner spec 2026-10-16 00:45, run4 postmortem):
+                // the run4 game the 935 collision SMART killed 13-B3's build WALK
+                // (the drone's order is plain MOVE until it is in build range, so
+                // the construction-walk guard above did not cover it) — the
+                // extractor never existed, the larva morph spent 50 for nothing,
+                // and the driver sat in phase 1 until the silent timeout. From the
+                // frame the va set's BuildExtractor row arms the driver until the
+                // cancel restores the drone (phase 1 or 2), collision must not
+                // touch this worker at all.
+                if (Settings.WorkerCollisionAvoidance
+                    && !IsGateHeldVaWalkRedirect(runtimeWorker)
+                    && !IsB3TrickWorkerCommitted(runtimeWorker))
                 {
                     var intervention = _collisionAvoidanceService.GetIntervention(
                         runtimeWorker,
@@ -3686,6 +3710,20 @@ namespace BabySharkBot.Managers
                 && instruction.Point == WorkerInstructionPoint.VaWalkRedirect;
         }
 
+        // True while the extractor-trick driver owns this worker (phase 1 = build
+        // issued / extractor under construction waiting for the morph-begin cancel;
+        // phase 2 = cancel issued, waiting for the restored drone). Collision
+        // avoidance must not issue this worker ANY detour in this window: an
+        // unqueued SMART during the build walk cancels the build order (run4,
+        // frame 935) and the trick silently falls apart.
+        private bool IsB3TrickWorkerCommitted(RuntimeWorkerState runtimeWorker)
+        {
+            return runtimeWorker != null
+                && runtimeWorker.UnitTag != 0
+                && runtimeWorker.UnitTag == _b3TrickWorkerTag
+                && (_b3TrickPhase == 1 || _b3TrickPhase == 2);
+        }
+
         // The main-base VA geyser for the current spawn (persisted ordering + label).
         private static OrderedVespene ResolveVaGeyserEntry()
         {
@@ -3785,28 +3823,37 @@ namespace BabySharkBot.Managers
 
             if (_b3TrickPhase == 1)
             {
-                // Cancel trigger (owner spec 2026-10-15 22:50): the larva's 50-mineral
-                // spend drops the bank below 50 — that drop IS the morph-begin signal,
-                // with the larva's TRAIN_DRONE order as confirmation. Either one fires
-                // the cancel; the verify line prints both sides every cancel.
+                // Cancel trigger (owner spec 2026-10-16 00:45): "after the extractor
+                // starts AND a new worker begins then cancel the extractor". BOTH must
+                // hold: the extractor unit exists (the drone's build morph committed —
+                // during the build WALK the extractor is not in the observation yet)
+                // and the larva morph has begun (its TRAIN_DRONE order observed, or
+                // the bank below 50 — the morph's spend). Requiring both keeps the
+                // drone on the geyser when the morph failed instead of cancelling an
+                // extractor that was never paid for by a new worker.
                 var morphOrderObserved = _b3TrickLarvaTag != 0
                     && units.Any(unit => unit != null
                         && unit.Tag == _b3TrickLarvaTag
                         && unit.Orders.Any(order => order.AbilityId == (uint)Abilities.TRAIN_DRONE));
-                var morphSpendObserved = _currentMinerals < 50;
-                if (morphOrderObserved || morphSpendObserved)
+                var morphSpendObserved = _currentMinerals < 50
+                    || (_b3TrickLastMinerals >= 0
+                        && _b3TrickLastMinerals - _currentMinerals >= 45
+                        && _b3TrickLastMinerals - _currentMinerals < 70);
+                var morphBegun = morphOrderObserved || morphSpendObserved;
+                var extractor = FindVaExtractor(units);
+                if (extractor != null && _b3TrickExtractorFirstSeenFrame < 0)
                 {
-                    var extractor = FindVaExtractor(units);
-                    if (extractor != null)
-                    {
-                        actions.Add(CreateRawUnitCommandAction(Abilities.CANCEL_BUILDINPROGRESS, extractor.Tag));
-                        _b3TrickPhase = 2;
-                        Settings.B3ExtractorTrickMorphBegun = morphOrderObserved || units.Any(unit => unit != null
-                            && unit.Tag == _b3TrickLarvaTag
-                            && unit.Orders.Any(order => order.AbilityId == (uint)Abilities.TRAIN_DRONE));
-                        Settings.B3ExtractorTrickDone = true;
-                        Console.WriteLine($"[EXTRACTOR TRICK] cancel issued extractor={extractor.Tag} worker={_b3TrickWorkerTag} minerals={_currentMinerals} trigger: morphOrder={morphOrderObserved} bankBelow50={morphSpendObserved} morphBegun={Settings.B3ExtractorTrickMorphBegun} frame={_currentFrame}");
-                    }
+                    _b3TrickExtractorFirstSeenFrame = _currentFrame;
+                }
+                if (extractor != null && morphBegun)
+                {
+                    actions.Add(CreateRawUnitCommandAction(Abilities.CANCEL_BUILDINPROGRESS, extractor.Tag));
+                    _b3TrickPhase = 2;
+                    Settings.B3ExtractorTrickMorphBegun = morphOrderObserved || units.Any(unit => unit != null
+                        && unit.Tag == _b3TrickLarvaTag
+                        && unit.Orders.Any(order => order.AbilityId == (uint)Abilities.TRAIN_DRONE));
+                    Settings.B3ExtractorTrickDone = true;
+                    Console.WriteLine($"[EXTRACTOR TRICK] cancel issued extractor={extractor.Tag} worker={_b3TrickWorkerTag} minerals={_currentMinerals} trigger: morphOrder={morphOrderObserved} bankBelow50={morphSpendObserved} morphBegun={Settings.B3ExtractorTrickMorphBegun} frame={_currentFrame}");
                 }
                 else
                 {
@@ -3825,13 +3872,42 @@ namespace BabySharkBot.Managers
                         Console.WriteLine($"[EXTRACTOR TRICK] larva morph issued larva={larva.Tag} foodLeft={foodLeft} minerals={_currentMinerals} frame={_currentFrame}");
                     }
 
-                    if (_b3TrickBuildFrame >= 0 && _currentFrame > _b3TrickBuildFrame + B3TrickMorphTimeoutFrames)
+                    // Never let the extractor FINISH (owner spec 2026-10-16 00:45 "do
+                    // not Finish the extractor"): this branch runs only while the
+                    // morph has NOT begun — if the extractor is about to complete
+                    // anyway (the morph kept losing the food race), abort: cancel
+                    // it and send 13-B3 back to mining BB. A failed trick must not
+                    // eat the drone into a finished extractor. The abort waits out
+                    // B3TrickAbortGraceFrames after the extractor's first
+                    // observation (run9 postmortem: the extractor commit is what
+                    // frees the supply point the morph needs, so a just-committed
+                    // extractor is a HEALTHY trick one frame old, not a failure).
+                    var abortExtractor = FindVaExtractor(units, 0.9f);
+                    var abortGraceExpired = _b3TrickExtractorFirstSeenFrame >= 0
+                        && _currentFrame > _b3TrickExtractorFirstSeenFrame + B3TrickAbortGraceFrames;
+                    if (abortExtractor != null
+                        && (abortExtractor.BuildProgress >= 0.9f || abortGraceExpired))
+                    {
+                        actions.Add(CreateRawUnitCommandAction(Abilities.CANCEL_BUILDINPROGRESS, abortExtractor.Tag));
+                        Settings.B3ExtractorTrickDone = true;
+                        _b3TrickPhase = 2;
+                        Console.WriteLine($"[EXTRACTOR TRICK] MORPH NEVER BEGAN — aborting at {(int)(abortExtractor.BuildProgress * 100)}% (grace expired) so the extractor never finishes worker={_b3TrickWorkerTag} frame={_currentFrame}");
+                    }
+                    else if (_b3TrickBuildFrame >= 0 && _currentFrame > _b3TrickBuildFrame + B3TrickMorphTimeoutFrames)
                     {
                         var stuckExtractor = FindVaExtractor(units);
                         if (stuckExtractor != null)
                         {
                             actions.Add(CreateRawUnitCommandAction(Abilities.CANCEL_BUILDINPROGRESS, stuckExtractor.Tag));
                             Console.WriteLine($"[EXTRACTOR TRICK] MORPH TIMEOUT — cancelling extractor worker={_b3TrickWorkerTag} frame={_currentFrame}");
+                        }
+                        else
+                        {
+                            // No extractor in the observation at timeout: the build
+                            // order died before the drone committed (run4 frame 935:
+                            // collision SMART killed the build walk) — say so loudly
+                            // instead of silently falling into phase 2.
+                            Console.WriteLine($"[EXTRACTOR TRICK] MORPH TIMEOUT — NO EXTRACTOR EXISTS worker={_b3TrickWorkerTag} frame={_currentFrame}");
                         }
                         Settings.B3ExtractorTrickDone = true;
                         _b3TrickPhase = 2;
@@ -3852,11 +3928,18 @@ namespace BabySharkBot.Managers
                 }
             }
 
+            // Refresh the bank snapshot every phase-1/2 frame so the morph-spend
+            // drop detection above compares THIS frame's bank against LAST frame's
+            // (run10 postmortem 2026-10-16: morph spend 120 -> 70 never trips the
+            // <50 bank check, but the 50-point drop is unambiguous).
+            _b3TrickLastMinerals = _currentMinerals;
+
             return actions;
         }
 
         // A self extractor under construction at the VA geyser (the trick one).
-        private static Unit? FindVaExtractor(IEnumerable<Unit> units)
+        // maxProgress lets the abort check see extractors that are ABOUT to finish.
+        private static Unit? FindVaExtractor(IEnumerable<Unit> units, float maxProgress = 1.0f)
         {
             var vaGeyser = ResolveVaGeyserEntry();
             if (vaGeyser?.Position == null || !HasNonZeroPoint(vaGeyser.Position))
@@ -3869,7 +3952,7 @@ namespace BabySharkBot.Managers
             return units.FirstOrDefault(unit => unit != null
                 && unit.Alliance == Alliance.Self
                 && unit.UnitType == (uint)UnitTypes.ZERG_EXTRACTOR
-                && unit.BuildProgress < 1.0f
+                && unit.BuildProgress < maxProgress
                 && DistanceSquared(new Vector2Dto(unit.Pos.X, unit.Pos.Y), new Vector2Dto(vaX, vaY)) <= 4.0f);
         }
 

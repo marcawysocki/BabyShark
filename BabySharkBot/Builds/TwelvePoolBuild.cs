@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using SC2APIProtocol;
 using Sharky;
+using Sharky.Builds;
 using Sharky.DefaultBot;
 using BabySharkBot.Services;
 using BabySharkBot.Setup;
@@ -33,6 +34,7 @@ namespace BabySharkBot.Builds
         private bool _poolUnderConstruction;
         private bool _poolCompleted;
         private int _lastPoolLogFrame = -1;
+        private readonly BuildOptions _buildOptions;
 
         // --- mineral-rate CSV logging (ported from BuildIne) ---
         public int TestNumber { get; set; } = 12;
@@ -51,6 +53,7 @@ namespace BabySharkBot.Builds
 
         public TwelvePoolBuild(DefaultSharkyBot defaultBot) : base(defaultBot)
         {
+            _buildOptions = defaultBot.BuildOptions;
             _droneMorph = new DroneMorphService(defaultBot) { DesiredDroneCount = 12 };
             _spawningPoolPlacement = new SpawningPoolPlacementService(defaultBot.DebugService);
 
@@ -180,6 +183,35 @@ namespace BabySharkBot.Builds
                     Settings.B3ExtractorTrickOverlordQueued = true;
                     SetDesiredUnitCount(UnitTypes.ZERG_OVERLORD, CountUnits(UnitTypes.ZERG_OVERLORD) + 1);
                     Console.WriteLine($"[12POOL] trick morph begun — overlord queued for the extra worker frame={GetFrame(observation)}");
+                }
+
+                // Food-point race (run8 postmortem 2026-10-16): Sharky's MacroManager
+                // keeps producing workers (desired count 40) and grabs the single
+                // supply point the INSTANT the extractor commit frees it (drone ->
+                // building flips used supply 14 -> 13, foodLeft 0 -> 1), so the
+                // engine rejects 13-B3's trick morph and the extractor finishes —
+                // "do not Finish the extractor". While the trick is unfinished and
+                // all three temps exist, take worker production away from Sharky:
+                // StrictWorkerCount makes the balancer skip its per-frame
+                // DesiredUnitCounts reset and BuildUnits[drone]=false stops
+                // UnitBuilder. Restored the frame the trick resolves.
+                if (!Settings.B3ExtractorTrickDone
+                    && selfUnits.Count(unit => unit.UnitType == (uint)UnitTypes.ZERG_DRONE) >= 13)
+                {
+                    if (!_buildOptions.StrictWorkerCount)
+                    {
+                        _buildOptions.StrictWorkerCount = true;
+                        Console.WriteLine($"[12POOL] StrictWorkerCount ON — trick window, protecting the last supply point frame={GetFrame(observation)}");
+                    }
+                    if (MacroData.BuildUnits.ContainsKey(UnitTypes.ZERG_DRONE))
+                    {
+                        MacroData.BuildUnits[UnitTypes.ZERG_DRONE] = false;
+                    }
+                }
+                else if (Settings.B3ExtractorTrickDone && _buildOptions.StrictWorkerCount)
+                {
+                    _buildOptions.StrictWorkerCount = false;
+                    Console.WriteLine($"[12POOL] StrictWorkerCount OFF — trick resolved frame={GetFrame(observation)}");
                 }
             }
 

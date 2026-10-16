@@ -2148,18 +2148,32 @@ namespace BabySharkBot.Managers
             });
         }
 
-        // 13-B3 return book: the exact S2-style single-mineral BB loop (staging +
-        // self-pair harvest + self-pair return + handoff, jumping back to the
-        // staging rows). Loaded by the mining manager's trick driver the frame the
-        // cancelled extractor restores the drone, so 13-B3 returns to mining BB
-        // after the trick (owner spec: "13-B3 cancels the extractor and will
-        // mineral walk or move back to BB and return to mining").
+        // 13-B3 return book: the EXACT loop S3/B4 run (Build5x5Book temp branch,
+        // the rows after the startup cycle) — re-stage on the harvest-release gate
+        // every cycle, self-pair harvest, the ability-gated harvest->return wait,
+        // self-pair return, handoff wait, jump back to the harvest. The previous
+        // hand-rolled variant dropped the ability-gated wait, so the jitRM rows
+        // fired out of phase with the drone's actual gather->return cycle: the
+        // return point was stored while the drone stood at the mineral and the
+        // queued move parked it there on a no-op (owner report 2026-10-16 00:52
+        // "mines a few times then gets stuck at the hatchery"). Loaded by the
+        // mining manager's trick driver the frame the cancelled extractor restores
+        // the drone, so 13-B3 returns to mining BB after the trick (owner spec:
+        // "13-B3 cancels the extractor and will mineral walk or move back to BB
+        // and return to mining").
         private static void RegisterB3ReturnBook(int startIndex, MiningTargetDto target)
         {
             var returnBook = new List<WorkerInstruction>();
             AddHarvestReleaseStagingInstructions(returnBook, target.ResourceUnitId);
             var loopStartIndex = returnBook.Count;
             AddSelfPairHarvestInstructions(returnBook, startIndex, "jitMH", target);
+            returnBook.Add(new WorkerInstruction
+            {
+                InstructionSet = "wait",
+                Command = WorkerInstructionCommand.Wait,
+                PreviousAbilityId = (int)Abilities.HARVEST_GATHER_DRONE,
+                TargetAbilityId = (int)Abilities.HARVEST_RETURN_DRONE
+            });
             AddSelfPairReturnInstructions(returnBook, startIndex, target);
             returnBook.Add(CreateHandoffWait());
             returnBook.Add(new WorkerInstruction
