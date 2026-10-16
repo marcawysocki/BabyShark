@@ -300,12 +300,18 @@ namespace BabySharkBot.Managers
                         + (adjusted != null ? $" adjusted=({adjusted.X:F2},{adjusted.Y:F2})" : " adjusted=none")
                         + $" final=({final.X:F2},{final.Y:F2}) latchedFromDisk={latched} start={startIndex} map={Settings.CurrentMapName} frame={frame}");
                     Console.WriteLine($"[MACRO HATCHERY] candidates: {string.Join(" ", macro.Candidates.Take(8).Select(c => $"({c.X:F1},{c.Y:F1})"))}");
-                    // Owner offset is already baked into Final; log the pre-offset
-                    // grid candidate + the validity of the final point itself.
-                    var gridCandidate = adjusted ?? spec;
-                    var finalValid = _defaultBot.BuildingService != null
-                        && _defaultBot.BuildingService.AreaBuildable(final.X, final.Y, MacroHatcheryPlacementService.HatcheryRadius);
-                    Console.WriteLine($"[MACRO HATCHERY] gridCandidate=({gridCandidate.X:F2},{gridCandidate.Y:F2}) final valid={finalValid} (owner offset left {MacroHatcheryOwnerOffset.Left} / up {MacroHatcheryOwnerOffset.Up} baked into final)");
+                    // Owner correction 2026-10-16: the offset target gives the
+                    // DIRECTION; Final is snapped to the nearest LEGAL flat
+                    // .5-grid placement. Log the arrow spot, the snapped
+                    // point, its grid validity, and the legal options.
+                    if (macro.OwnerTarget != null)
+                    {
+                        var target = macro.OwnerTarget;
+                        var dx = final.X - target.X;
+                        var dy = final.Y - target.Y;
+                        Console.WriteLine($"[MACRO HATCHERY] ownerTarget=({target.X:F2},{target.Y:F2}) final=({final.X:F2},{final.Y:F2}) finalValid={macro.FinalValid} snapDist={MathF.Sqrt(dx * dx + dy * dy):F2}"
+                            + $" legalNear=[{string.Join(" ", macro.LegalNearOwnerTarget.Select(p => $"({p.X:F1},{p.Y:F1})"))}]");
+                    }
                     if (adjusted == null)
                     {
                         RunBuildableDiagnostics(mapData, startIndex, townhall, frame);

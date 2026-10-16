@@ -192,14 +192,14 @@ namespace BabySharkBot.Services
                 adjusted = best ?? FindNearestBuildable(spec);
             }
 
-            return new MacroHatcheryPlacement
+            return WithOwnerTargetSnap(new MacroHatcheryPlacement
             {
                 Wall = wall,
                 Spec = spec,
                 SpecValid = specValid,
                 Candidates = candidates.Select(c => c.Point).ToList(),
-                Adjusted = adjusted
-            };
+                Adjusted = adjusted,
+            });
         }
 
         /// <summary>Wall-flush candidate with its segment's door distance.</summary>
@@ -346,6 +346,69 @@ namespace BabySharkBot.Services
         }
 
         /// <summary>
+        /// Owner correction 2026-10-16: the offset target can land on the ramp
+        /// band (unbuildable). The final point is the nearest LEGAL .5-grid
+        /// placement to the owner target — as close to the indicated spot as
+        /// the flat ground allows. Exhaustive .5-grid scan within
+        /// <paramref name="maxRadius"/>, nearest distance wins (exact target
+        /// first when it happens to be legal). Falls back to the grid-derived
+        /// chosen point when nothing is legal nearby.
+        /// </summary>
+        public MacroHatcheryPlacement WithOwnerTargetSnap(MacroHatcheryPlacement placement, float maxRadius = 8f)
+        {
+            var chosen = placement.Adjusted ?? placement.Spec;
+            if (chosen == null || _defaultBot.BuildingService == null)
+            {
+                placement.Final = chosen;
+                placement.FinalValid = chosen != null && IsBuildable(chosen);
+                return placement;
+            }
+
+            var ownerTarget = MacroHatcheryOwnerOffset.Apply(chosen);
+            placement.OwnerTarget = ownerTarget;
+
+            Point2D? best = null;
+            var bestDist = float.MaxValue;
+            var options = new List<(float dist, Point2D point)>();
+            for (var x = ownerTarget.X - maxRadius; x <= ownerTarget.X + maxRadius + 0.001f; x += 0.5f)
+            {
+                for (var y = ownerTarget.Y - maxRadius; y <= ownerTarget.Y + maxRadius + 0.001f; y += 0.5f)
+                {
+                    var dx = x - ownerTarget.X;
+                    var dy = y - ownerTarget.Y;
+                    var dist = dx * dx + dy * dy;
+                    if (dist > maxRadius * maxRadius)
+                    {
+                        continue;
+                    }
+                    var point = new Point2D { X = x, Y = y };
+                    if (!IsBuildable(point))
+                    {
+                        continue;
+                    }
+                    if (dist < bestDist)
+                    {
+                        best = point;
+                        bestDist = dist;
+                    }
+                    if (dist <= 25f)
+                    {
+                        options.Add((dist, point));
+                    }
+                }
+            }
+
+            placement.LegalNearOwnerTarget = options
+                .OrderBy(o => o.dist)
+                .Take(8)
+                .Select(o => o.point)
+                .ToList();
+            placement.Final = best ?? chosen;
+            placement.FinalValid = best != null;
+            return placement;
+        }
+
+        /// <summary>
         /// Corner geometry: the two wall segments form an L at the top of the
         /// ramp. The hatchery sits in the pocket of that L — flush (2.5) with
         /// the face of each segment that looks toward the ramp, i.e. its edge
@@ -407,10 +470,14 @@ namespace BabySharkBot.Services
                 return;
             }
 
+            // Owner correction 2026-10-16: "must be on flat even surface, no
+            // obstructions" — the circle color now reports the FINAL point's
+            // grid validity: green = legal as drawn, yellow = snapped from
+            // the grid candidate, red = nothing legal nearby.
             var adjusted = placement.Adjusted != null;
-            var drawnColor = adjusted ? yellow : placement.SpecValid ? green : red;
+            var drawnColor = !placement.FinalValid ? red : adjusted ? yellow : green;
             _defaultBot.DebugService.DrawSphere(new Point { X = drawn.X, Y = drawn.Y, Z = 12 }, HatcheryRadius, drawnColor);
-            _defaultBot.DebugService.DrawText($"MacroHatchery{(adjusted ? " adj" : placement.SpecValid ? "" : " INVALID")}", new Point { X = drawn.X, Y = drawn.Y, Z = 12.5f }, drawnColor, 12);
+            _defaultBot.DebugService.DrawText($"MacroHatchery{(placement.FinalValid ? adjusted ? " snap" : "" : " INVALID")}", new Point { X = drawn.X, Y = drawn.Y, Z = 12.5f }, drawnColor, 12);
 
             // Candidate dots (yellow) so the owner can eyeball which wall-flush
             // spot sits right against the ramp edge; the red spec circle shows
@@ -425,14 +492,21 @@ namespace BabySharkBot.Services
                 _defaultBot.DebugService.DrawSphere(new Point { X = placement.Spec.X, Y = placement.Spec.Y, Z = 12 }, HatcheryRadius, red);
             }
 
-            // Reference dot (cyan): the spot BEFORE the owner's left 4 / up 3
-            // offset was applied, so the owner can see the grid-derived
-            // candidate next to the final circle (owner correction 2026-10-16).
-            var preOffset = placement.Adjusted ?? placement.Spec;
-            if (preOffset != null)
+            // White dot: the owner's arrow target (offset applied, before the
+            // legality snap), so the owner sees where he pointed vs where the
+            // nearest flat legal ground actually is.
+            if (placement.OwnerTarget != null)
             {
-                var cyan = new Color { R = 0, G = 255, B = 255 };
-                _defaultBot.DebugService.DrawSphere(new Point { X = preOffset.X, Y = preOffset.Y, Z = 12 }, 0.4f, cyan);
+                var white = new Color { R = 255, G = 255, B = 255 };
+                _defaultBot.DebugService.DrawSphere(new Point { X = placement.OwnerTarget.X, Y = placement.OwnerTarget.Y, Z = 12 }, 0.4f, white);
+            }
+
+            // Cyan dots: the legal flat-ground options nearest the owner
+            // target that the snap chose from (nearest = also where Final is).
+            var cyan = new Color { R = 0, G = 255, B = 255 };
+            foreach (var option in placement.LegalNearOwnerTarget)
+            {
+                _defaultBot.DebugService.DrawSphere(new Point { X = option.X, Y = option.Y, Z = 12 }, 0.4f, cyan);
             }
         }
 
@@ -481,18 +555,22 @@ namespace BabySharkBot.Services
 
         // Owner override 2026-10-16: "Please move the Hatchery location to the
         // indicated spot" — the owner pointed ~left 4 / up 3 from the grid-
-        // derived corner candidate (toward the ramp corner). The static
-        // placement grid marks that band unbuildable; the owner confirms the
-        // spot from gameplay, and the drone test build is the deciding check.
-        // The offset is applied LAST, on top of whatever the geometry picked.
-        public Point2D? Final
-        {
-            get
-            {
-                var chosen = Adjusted ?? Spec;
-                return chosen == null ? null : MacroHatcheryOwnerOffset.Apply(chosen);
-            }
-        }
+        // derived corner candidate (toward the ramp corner). Owner correction
+        // same day: "You can not place on a ramp, must be on flat even
+        // surface. No obstructions. First get the location correct and a
+        // legal placement." So the owner offset gives the DIRECTION, and the
+        // final point is the nearest LEGAL .5-grid placement to that target
+        // (SnapToBuildable) — as close to the arrow as the flat ground
+        // allows. The offset is applied LAST, on top of whatever the geometry
+        // picked.
+        public Point2D? OwnerTarget { get; set; }
+        public Point2D? Final { get; set; }
+        public bool FinalValid { get; set; }
+
+        /// <summary>Legal .5-grid placements near the owner target, nearest
+        /// first, so the owner can see the flat-ground options the snap
+        /// chose from.</summary>
+        public List<Point2D> LegalNearOwnerTarget { get; set; } = new List<Point2D>();
     }
 
     /// <summary>Owner's visual correction (owner spec 2026-10-16): the grid-
