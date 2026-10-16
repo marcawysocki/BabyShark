@@ -3977,6 +3977,37 @@ namespace BabySharkBot.Managers
                         && _b3TrickLastMinerals - _currentMinerals < 70);
                 var morphBegun = morphOrderObserved || morphSpendObserved;
                 var extractor = FindVaExtractor(units);
+                if (extractor == null)
+                {
+                    // Build re-issue (run 2026-10-16 19:02 postmortem): the book's
+                    // redirect move, the mineral wait, and the build row can ALL
+                    // satisfy on the same frame — the engine then receives
+                    // MOVE + BUILD_EXTRACTOR for the drone in ONE batch and
+                    // coalesces them away (the documented behavior behind
+                    // IssueReturnInterrupts), so the extractor never exists, the
+                    // book is already exhausted behind the terminal build row,
+                    // and phase 1 used to sit silent until the 900-frame timeout
+                    // while B3 mined BB. Until the extractor unit is OBSERVED,
+                    // re-establish the build every frame the drone's own order
+                    // is not already the build (one command for the drone per
+                    // frame from this driver, which runs alone on B3 — never
+                    // coalesced, and it self-heals the same-frame collapse, a
+                    // collision SMART killing the walk, or a stale geyser tag).
+                    var geyserTag = ResolveLiveVaGeyserTag();
+                    var drone = units.FirstOrDefault(unit => unit != null && unit.Tag == _b3TrickWorkerTag);
+                    var buildOrderHolds = drone != null
+                        && drone.Orders.Any(order => order.AbilityId == (uint)Abilities.BUILD_EXTRACTOR);
+                    if (geyserTag != 0 && drone != null && !buildOrderHolds)
+                    {
+                        var reissue = CreateInstructionBuildExtractorAction(_b3TrickWorkerTag, geyserTag, false);
+                        if (reissue != null)
+                        {
+                            actions.Add(reissue);
+                            Console.WriteLine($"[EXTRACTOR TRICK] build re-issued worker={_b3TrickWorkerTag} geyser={geyserTag} minerals={_currentMinerals} frame={_currentFrame}");
+                        }
+                    }
+                }
+
                 if (extractor != null && _b3TrickExtractorFirstSeenFrame < 0)
                 {
                     _b3TrickExtractorFirstSeenFrame = _currentFrame;
