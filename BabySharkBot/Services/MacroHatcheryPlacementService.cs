@@ -238,8 +238,9 @@ namespace BabySharkBot.Services
                 // "UP about 1u, and Left 2u" from 115.5,27 — touches the
                 // inverted corner on the left edge)
                 new Entry(127.5f, 24.5f, 113.5f, 28.0f),
-                // Magannatha AIE — Start 1, NW base (owner-verified earlier)
-                new Entry(24.5f, 127.5f, 23.5f, 116.5f),
+                // Magannatha AIE — Start 1, NW base (owner 2026-10-16 18:24:
+                // "down 2.5, right 4" from 23.5,116.5)
+                new Entry(24.5f, 127.5f, 27.5f, 114.0f),
             };
 
             /// <summary>Returns the owner's placement for the start whose
@@ -640,8 +641,9 @@ namespace BabySharkBot.Services
             var purple = new Color { R = 200, G = 0, B = 255 };
             foreach (var entry in MacroHatcheryOwnerPlacements.All)
             {
-                // SE bases are the low-x/low-y corner of the map; NW are high.
-                var isSouth = entry.Base.X < 64f && entry.Base.Y < 64f;
+                // Fix 2026-10-16 (owner: "test says NORTH" for both): south is
+                // the LOW-Y half of the map — the SE base sits at high X.
+                var isSouth = entry.Base.Y < 64f;
                 var color = isSouth ? orange : purple;
                 var label = isSouth ? "MacroHatchery SOUTH (owner)" : "MacroHatchery NORTH (owner)";
                 _defaultBot.DebugService.DrawSphere(new Point { X = entry.Center.X, Y = entry.Center.Y, Z = 12 }, HatcheryRadius, color);
