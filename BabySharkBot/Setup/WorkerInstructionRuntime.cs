@@ -16,6 +16,13 @@ namespace BabySharkBot.Setup
         // current spawn. B2's book reaches this row only after the mineral-
         // gated wait row confirms the bank holds SpawningPoolBuildMinerals.
         BuildSpawningPool,
+        // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): issues
+        // BUILD_HATCHERY at the Macro Hatchery site (Point =
+        // MacroHatcherySite) after the mineral-gated wait row confirms the
+        // bank. TERMINAL row — the drone morphs INTO the hatchery and the
+        // mining manager's milestone watcher freezes the bot on success or
+        // failure.
+        BuildHatchery,
         Wait,
         Jump,
         Stop,
@@ -80,6 +87,12 @@ namespace BabySharkBot.Setup
         // null while it must keep walking, so the Move row waits silently and the
         // ONE issued mineral walk keeps carrying the worker.
         VaWalkRedirect,
+        // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): the build/test
+        // site for the current spawn — the frame-0 latched Macro Hatchery
+        // final placement, falling back to the owner-verified placements
+        // table. Map data, never resolved from the row TargetId's mining
+        // target.
+        MacroHatcherySite,
         JitHarvestA,
         JitHarvestB,
         JitWaitPointA,

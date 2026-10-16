@@ -94,6 +94,13 @@ namespace BabySharkBot.Setup
         public static bool B3ExtractorTrickMorphBegun = false;
         public static bool B3ExtractorTrickDone = false;
         public static bool B3ExtractorTrickOverlordQueued = false;
+        // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): set by the mining
+        // manager's milestone watcher the frame the hatchery build resolves
+        // (SUCCESS = hatchery under construction observed at the site; FAILURE =
+        // none appeared within the verify window). While true every manager
+        // strips its unit commands (debug draws still pass) so the owner can
+        // inspect the frozen scene — the SC2 protocol has no true pause.
+        public static bool MacroHatcheryTestFrozen = false;
         public static int StartFrame = 0;
         public static bool CreateWorkerFrameZero = true;
 

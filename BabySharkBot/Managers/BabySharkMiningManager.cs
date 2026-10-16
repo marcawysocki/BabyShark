@@ -672,6 +672,16 @@ namespace BabySharkBot.Managers
         private ulong _b3TrickLarvaTag;
         private int _b3TrickBuildFrame = -1;
         private int _b3TrickExtractorFirstSeenFrame = -1;
+        // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): armed the frame
+        // the terminal BuildHatchery row actually issues (execution sets it);
+        // the watcher below resolves SUCCESS (a hatchery under construction is
+        // observed at the site) or FAILURE (none within the verify window) and
+        // freezes the bot either way so the owner can inspect the spot.
+        private const string B3MacroHatcheryInstructionSet = "b3mh";
+        private const int B3MhBuildVerifyFrames = 45;
+        private int _b3MhBuildIssuedFrame = -1;
+        private bool _b3MhResolved;
+        private string _b3MhBanner = string.Empty;
         // Previous frame's mineral bank, for morph-spend drop detection: the
         // larva morph spends 50 the frame it engages, a sudden ~50 drop at any
         // bank level (run10: 120 -> 70, never below 50) — income is ~1/frame,
@@ -706,6 +716,22 @@ namespace BabySharkBot.Managers
             ProcessFrameObservation(observation);
             UpdateCollisionVisualStates();
             WriteInstructionTrace();
+
+            // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): resolve
+            // the build milestone (success/failure) BEFORE the frozen check so
+            // the watcher keeps running while frozen. The freeze strips every
+            // unit command from this manager; the BabySharkAI frame loop
+            // strips the other managers' — debug draws (banner, circles) pass
+            // through so the frozen scene stays annotated. The SC2 protocol
+            // has no true pause: this is the closest the bot can do, plus a
+            // Debugger.Break at the milestone so a VS session stops exactly
+            // there for stepping.
+            UpdateB3MacroHatcheryTest(observation);
+            if (Settings.MacroHatcheryTestFrozen)
+            {
+                DrawB3MacroHatcheryBanner();
+                return Array.Empty<SC2Action>();
+            }
 
             var actions = new List<SC2Action>();
             if (Settings.SimulatedStartActive || Settings.BuildOwnsWorkerCommands)
@@ -1232,7 +1258,11 @@ namespace BabySharkBot.Managers
                 if (observedWorker.OrderAbilityIds != null
                     && observedWorker.OrderAbilityIds.Count > 0
                     && (observedWorker.OrderAbilityIds[0] == (int)Abilities.BUILD_EXTRACTOR
-                        || observedWorker.OrderAbilityIds[0] == (int)Abilities.BUILD_SPAWNINGPOOL))
+                        || observedWorker.OrderAbilityIds[0] == (int)Abilities.BUILD_SPAWNINGPOOL
+                        // B3 Macro Hatchery test (owner spec 2026-10-16 18:35):
+                        // same protection for the hatchery build walk — an
+                        // unqueued detour SMART would cancel the morph walk.
+                        || observedWorker.OrderAbilityIds[0] == (int)Abilities.BUILD_HATCHERY))
                 {
                     continue;
                 }
@@ -1264,7 +1294,8 @@ namespace BabySharkBot.Managers
                 // touch this worker at all.
                 if (Settings.WorkerCollisionAvoidance
                     && !IsGateHeldVaWalkRedirect(runtimeWorker)
-                    && !IsB3TrickWorkerCommitted(runtimeWorker))
+                    && !IsB3TrickWorkerCommitted(runtimeWorker)
+                    && !IsB3MacroHatcheryWalker(runtimeWorker))
                 {
                     var intervention = _collisionAvoidanceService.GetIntervention(
                         runtimeWorker,
@@ -1882,6 +1913,33 @@ namespace BabySharkBot.Managers
                 return extractorBuildAction;
             }
 
+            // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): the terminal
+            // morph. The site re-resolves from map data every frame (never the
+            // row's persisted anything); a null site leaves the row
+            // unexecuted so it retries next frame. Arming the milestone watcher
+            // here (not in the driver) because only this row knows the build
+            // actually ISSUED — a null action means it did not.
+            if (instruction.Command == WorkerInstructionCommand.BuildHatchery)
+            {
+                var hatcherySite = ResolveMacroHatcherySite();
+                if (hatcherySite == null)
+                {
+                    return null;
+                }
+
+                var hatcheryBuildAction = CreateInstructionBuildHatcheryAction(
+                    runtimeWorker.UnitTag,
+                    hatcherySite,
+                    instruction.Queue);
+                if (hatcheryBuildAction != null)
+                {
+                    _b3MhBuildIssuedFrame = _currentFrame;
+                    Console.WriteLine($"[MACRO HATCHERY TEST] BUILD issued worker={runtimeWorker.UnitTag} site=({hatcherySite.X:F2},{hatcherySite.Y:F2}) minerals={_currentMinerals} frame={_currentFrame}");
+                }
+
+                return hatcheryBuildAction;
+            }
+
             return instruction.Command switch
             {
                 WorkerInstructionCommand.Move when targetPoint != null => CreateInstructionMoveAction(
@@ -2009,6 +2067,14 @@ namespace BabySharkBot.Managers
             if (instruction.Point == WorkerInstructionPoint.VaWalkRedirect)
             {
                 return ResolveVaWalkRedirectPoint(runtimeWorker, instruction);
+            }
+
+            // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): the site is
+            // map data, not a mining target — resolve before the MiningTargets
+            // lookup below (same pattern as PoolPlacement above).
+            if (instruction.Point == WorkerInstructionPoint.MacroHatcherySite)
+            {
+                return ResolveMacroHatcherySite();
             }
 
             var target = assignedWorker.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId);
@@ -3690,6 +3756,55 @@ namespace BabySharkBot.Managers
             return placement != null && HasNonZeroPoint(placement) ? placement : null;
         }
 
+        // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): the build/test
+        // site for the current spawn. First the frame-0 latched final placement
+        // the build manager stored in map data; when the latch has not run
+        // (e.g. placement calc failed), fall back to the owner-verified
+        // placements table so the test still targets the owner's spot.
+        private static Vector2Dto? ResolveMacroHatcherySite()
+        {
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var placement = Globals.CurrentMapData?.MacroHatcheryPlacements?.ElementAtOrDefault(startIndex);
+            if (placement != null && HasNonZeroPoint(placement))
+            {
+                return placement;
+            }
+
+            var townhall = Globals.CurrentMapData?.StartingTownHall?.ElementAtOrDefault(startIndex);
+            if (townhall == null)
+            {
+                return null;
+            }
+
+            var tableCenter = MacroHatcheryPlacementService.MacroHatcheryOwnerPlacements.Get(
+                new Point2D { X = townhall.X, Y = townhall.Y });
+            return tableCenter != null
+                ? new Vector2Dto(tableCenter.X, tableCenter.Y, townhall.Z)
+                : null;
+        }
+
+        // Issues BUILD_HATCHERY at the Macro Hatchery site (B3's terminal morph
+        // row). A null site leaves the row unexecuted so the caller retries.
+        private static SC2Action? CreateInstructionBuildHatcheryAction(ulong workerTag, Vector2Dto site, bool queued)
+        {
+            if (workerTag == 0 || site == null)
+            {
+                return null;
+            }
+
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.BUILD_HATCHERY,
+                TargetWorldSpacePos = new Point2D { X = site.X, Y = site.Y },
+                QueueCommand = queued
+            };
+            command.UnitTags.Add(workerTag);
+            return new SC2Action
+            {
+                ActionRaw = new ActionRaw { UnitCommand = command }
+            };
+        }
+
         // --- 13-B3 extractor trick (owner spec 2026-10-15 22:20) -------------------
 
         // True while the worker's book waits on the VaWalkRedirect gate row (the
@@ -3722,6 +3837,27 @@ namespace BabySharkBot.Managers
                 && runtimeWorker.UnitTag != 0
                 && runtimeWorker.UnitTag == _b3TrickWorkerTag
                 && (_b3TrickPhase == 1 || _b3TrickPhase == 2);
+        }
+
+        // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): true while B3's
+        // book sits on the ONE mhwalk gather row — the 25-frame far-mineral
+        // walk. A collision detour would replace the ONE walk with a detour
+        // SMART and the RelativeFrame-25 return row would fire from a
+        // suspended book (same failure as the 23:09 run). Skip collision
+        // intervention for this worker ONLY while that row is pending.
+        private static bool IsB3MacroHatcheryWalker(RuntimeWorkerState runtimeWorker)
+        {
+            if (runtimeWorker == null
+                || runtimeWorker.CurInstrIdx < 0
+                || runtimeWorker.CurInstrIdx >= runtimeWorker.Instructions.Count)
+            {
+                return false;
+            }
+
+            var instruction = runtimeWorker.Instructions[runtimeWorker.CurInstrIdx];
+            return instruction != null
+                && string.Equals(instruction.InstructionSet, "mhwalk", StringComparison.OrdinalIgnoreCase)
+                && instruction.Command == WorkerInstructionCommand.Gather;
         }
 
         // The main-base VA geyser for the current spawn (persisted ordering + label).
@@ -3919,12 +4055,30 @@ namespace BabySharkBot.Managers
                 var worker = units.FirstOrDefault(unit => unit != null && unit.Tag == _b3TrickWorkerTag);
                 if (worker != null
                     && WorkerTypes.Contains((UnitTypes)worker.UnitType)
-                    && Settings.RuntimeWorkers.TryGetValue(_b3TrickWorkerTag, out var runtimeWorker)
-                    && Settings.RuntimeInstructionSets.TryGetValue(B3ReturnInstructionSet, out var returnBook))
+                    && Settings.RuntimeWorkers.TryGetValue(_b3TrickWorkerTag, out var runtimeWorker))
                 {
-                    runtimeWorker.LoadInstructions(B3ReturnInstructionSet, returnBook, Settings.GetRelativeFrame(_currentFrame));
-                    _b3TrickPhase = 3;
-                    Console.WriteLine($"[EXTRACTOR TRICK] cancel complete — {B3ReturnInstructionSet} loaded worker={_b3TrickWorkerTag} frame={_currentFrame}");
+                    // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): after
+                    // the trick, prefer the "b3mh" book (mine BB once -> 25-frame
+                    // far-mineral walk -> return cargo -> MH site -> wait 275 ->
+                    // morph). "b3ret" remains the fallback when the far-mineral
+                    // geometry was unavailable at onboarding.
+                    var bookName = B3ReturnInstructionSet;
+                    if (!Settings.RuntimeInstructionSets.TryGetValue(B3MacroHatcheryInstructionSet, out var book)
+                        || book == null)
+                    {
+                        Settings.RuntimeInstructionSets.TryGetValue(B3ReturnInstructionSet, out book);
+                    }
+                    else
+                    {
+                        bookName = B3MacroHatcheryInstructionSet;
+                    }
+
+                    if (book != null)
+                    {
+                        runtimeWorker.LoadInstructions(bookName, book, Settings.GetRelativeFrame(_currentFrame));
+                        _b3TrickPhase = 3;
+                        Console.WriteLine($"[EXTRACTOR TRICK] cancel complete — {bookName} loaded worker={_b3TrickWorkerTag} frame={_currentFrame}");
+                    }
                 }
             }
 
@@ -3954,6 +4108,77 @@ namespace BabySharkBot.Managers
                 && unit.UnitType == (uint)UnitTypes.ZERG_EXTRACTOR
                 && unit.BuildProgress < maxProgress
                 && DistanceSquared(new Vector2Dto(unit.Pos.X, unit.Pos.Y), new Vector2Dto(vaX, vaY)) <= 4.0f);
+        }
+
+        // --- B3 Macro Hatchery test (owner spec 2026-10-16 18:35) ---------------
+
+        // Milestone watcher. SUCCESS: a self hatchery (the morphing drone's new
+        // unit type) is observed within 3u of the site. FAILURE: the verify
+        // window elapsed with none — the placement was rejected or the morph
+        // never engaged (e.g. the bank held 275 while the morph prices at 300;
+        // see MacroHatcheryBuildMinerals). Either way the bot freezes: loud
+        // log, persistent on-screen banner, Debugger.Break for a VS session.
+        private void UpdateB3MacroHatcheryTest(ResponseObservation observation)
+        {
+            if (_b3MhBuildIssuedFrame < 0 || _b3MhResolved)
+            {
+                return;
+            }
+
+            var site = ResolveMacroHatcherySite();
+            var units = observation?.Observation?.RawData?.Units;
+            if (units != null && site != null)
+            {
+                var hatchery = units.FirstOrDefault(unit => unit != null
+                    && unit.Alliance == Alliance.Self
+                    && unit.UnitType == (uint)UnitTypes.ZERG_HATCHERY
+                    && DistanceSquared(new Vector2Dto(unit.Pos.X, unit.Pos.Y), site) <= 9.0f);
+                if (hatchery != null)
+                {
+                    ResolveB3MacroHatcheryTest("SUCCESS",
+                        $"hatchery tag={hatchery.Tag} progress={(int)(hatchery.BuildProgress * 100)}% at ({hatchery.Pos.X:F1},{hatchery.Pos.Y:F1})");
+                    return;
+                }
+            }
+
+            if (_currentFrame > _b3MhBuildIssuedFrame + B3MhBuildVerifyFrames)
+            {
+                ResolveB3MacroHatcheryTest("FAILURE",
+                    site != null
+                        ? $"no hatchery within {B3MhBuildVerifyFrames} frames of the build order — placement rejected at ({site.X:F1},{site.Y:F1}) or the morph never engaged (bank={_currentMinerals})"
+                        : $"Macro Hatchery site never resolved — placement rejected or the morph never engaged (bank={_currentMinerals})");
+            }
+        }
+
+        private void ResolveB3MacroHatcheryTest(string result, string detail)
+        {
+            _b3MhResolved = true;
+            Settings.MacroHatcheryTestFrozen = true;
+            _b3MhBanner = $"MACRO HATCHERY {result} — {detail}";
+            Console.WriteLine($"[MACRO HATCHERY TEST] *** {result} *** {detail} frame={_currentFrame} — BOT FROZEN (unit commands stripped; debug draws alive)");
+            if (Debugger.IsAttached)
+            {
+                Debugger.Break();
+            }
+        }
+
+        // Re-drawn every frame while frozen so the banner survives the freeze
+        // (the build manager's circles keep drawing too).
+        private void DrawB3MacroHatcheryBanner()
+        {
+            if (!ManagerDebugService.IsDebugEnabled || string.IsNullOrEmpty(_b3MhBanner))
+            {
+                return;
+            }
+
+            var site = ResolveMacroHatcherySite();
+            var color = _b3MhBanner.Contains("SUCCESS")
+                ? new Color { R = 0, G = 255, B = 0 }
+                : new Color { R = 255, G = 0, B = 0 };
+            var anchor = site != null
+                ? new Point { X = site.X, Y = site.Y, Z = 16 }
+                : new Point { X = 50, Y = 50, Z = 16 };
+            ManagerDebugService.DrawText(_b3MhBanner, anchor, color, 20);
         }
 
         private static SC2Action CreateRawUnitCommandAction(Abilities ability, ulong unitTag)

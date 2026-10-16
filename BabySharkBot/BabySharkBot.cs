@@ -518,6 +518,16 @@ namespace BabySharkBot
                     Console.WriteLine(exception.ToString());
                 }
 
+                // B3 Macro Hatchery test freeze (owner spec 2026-10-16 18:35):
+                // once the build milestone resolves, strip every manager action
+                // so the scene stays inspectable. Debug draws never ride this
+                // list — they go through the separate DrawRequest sent above —
+                // so the banner and circles keep rendering while frozen.
+                if (Settings.MacroHatcheryTestFrozen)
+                {
+                    actions.Clear();
+                }
+
                 return actions;
             }
 
