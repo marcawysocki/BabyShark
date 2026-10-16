@@ -6,6 +6,7 @@ using System.IO;
 using System.Text.Json;
 using SC2APIProtocol;
 using Sharky;
+using Sharky.Builds.BuildingPlacement;
 using Sharky.Managers;
 using Sharky.DefaultBot;
 using BabySharkBot.Services;
@@ -32,6 +33,7 @@ namespace BabySharkBot.Managers
         private MineralLabelService _mineralLabelService;
         private VespeneLabelService _vespeneLabelService;
         private SpawningPoolPlacementService _spawningPoolPlacementService;
+        private MacroHatcheryPlacementService _macroHatcheryPlacementService;
         private bool _started;
         private bool _labelsInitialized;
         private int _greedyChainStartIndex = -1;
@@ -43,6 +45,9 @@ namespace BabySharkBot.Managers
         private readonly HashSet<ulong> _jitMhStartupLogs = new HashSet<ulong>();
         private readonly HashSet<ulong> _ccawStartupLogs = new HashSet<ulong>();
         private readonly HashSet<ulong> _bumpStartupLogs = new HashSet<ulong>();
+        private int _macroHatcheryNextAttemptFrame;
+        private string _macroHatcheryLastError = string.Empty;
+        private bool _macroHatcheryReferenceLogged;
         private readonly OngoingMapData _ongoingMapData = new OngoingMapData();
         private bool _frameZeroInstructionListsWritten;
         // Temp-drone onboarding (owner spec 2026-10-13): the copied team.Workers
@@ -138,6 +143,7 @@ namespace BabySharkBot.Managers
             UpdateRuntimeLabels();
             OnboardNewTempDrones(frame);
             SeedRuntimeWorkerInstructions(frame);
+            UpdateMacroHatcheryPlacement(frame, observation);
             if (frame == 0 && !_frameZeroInstructionListsWritten)
             {
                 WriteFrameZeroInstructionLists();
@@ -176,6 +182,8 @@ namespace BabySharkBot.Managers
             }
 
             var frame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
+            _macroHatcheryPlacementService ??= new MacroHatcheryPlacementService(_defaultBot);
+            _macroHatcheryPlacementService.EnsureMapDataInitialized(gameInfo);
             var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
             BuildGreedyMineralChainFromObservation(frame);
             CalculateCcaWaitPointsForCurrentSpawn();
@@ -202,6 +210,261 @@ namespace BabySharkBot.Managers
             }
             LogStartupInstructionSummary(startIndex);
             _started = true;
+        }
+
+        // Macro Hatchery placement (owner spec 2026-10-16): corner wall at the
+        // top of the ramp, center 2.5 from the wall, touching the ramp edge on
+        // one side. Independent of the vespene chain: Sharky's WallDataService
+        // generation needs BaseData fully populated, which is not guaranteed at
+        // label-init time (run12: GetWallData threw ArgumentNullException on the
+        // first frame and the vespene chain never re-ran the block). So this
+        // retries on a cooldown until it latches, then draws the footprint
+        // circle every frame (green = spec buildable, yellow = spiral-adjusted,
+        // red = failed) so the spot stays visible in-game for the first-attempt
+        // timing/validity check.
+        private MacroHatcheryPlacement _macroHatcheryPlacement;
+
+        private void UpdateMacroHatcheryPlacement(int frame, ResponseObservation observation)
+        {
+            var mapData = Globals.CurrentMapData;
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var townhall = mapData?.StartingTownHall?.ElementAtOrDefault(startIndex);
+            if (mapData == null || townhall == null || frame < 0)
+            {
+                return;
+            }
+
+            // Reference capture (owner alignment tool): if the owner places a
+            // real hatchery away from the main base, log its exact center once
+            // — that is the ground-truth intended Macro Hatchery spot, no
+            // pixel-guessing from screenshots.
+            if (!_macroHatcheryReferenceLogged && observation?.Observation?.RawData?.Units != null)
+            {
+                var reference = observation.Observation.RawData.Units.FirstOrDefault(unit => unit != null
+                    && unit.Alliance == Alliance.Self
+                    && unit.UnitType == (uint)UnitTypes.ZERG_HATCHERY
+                    && unit.Pos != null
+                    && Math.Abs(unit.Pos.X - townhall.X) + Math.Abs(unit.Pos.Y - townhall.Y) > 10f);
+                if (reference != null)
+                {
+                    _macroHatcheryReferenceLogged = true;
+                    Console.WriteLine($"[MACRO HATCHERY] REFERENCE HATCHERY tag={reference.Tag} center=({reference.Pos.X:F2},{reference.Pos.Y:F2}) start={startIndex} frame={frame}");
+                }
+            }
+
+            var latched = mapData.MacroHatcheryPlacements != null
+                && mapData.MacroHatcheryPlacements.Count > startIndex
+                && mapData.MacroHatcheryPlacements[startIndex] != null;
+
+            // Always (re)compute the in-memory placement object once per run —
+            // even when a point is latched from serialized map data — so the
+            // Wall geometry is available for diagnostics/drawing (run21: the
+            // reconstructed-from-disk object had no Wall and the buildable-grid
+            // dump silently skipped).
+            if (_macroHatcheryPlacement == null)
+            {
+                if (!latched && frame < _macroHatcheryNextAttemptFrame)
+                {
+                    return;
+                }
+
+                if (!latched)
+                {
+                    _macroHatcheryNextAttemptFrame = frame + 30;
+                }
+
+                try
+                {
+                    _macroHatcheryPlacementService ??= new MacroHatcheryPlacementService(_defaultBot);
+                    var enemyTownhall = mapData.StartingTownHall?
+                        .Select((candidate, index) => (candidate, index))
+                        .FirstOrDefault(entry => entry.candidate != null && entry.index != startIndex)
+                        .candidate;
+                    var macro = _macroHatcheryPlacementService.GetPlacement(Settings.CurrentMapName, townhall, enemyTownhall);
+                    if (macro?.Final == null)
+                    {
+                        return;
+                    }
+
+                    while (mapData.MacroHatcheryPlacements.Count <= startIndex)
+                    {
+                        mapData.MacroHatcheryPlacements.Add(null);
+                    }
+
+                    _macroHatcheryPlacement = macro;
+                    var final = macro.Final;
+                    mapData.MacroHatcheryPlacements[startIndex] = new Vector2Dto(final.X, final.Y, townhall.Z);
+                    var spec = macro.Spec;
+                    var adjusted = macro.Adjusted;
+                    Console.WriteLine($"[MACRO HATCHERY] spec=({spec.X:F2},{spec.Y:F2}) valid={macro.SpecValid}"
+                        + (adjusted != null ? $" adjusted=({adjusted.X:F2},{adjusted.Y:F2})" : " adjusted=none")
+                        + $" final=({final.X:F2},{final.Y:F2}) latchedFromDisk={latched} start={startIndex} map={Settings.CurrentMapName} frame={frame}");
+                    Console.WriteLine($"[MACRO HATCHERY] candidates: {string.Join(" ", macro.Candidates.Take(8).Select(c => $"({c.X:F1},{c.Y:F1})"))}");
+                    // Owner offset is already baked into Final; log the pre-offset
+                    // grid candidate + the validity of the final point itself.
+                    var gridCandidate = adjusted ?? spec;
+                    var finalValid = _defaultBot.BuildingService != null
+                        && _defaultBot.BuildingService.AreaBuildable(final.X, final.Y, MacroHatcheryPlacementService.HatcheryRadius);
+                    Console.WriteLine($"[MACRO HATCHERY] gridCandidate=({gridCandidate.X:F2},{gridCandidate.Y:F2}) final valid={finalValid} (owner offset left {MacroHatcheryOwnerOffset.Left} / up {MacroHatcheryOwnerOffset.Up} baked into final)");
+                    if (adjusted == null)
+                    {
+                        RunBuildableDiagnostics(mapData, startIndex, townhall, frame);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    var message = ex.Message ?? ex.ToString();
+                    if (message != _macroHatcheryLastError)
+                    {
+                        _macroHatcheryLastError = message;
+                        Console.WriteLine($"[MACRO HATCHERY] placement calc failed frame={frame}: {ex}");
+                    }
+                }
+            }
+
+            if (_macroHatcheryPlacement != null)
+            {
+                _macroHatcheryPlacementService?.DrawPlacement(_macroHatcheryPlacement);
+            }
+        }
+
+        // One-shot diagnostic: when the spec point is invalid and the spiral
+        // found nothing, probe AreaBuildable at known reference points to tell
+        // "the pocket is genuinely unbuildable" apart from "AreaBuildable is
+        // broken" (run18: nothing legal within 3u of the spec point).
+        private bool _macroHatcheryDiagnosticsLogged;
+
+        private void RunBuildableDiagnostics(MawBaseLocationData mapData, int startIndex, Vector2Dto townhall, int frame)
+        {
+            if (_macroHatcheryDiagnosticsLogged || _defaultBot.BuildingService == null)
+            {
+                return;
+            }
+            _macroHatcheryDiagnosticsLogged = true;
+
+            var probes = new List<string>();
+            void Probe(string name, float x, float y)
+            {
+                var buildable = _defaultBot.BuildingService.AreaBuildable(x, y, MacroHatcheryPlacementService.HatcheryRadius);
+                var cell = _defaultBot.MapData != null && x >= 0 && y >= 0 && x < _defaultBot.MapData.MapWidth && y < _defaultBot.MapData.MapHeight
+                    ? _defaultBot.MapData.Map[(int)x, (int)y]
+                    : null;
+                probes.Add($"{name}=({x:F1},{y:F1}):{(buildable ? "Y" : "N")}/cell{(cell?.Buildable == true ? "Y" : "N")}");
+            }
+
+            Probe("north", townhall.X, townhall.Y + 8);
+            Probe("south", townhall.X, townhall.Y - 8);
+            Probe("east", townhall.X + 8, townhall.Y);
+            Probe("west", townhall.X - 8, townhall.Y);
+            var pool = mapData.SpawningPoolPlacements?.ElementAtOrDefault(startIndex);
+            if (pool != null)
+            {
+                Probe("pool", pool.X, pool.Y);
+            }
+
+            Console.WriteLine($"[MACRO HATCHERY] diagnostics start={startIndex} frame={frame}: {string.Join(" ", probes)}");
+            DumpBuildableAroundRamp(mapData, startIndex, townhall);
+        }
+
+        // ASCII dump of the buildable grid around the ramp entrance (one shot).
+        // 'B' buildable cell, '.' not, 'S' spec point, 'w'/'W' VIRTUAL wall
+        // segment cell ('w' = buildable underneath — the segments are computed
+        // terran wall-off points, not real map structures, so the underlying
+        // cell may be legal), 'R' ramp center, 'H' a 5x5-all-buildable hatchery
+        // center found by brute-force scan. Ground truth for where a hatchery
+        // actually fits near the ramp.
+        private void DumpBuildableAroundRamp(MawBaseLocationData mapData, int startIndex, Vector2Dto townhall)
+        {
+            var map = _defaultBot.MapData?.Map;
+            var buildingService = _defaultBot.BuildingService;
+            if (map == null || buildingService == null || _macroHatcheryPlacement?.Wall?.RampCenter == null)
+            {
+                return;
+            }
+
+            var ramp = _macroHatcheryPlacement.Wall.RampCenter;
+            var spec = _macroHatcheryPlacement.Spec;
+            var walls = new Dictionary<(int, int), bool>();
+            foreach (var segment in _macroHatcheryPlacement.Wall.WallSegments ?? new List<WallSegment>())
+            {
+                if (segment?.Position == null)
+                {
+                    continue;
+                }
+                var half = segment.Size / 2f;
+                for (var x = (int)Math.Floor(segment.Position.X - half); x <= (int)Math.Ceiling(segment.Position.X + half); x++)
+                {
+                    for (var y = (int)Math.Floor(segment.Position.Y - half); y <= (int)Math.Ceiling(segment.Position.Y + half); y++)
+                    {
+                        walls[(x, y)] = x >= 0 && y >= 0 && x < _defaultBot.MapData.MapWidth && y < _defaultBot.MapData.MapHeight
+                            && map[x, y].Buildable;
+                    }
+                }
+            }
+
+            // Brute-force legal hatchery centers on the .5 grid in the window.
+            var hatcheryCenters = new HashSet<(int, int)>();
+            var minX = (int)ramp.X - 12;
+            var maxX = (int)ramp.X + 12;
+            var minY = (int)ramp.Y - 12;
+            var maxY = (int)ramp.Y + 12;
+            for (var halfX = minX * 2 + 1; halfX <= maxX * 2 + 1; halfX += 2)
+            {
+                for (var halfY = minY * 2 + 1; halfY <= maxY * 2 + 1; halfY += 2)
+                {
+                    var cx = halfX / 2f;
+                    var cy = halfY / 2f;
+                    if (buildingService.AreaBuildable(cx, cy, MacroHatcheryPlacementService.HatcheryRadius))
+                    {
+                        hatcheryCenters.Add(((int)cx, (int)cy));
+                    }
+                }
+            }
+
+            var centerList = hatcheryCenters
+                .OrderBy(c => (c.Item1 - ramp.X) * (c.Item1 - ramp.X) + (c.Item2 - ramp.Y) * (c.Item2 - ramp.Y))
+                .Take(12)
+                .ToList();
+            Console.WriteLine($"[MACRO HATCHERY] legal hatchery centers near ramp (nearest 12): {string.Join(" ", centerList.Select(c => $"({c.Item1}.5,{c.Item2}.5)"))}");
+
+            Console.WriteLine("[MACRO HATCHERY] buildable grid around ramp (x increases right, y increases down):");
+            for (var y = minY; y <= maxY; y++)
+            {
+                var row = new System.Text.StringBuilder();
+                for (var x = minX; x <= maxX; x++)
+                {
+                    if (x < 0 || y < 0 || x >= _defaultBot.MapData.MapWidth || y >= _defaultBot.MapData.MapHeight)
+                    {
+                        row.Append(' ');
+                        continue;
+                    }
+                    if (spec != null && (int)spec.X == x && (int)spec.Y == y)
+                    {
+                        row.Append('S');
+                    }
+                    else if ((int)ramp.X == x && (int)ramp.Y == y)
+                    {
+                        row.Append('R');
+                    }
+                    else if (walls.TryGetValue((x, y), out var wallBuildable))
+                    {
+                        row.Append(wallBuildable ? 'w' : 'W');
+                    }
+                    else if ((int)townhall.X == x && (int)townhall.Y == y)
+                    {
+                        row.Append('T');
+                    }
+                    else if (hatcheryCenters.Contains((x, y)))
+                    {
+                        row.Append('H');
+                    }
+                    else
+                    {
+                        row.Append(map[x, y].Buildable ? 'B' : '.');
+                    }
+                }
+                Console.WriteLine($"[MACRO HATCHERY] y={y,3} {row}");
+            }
         }
 
         private void CalculateCcaWaitPointsForCurrentSpawn()
