@@ -353,6 +353,13 @@ namespace BabySharkBot.Services
         /// <paramref name="maxRadius"/>, nearest distance wins (exact target
         /// first when it happens to be legal). Falls back to the grid-derived
         /// chosen point when nothing is legal nearby.
+        ///
+        /// Owner pass 2 (same day): "No obstructions" — the wall's 3x3
+        /// building segments are VIRTUAL (the placement grid marks their
+        /// cells buildable), so a plain legality snap can park the hatchery
+        /// right on top of the future wall. Footprints that intersect any
+        /// wall segment box are rejected here; edge-touching is allowed (the
+        /// 3x3 Roach Warren will sit against the hatchery later).
         /// </summary>
         public MacroHatcheryPlacement WithOwnerTargetSnap(MacroHatcheryPlacement placement, float maxRadius = 8f)
         {
@@ -382,7 +389,16 @@ namespace BabySharkBot.Services
                         continue;
                     }
                     var point = new Point2D { X = x, Y = y };
-                    if (!IsBuildable(point))
+                    if (!IsBuildable(point) || OverlapsWallSegment(placement.Wall, point))
+                    {
+                        continue;
+                    }
+                    // Inside-the-base filter: the pocket south-east of the
+                    // ramp (toward the main hatchery) is the intended wall
+                    // corner; without this the nearest legal spot to the
+                    // arrow is across the ramp OUTSIDE the base (run34
+                    // picked (110,16) — the low ground past the ramp top).
+                    if (!InsideBaseSide(placement.Wall, point))
                     {
                         continue;
                     }
@@ -406,6 +422,57 @@ namespace BabySharkBot.Services
             placement.Final = best ?? chosen;
             placement.FinalValid = best != null;
             return placement;
+        }
+
+        /// <summary>
+        /// True when a 5x5 hatchery footprint centered at <paramref name="point"/>
+        /// intersects any wall segment's building box. Edge-touching (gap 0)
+        /// is allowed — the 3x3 Roach Warren will sit against the hatchery.
+        /// </summary>
+        private static bool OverlapsWallSegment(WallData? wall, Point2D point)
+        {
+            if (wall?.WallSegments == null)
+            {
+                return false;
+            }
+            foreach (var segment in wall.WallSegments)
+            {
+                if (segment?.Position == null)
+                {
+                    continue;
+                }
+                var half = segment.Size / 2f;
+                if (Math.Abs(point.X - segment.Position.X) < HatcheryRadius + half
+                    && Math.Abs(point.Y - segment.Position.Y) < HatcheryRadius + half)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// True when the point is on the base side of the ramp: strictly
+        /// closer to the base position than the ramp center is. The wall
+        /// corner pocket (where the owner placed his reference hatchery)
+        /// passes; the flat ground beyond the ramp top fails.
+        /// </summary>
+        private static bool InsideBaseSide(WallData? wall, Point2D point)
+        {
+            if (wall?.BasePosition == null || wall.RampCenter == null)
+            {
+                return true;
+            }
+            var baseX = wall.BasePosition.X;
+            var baseY = wall.BasePosition.Y;
+            var rampX = wall.RampCenter.X;
+            var rampY = wall.RampCenter.Y;
+            var rampDistX = rampX - baseX;
+            var rampDistY = rampY - baseY;
+            var pointDistX = point.X - baseX;
+            var pointDistY = point.Y - baseY;
+            return pointDistX * pointDistX + pointDistY * pointDistY
+                < rampDistX * rampDistX + rampDistY * rampDistY;
         }
 
         /// <summary>
@@ -507,6 +574,32 @@ namespace BabySharkBot.Services
             foreach (var option in placement.LegalNearOwnerTarget)
             {
                 _defaultBot.DebugService.DrawSphere(new Point { X = option.X, Y = option.Y, Z = 12 }, 0.4f, cyan);
+            }
+
+            // Blue wireframe boxes: the wall segments' 3x3 building
+            // footprints — virtual, so the placement grid marks them
+            // buildable, but they are real obstructions for the hatchery
+            // (owner pass 2026-10-16: "No obstructions").
+            if (placement.Wall?.WallSegments != null)
+            {
+                var blue = new Color { R = 80, G = 160, B = 255 };
+                foreach (var segment in placement.Wall.WallSegments)
+                {
+                    if (segment?.Position == null)
+                    {
+                        continue;
+                    }
+                    var half = segment.Size / 2f;
+                    var minX = segment.Position.X - half;
+                    var maxX = segment.Position.X + half;
+                    var minY = segment.Position.Y - half;
+                    var maxY = segment.Position.Y + half;
+                    var z = 12f;
+                    _defaultBot.DebugService.DrawLine(new Point { X = minX, Y = minY, Z = z }, new Point { X = maxX, Y = minY, Z = z }, blue);
+                    _defaultBot.DebugService.DrawLine(new Point { X = maxX, Y = minY, Z = z }, new Point { X = maxX, Y = maxY, Z = z }, blue);
+                    _defaultBot.DebugService.DrawLine(new Point { X = maxX, Y = maxY, Z = z }, new Point { X = minX, Y = maxY, Z = z }, blue);
+                    _defaultBot.DebugService.DrawLine(new Point { X = minX, Y = maxY, Z = z }, new Point { X = minX, Y = minY, Z = z }, blue);
+                }
             }
         }
 

@@ -312,10 +312,12 @@ namespace BabySharkBot.Managers
                         Console.WriteLine($"[MACRO HATCHERY] ownerTarget=({target.X:F2},{target.Y:F2}) final=({final.X:F2},{final.Y:F2}) finalValid={macro.FinalValid} snapDist={MathF.Sqrt(dx * dx + dy * dy):F2}"
                             + $" legalNear=[{string.Join(" ", macro.LegalNearOwnerTarget.Select(p => $"({p.X:F1},{p.Y:F1})"))}]");
                     }
-                    if (adjusted == null)
-                    {
-                        RunBuildableDiagnostics(mapData, startIndex, townhall, frame);
-                    }
+                    // Owner pass 2026-10-16: dump the buildable grid around the
+                    // ramp every game (one-shot) until the Macro Hatchery
+                    // location is settled — the wall segments themselves are
+                    // "virtual" and sit on buildable cells, so 'H' centers
+                    // can still overlap the future 3x3 wall buildings.
+                    RunBuildableDiagnostics(mapData, startIndex, townhall, frame);
                 }
                 catch (Exception ex)
                 {
