@@ -202,6 +202,70 @@ namespace BabySharkBot.Services
             });
         }
 
+        /// <summary>
+        /// Per-start owner placements (owner decisions 2026-10-16): the owner
+        /// placed reference hatcheries in test games and confirmed the spots.
+        /// Start 0 (SE base): (114,27) — from his annotated diagram. Start 1
+        /// (NW base): (23.5,116.5) — "The Start 1 location was correct put it
+        /// back" (the pre-pocket snap result he verified in-game).
+        ///
+        /// ┌───────────────────────────────────────────────────────────────┐
+        /// │ AGENT VERIFY (owner directive 2026-10-16): these are          │
+        /// │ HARDCODED per map + start. If the map updates or a new map    │
+        /// │ is added, verify against a live game (place a hatchery and    │
+        /// │ read the REFERENCE HATCHERY log) before trusting the table.   │
+        /// └───────────────────────────────────────────────────────────────┘
+        /// </summary>
+        public static class MacroHatcheryOwnerPlacements
+        {
+            public sealed class Entry
+            {
+                public Entry(float baseX, float baseY, float x, float y)
+                {
+                    Base = new Vector2(baseX, baseY);
+                    Center = new Point2D { X = x, Y = y };
+                }
+
+                /// <summary>The start's townhall — matched by proximity so the
+                /// entry follows the hardcoded start order.</summary>
+                public Vector2 Base { get; }
+                public Point2D Center { get; }
+            }
+
+            private static readonly Entry[] Entries =
+            {
+                // Magannatha AIE — Start 0, SE base (owner: "try 115.5 27")
+                new Entry(127.5f, 24.5f, 115.5f, 27.0f),
+                // Magannatha AIE — Start 1, NW base (owner-verified earlier)
+                new Entry(24.5f, 127.5f, 23.5f, 116.5f),
+            };
+
+            /// <summary>Returns the owner's placement for the start whose
+            /// townhall is nearest to <paramref name="basePosition"/>, within
+            /// 3u; null when no entry matches (fall back to the snap).</summary>
+            public static Point2D? Get(Point2D? basePosition)
+            {
+                if (basePosition == null)
+                {
+                    return null;
+                }
+                Entry? best = null;
+                var bestDist = float.MaxValue;
+                foreach (var entry in Entries)
+                {
+                    var dx = entry.Base.X - basePosition.X;
+                    var dy = entry.Base.Y - basePosition.Y;
+                    var dist = dx * dx + dy * dy;
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        best = entry;
+                    }
+                }
+                return best != null && bestDist <= 9f ? best.Center : null;
+            }
+        }
+
         /// <summary>Wall-flush candidate with its segment's door distance.</summary>
         public readonly struct MacroCandidate
         {
@@ -346,20 +410,14 @@ namespace BabySharkBot.Services
         }
 
         /// <summary>
-        /// Owner correction 2026-10-16: the offset target can land on the ramp
-        /// band (unbuildable). The final point is the nearest LEGAL .5-grid
-        /// placement to the owner target — as close to the indicated spot as
-        /// the flat ground allows. Exhaustive .5-grid scan within
-        /// <paramref name="maxRadius"/>, nearest distance wins (exact target
-        /// first when it happens to be legal). Falls back to the grid-derived
-        /// chosen point when nothing is legal nearby.
-        ///
-        /// Owner pass 2 (same day): "No obstructions" — the wall's 3x3
-        /// building segments are VIRTUAL (the placement grid marks their
-        /// cells buildable), so a plain legality snap can park the hatchery
-        /// right on top of the future wall. Footprints that intersect any
-        /// wall segment box are rejected here; edge-touching is allowed (the
-        /// 3x3 Roach Warren will sit against the hatchery later).
+        /// Owner decisions 2026-10-16 (final form): the owner placed reference
+        /// hatcheries in test games; those spots are HARDCODED per map+start
+        /// in MacroHatcheryOwnerPlacements and used directly. For unlisted
+        /// maps/starts, fall back to snapping to the nearest LEGAL .5-grid
+        /// placement on the base side of the ramp, targeted on the owner's
+        /// arrow offset. Note: Sharky's wall segments are generic protoss
+        /// suggestions and are NOT obstructions for the zerg wall (the
+        /// owner's verified spots sit on them) — no wall exclusion.
         /// </summary>
         public MacroHatcheryPlacement WithOwnerTargetSnap(MacroHatcheryPlacement placement, float maxRadius = 8f)
         {
@@ -368,6 +426,17 @@ namespace BabySharkBot.Services
             {
                 placement.Final = chosen;
                 placement.FinalValid = chosen != null && IsBuildable(chosen);
+                return placement;
+            }
+
+            // Owner's verified placement wins outright.
+            var ownerPlacement = MacroHatcheryOwnerPlacements.Get(placement.Wall?.BasePosition);
+            if (ownerPlacement != null)
+            {
+                placement.OwnerTarget = ownerPlacement;
+                placement.Final = ownerPlacement;
+                placement.FinalValid = IsBuildable(ownerPlacement);
+                placement.LegalNearOwnerTarget = new List<Point2D> { ownerPlacement };
                 return placement;
             }
 
@@ -389,15 +458,13 @@ namespace BabySharkBot.Services
                         continue;
                     }
                     var point = new Point2D { X = x, Y = y };
-                    if (!IsBuildable(point) || OverlapsWallSegment(placement.Wall, point))
+                    if (!IsBuildable(point))
                     {
                         continue;
                     }
-                    // Inside-the-base filter: the pocket south-east of the
-                    // ramp (toward the main hatchery) is the intended wall
-                    // corner; without this the nearest legal spot to the
-                    // arrow is across the ramp OUTSIDE the base (run34
-                    // picked (110,16) — the low ground past the ramp top).
+                    // Inside-the-base filter: without this the nearest legal
+                    // spot to the arrow can jump across the ramp OUTSIDE the
+                    // base (run34 picked (110,16) — low ground past the ramp).
                     if (!InsideBaseSide(placement.Wall, point))
                     {
                         continue;
@@ -425,37 +492,9 @@ namespace BabySharkBot.Services
         }
 
         /// <summary>
-        /// True when a 5x5 hatchery footprint centered at <paramref name="point"/>
-        /// intersects any wall segment's building box. Edge-touching (gap 0)
-        /// is allowed — the 3x3 Roach Warren will sit against the hatchery.
-        /// </summary>
-        private static bool OverlapsWallSegment(WallData? wall, Point2D point)
-        {
-            if (wall?.WallSegments == null)
-            {
-                return false;
-            }
-            foreach (var segment in wall.WallSegments)
-            {
-                if (segment?.Position == null)
-                {
-                    continue;
-                }
-                var half = segment.Size / 2f;
-                if (Math.Abs(point.X - segment.Position.X) < HatcheryRadius + half
-                    && Math.Abs(point.Y - segment.Position.Y) < HatcheryRadius + half)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        /// <summary>
         /// True when the point is on the base side of the ramp: strictly
-        /// closer to the base position than the ramp center is. The wall
-        /// corner pocket (where the owner placed his reference hatchery)
-        /// passes; the flat ground beyond the ramp top fails.
+        /// closer to the base position than the ramp center is. The flat
+        /// ground beyond the ramp top fails this filter.
         /// </summary>
         private static bool InsideBaseSide(WallData? wall, Point2D point)
         {
@@ -574,32 +613,6 @@ namespace BabySharkBot.Services
             foreach (var option in placement.LegalNearOwnerTarget)
             {
                 _defaultBot.DebugService.DrawSphere(new Point { X = option.X, Y = option.Y, Z = 12 }, 0.4f, cyan);
-            }
-
-            // Blue wireframe boxes: the wall segments' 3x3 building
-            // footprints — virtual, so the placement grid marks them
-            // buildable, but they are real obstructions for the hatchery
-            // (owner pass 2026-10-16: "No obstructions").
-            if (placement.Wall?.WallSegments != null)
-            {
-                var blue = new Color { R = 80, G = 160, B = 255 };
-                foreach (var segment in placement.Wall.WallSegments)
-                {
-                    if (segment?.Position == null)
-                    {
-                        continue;
-                    }
-                    var half = segment.Size / 2f;
-                    var minX = segment.Position.X - half;
-                    var maxX = segment.Position.X + half;
-                    var minY = segment.Position.Y - half;
-                    var maxY = segment.Position.Y + half;
-                    var z = 12f;
-                    _defaultBot.DebugService.DrawLine(new Point { X = minX, Y = minY, Z = z }, new Point { X = maxX, Y = minY, Z = z }, blue);
-                    _defaultBot.DebugService.DrawLine(new Point { X = maxX, Y = minY, Z = z }, new Point { X = maxX, Y = maxY, Z = z }, blue);
-                    _defaultBot.DebugService.DrawLine(new Point { X = maxX, Y = maxY, Z = z }, new Point { X = minX, Y = maxY, Z = z }, blue);
-                    _defaultBot.DebugService.DrawLine(new Point { X = minX, Y = maxY, Z = z }, new Point { X = minX, Y = minY, Z = z }, blue);
-                }
             }
         }
 
