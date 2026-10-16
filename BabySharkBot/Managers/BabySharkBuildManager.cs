@@ -1812,17 +1812,18 @@ namespace BabySharkBot.Managers
                 {
                     AddB3ExtractorTrickChapter(instructions, b3WalkMineral, b3VaGeyser);
                     RegisterB3ReturnBook(startIndex, onlyTarget);
-                    // B3 Macro Hatchery test chapter (owner spec 2026-10-16 18:35):
-                    // after the extractor trick the driver loads "b3mh" INSTEAD of
-                    // the plain "b3ret" BB loop — mine BB once (pickup, carrying),
-                    // ONE mineral walk for 25 frames to a mineral in the OPPOSITE
-                    // start location, return cargo, move to the Macro Hatchery
-                    // site, wait for 275, morph the hatchery. Built only when the
-                    // far-start mineral exists; otherwise the driver falls back
-                    // to "b3ret" exactly as before.
-                    if (TryGetB3MacroHatcheryFarMineral(startIndex, out var b3FarMineral))
+                    // B3 Macro Hatchery test chapter (owner spec 2026-10-16 18:35,
+                    // walk target corrected 19:42): after the extractor trick the
+                    // driver loads "b3mh" INSTEAD of the plain "b3ret" BB loop —
+                    // mine BB once (pickup, carrying), ONE mineral walk for 25
+                    // frames to the mineral at the SIDE OF THE HATCHERY (the
+                    // start's own mineral nearest the townhall), return cargo,
+                    // move to the Macro Hatchery site, wait for 275, morph the
+                    // hatchery. Built only when that mineral exists; otherwise
+                    // the driver falls back to "b3ret" exactly as before.
+                    if (TryGetB3MacroHatcherySideMineral(startIndex, out var b3SideMineral))
                     {
-                        RegisterB3MacroHatcheryBook(startIndex, onlyTarget, b3FarMineral);
+                        RegisterB3MacroHatcheryBook(startIndex, onlyTarget, b3SideMineral);
                     }
                     return instructions;
                 }
@@ -2483,62 +2484,55 @@ namespace BabySharkBot.Managers
         // suspect (one-line change; the freeze banner will say FAILURE).
         private const int MacroHatcheryBuildMinerals = 275;
 
-        // The mineral in the OPPOSITE start location for B3's post-trick
-        // 25-frame mineral walk. Any far mineral works — the walk is
-        // re-directed after 25 frames — so take the first ordered one with
-        // valid geometry from the first start list that is not ours.
-        private static bool TryGetB3MacroHatcheryFarMineral(int startIndex, out OrderedMineral farMineral)
+        // The mineral at the SIDE OF THE HATCHERY for B3's post-trick 25-frame
+        // mineral walk (owner correction 2026-10-16 19:42: "Mineral Walk to
+        // side of the Hatchery for 25 frames") — the start's OWN mineral
+        // nearest the townhall (TA on Magannatha), so the walk from BB passes
+        // the hatchery and the return-cargo lands at the hatchery side. Falls
+        // back to the plain BB loop when unavailable.
+        private static bool TryGetB3MacroHatcherySideMineral(int startIndex, out OrderedMineral sideMineral)
         {
-            farMineral = null;
-            var allStarts = Globals.CurrentMapData?.OrderedMainMinerals;
-            if (allStarts == null)
+            sideMineral = null;
+            var townhall = Globals.CurrentMapData?.StartingTownHall?.ElementAtOrDefault(startIndex);
+            var minerals = Globals.CurrentMapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex);
+            if (townhall == null || minerals == null)
             {
                 return false;
             }
 
-            for (var index = 0; index < allStarts.Count; index++)
-            {
-                if (index == startIndex)
-                {
-                    continue;
-                }
-
-                var candidate = allStarts[index]
-                    ?.FirstOrDefault(mineral => mineral != null
-                        && mineral.UnitTag != 0
-                        && HasNonZeroPoint(mineral.Position));
-                if (candidate != null)
-                {
-                    farMineral = candidate;
-                    return true;
-                }
-            }
-
-            return false;
+            sideMineral = minerals
+                .Where(mineral => mineral != null
+                    && mineral.UnitTag != 0
+                    && HasNonZeroPoint(mineral.Position))
+                .OrderBy(mineral => DistanceSquared(mineral.Position, townhall))
+                .FirstOrDefault();
+            return sideMineral != null;
         }
 
-        // B3 Macro Hatchery test book (owner spec 2026-10-16 18:35, verbatim):
-        // "have it mine BB once after the extractor trick. Have it Mineral walk
-        // for 25 frames to a mineral in the opposite start location. at 25 frames
-        // have it return cargo, then move to the Macro hatchery location and wait
-        // for 275 minerals and see if it will build in that spot."
+        // B3 Macro Hatchery test book (owner spec 2026-10-16 18:35, walk target
+        // corrected 19:42 — "the set after the harvest needs to Mineral Walk to
+        // side of the Hatchery for 25 frames. At 25 Frames issue a return
+        // cargo, when Cargo has returned issue a move to the Macro Hatch
+        // Location"):
         //   set 1 (stage/jitMH/wait): the ONE standard BB harvest — stage at BB's
         //            CCA wait point, release gate, self-pair harvest rows, then the
         //            ability gate (1183 -> 1184) that passes the pickup frame, so
         //            the mineral walk below is issued CARRYING.
         //   set 2 (mhwalk): ONE mineral walk — a single unqueued Smart Harvest on
-        //            the opposite start's mineral — then a Return row at
-        //            RelativeFrame 25 ("at 25 frames have it return cargo"). The
-        //            RelativeFrame counts from the pickup gate, i.e. from the
+        //            the start's own mineral nearest the townhall (the
+        //            hatchery-side mineral, TA on Magannatha) — then a Return row
+        //            at RelativeFrame 25 ("at 25 frames have it return cargo").
+        //            The RelativeFrame counts from the pickup gate, i.e. from the
         //            walk start (same pattern as the extractor-trick xwalk set).
         //            Return resolves the town hall through the BB mining target.
         //   set 3 (wait/mhsite): a plain handoff wait (passes when the deposit
-        //            lands), THEN the move to the Macro Hatchery site — the move
-        //            must not overwrite a return that is still walking.
+        //            lands — "when Cargo has returned"), THEN the move to the
+        //            Macro Hatchery site — the move must not overwrite a return
+        //            that is still walking.
         //   set 4 (mhsite): the mineral-gated wait (275) and the TERMINAL
         //            BuildHatchery row — the drone morphs into the hatchery and
         //            the mining manager's milestone watcher owns the rest.
-        private static void RegisterB3MacroHatcheryBook(int startIndex, MiningTargetDto bbTarget, OrderedMineral farMineral)
+        private static void RegisterB3MacroHatcheryBook(int startIndex, MiningTargetDto bbTarget, OrderedMineral sideMineral)
         {
             var book = new List<WorkerInstruction>();
 
@@ -2556,7 +2550,7 @@ namespace BabySharkBot.Managers
             {
                 InstructionSet = "mhwalk",
                 Command = WorkerInstructionCommand.Gather,
-                TargetId = farMineral.UnitTag,
+                TargetId = sideMineral.UnitTag,
                 NoCondition = true,
                 Queue = false
             });

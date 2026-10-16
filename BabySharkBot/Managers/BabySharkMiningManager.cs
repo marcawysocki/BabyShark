@@ -4090,9 +4090,10 @@ namespace BabySharkBot.Managers
                 {
                     // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): after
                     // the trick, prefer the "b3mh" book (mine BB once -> 25-frame
-                    // far-mineral walk -> return cargo -> MH site -> wait 275 ->
-                    // morph). "b3ret" remains the fallback when the far-mineral
-                    // geometry was unavailable at onboarding.
+                    // hatchery-side mineral walk -> return cargo -> MH site ->
+                    // wait 275 -> morph). "b3ret" remains the fallback when the
+                    // hatchery-side mineral geometry was unavailable at
+                    // onboarding.
                     var bookName = B3ReturnInstructionSet;
                     if (!Settings.RuntimeInstructionSets.TryGetValue(B3MacroHatcheryInstructionSet, out var book)
                         || book == null)
