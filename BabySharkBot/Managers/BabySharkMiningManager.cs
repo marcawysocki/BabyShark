@@ -3715,34 +3715,19 @@ namespace BabySharkBot.Managers
             return live?.UnitTag ?? 0;
         }
 
-        // Redirect gate for B3's ONE post-walk move (owner spec 2026-10-15 16:13):
-        // resolves to the VA geyser position only once the walker is closer to the
-        // walk mineral's center than that mineral's harvest-standoff distance + 0.2u
-        // — just before arrival, never on the mineral. Until then the row's point is
-        // null, so the Move row waits silently while the ONE issued mineral walk
-        // keeps carrying the worker. No minerals are gathered: the redirect fires
-        // before the harvest can complete.
+        // Point resolver for B3's ONE post-walk move to VA. Timing comes from the
+        // book row's RelativeFrame (owner spec 2026-10-16 00:20): the xwalk move row
+        // fires a fixed number of frames after the mineral walk starts — measured at
+        // 74 frames end-to-end, the move issues at relative frame 72, two frames
+        // before the walker reaches the mineral — so this resolver is UNGATED and
+        // simply returns the VA geyser position (the earlier distance-based gate
+        // missed the arrival window and let the worker mine the walk mineral).
+        // Returns null only when the VA geometry is unavailable, in which case the
+        // row waits silently as before.
         private static Vector2Dto? ResolveVaWalkRedirectPoint(RuntimeWorkerState runtimeWorker, WorkerInstruction instruction)
         {
             var vaGeyser = ResolveVaGeyserEntry();
-            if (vaGeyser?.Position == null || !HasNonZeroPoint(vaGeyser.Position)
-                || runtimeWorker?.Position == null)
-            {
-                return null;
-            }
-
-            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-            var walkMineral = Globals.CurrentMapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)?
-                .FirstOrDefault(candidate => candidate != null && candidate.UnitTag == instruction.TargetId);
-            if (walkMineral?.Position == null || !HasNonZeroPoint(walkMineral.Position)
-                || walkMineral.HarvestPoint == null || !HasNonZeroPoint(walkMineral.HarvestPoint))
-            {
-                return null;
-            }
-
-            var harvestStandoff = MathF.Sqrt(DistanceSquared(walkMineral.Position, walkMineral.HarvestPoint));
-            var workerDistance = MathF.Sqrt(DistanceSquared(runtimeWorker.Position, walkMineral.Position));
-            if (workerDistance > harvestStandoff + 0.2f)
+            if (vaGeyser?.Position == null || !HasNonZeroPoint(vaGeyser.Position))
             {
                 return null;
             }

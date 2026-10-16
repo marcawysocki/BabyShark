@@ -2100,10 +2100,14 @@ namespace BabySharkBot.Managers
             // xwalk 0: ONE mineral walk — a single unqueued Smart Harvest on the mineral
             //            nearest VA. No re-issue rows: the walk runs until the redirect
             //            below interrupts it.
-            // xwalk 1: the move to the end at VA — the VaWalkRedirect point resolves to
-            //            the VA geyser position only once the walker is within 0.2u of
-            //            the walk mineral's harvest standoff (just before arrival);
-            //            until then the row waits silently.
+            // xwalk 1: the move to the end at VA — the VaWalkRedirect point resolves
+            //            to the VA geyser position; the row's RelativeFrame is the
+            //            ONLY gate (owner spec 2026-10-16 00:35, simplified: "Mineral
+            //            walk for 20 frames then move to VA"). The move fires 20
+            //            frames after the walk starts — long before the worker can
+            //            reach the mineral (~74 frames), so the walk mineral is never
+            //            mined. PositionTolerance 0 so the row cannot pass on
+            //            position before its frame gate opens.
             instructions.Add(new WorkerInstruction
             {
                 InstructionSet = "xwalk",
@@ -2119,7 +2123,8 @@ namespace BabySharkBot.Managers
                 Command = WorkerInstructionCommand.Move,
                 Point = WorkerInstructionPoint.VaWalkRedirect,
                 TargetId = walkMineral.UnitTag,
-                PositionTolerance = 100f,
+                RelativeFrame = 20,
+                PositionTolerance = 0f,
                 Queue = false
             });
             // Set 4 — Build Extractor at 125: the mineral-gated wait (75 for the
