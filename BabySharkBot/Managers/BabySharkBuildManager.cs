@@ -747,7 +747,8 @@ namespace BabySharkBot.Managers
 
         // Owner spec 2026-10-13: after B2 morphs into the spawning pool, the
         // larva-born replacement drones are onboarded as temp speed-miners —
-        // 1st new drone = "13-B3" (BB), 2nd = "14-S3" (SB), 3rd = "15-B4" (BB) —
+        // 1st new drone = "13-B3" (BB), 2nd = "14-S3" (SB), 3rd = "15-B4"
+        // (TB on Start 0 / YB on Start 1 since 2026-10-16 22:11) —
         // each receiving the S2/B2-style single-mineral loop. The frame-0 greedy
         // chain is never rebuilt (BuildGreedyMineralChainFromObservation's
         // rotation guard); instead the new drone's tag is added to the existing
@@ -788,12 +789,16 @@ namespace BabySharkBot.Managers
                 }
             }
 
-            // 1st new drone -> 13-B3 (BB), 2nd -> 14-S3 (SB), 3rd -> 15-B4 (BB).
+            // 1st new drone -> 13-B3 (BB), 2nd -> 14-S3 (SB), 3rd -> 15-B4.
+            // 15-B4 mines the Roach-Warren-side B mineral (owner spec 2026-10-16
+            // 22:11): TEAL TB on Start 0, YELLOW YB on Start 1 — placing it next
+            // to the side that builds the Roach Warren.
+            var b4MineralLabel = startIndex == 0 ? "TB" : "YB";
             var tempSpecs = new[]
             {
                 (Role: "B3", MineralLabel: "BB"),
                 (Role: "S3", MineralLabel: "SB"),
-                (Role: "B4", MineralLabel: "BB"),
+                (Role: "B4", MineralLabel: b4MineralLabel),
             };
             var onboardedCount = assigned.Count(worker =>
                 worker != null && IsOnboardedTempRole(worker.Role));
