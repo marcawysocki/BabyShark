@@ -92,6 +92,11 @@ namespace BabySharkBot.Managers
         // 15" — it only nets the extra worker when fired at a full supply).
         private int _currentFoodUsed;
         private int _currentFoodCap;
+        // True once a friendly spawning pool exists in the observation (any
+        // build progress — the morph start commits the pool's 200 minerals),
+        // refreshed every frame in OnFrame. The extractor-trick wait gates on
+        // it so the pool happens first (owner spec 2026-10-17 14:12).
+        private bool _spawningPoolExists;
         private int _pauseUntilFrame = -1;
         private bool _forceCcaOnce = false;
         private bool _handoffBreakTriggered = false;
@@ -846,6 +851,10 @@ namespace BabySharkBot.Managers
             _currentMinerals = observation?.Observation?.PlayerCommon == null ? 0 : (int)observation.Observation.PlayerCommon.Minerals;
             _currentFoodUsed = observation?.Observation?.PlayerCommon == null ? 0 : (int)observation.Observation.PlayerCommon.FoodUsed;
             _currentFoodCap = observation?.Observation?.PlayerCommon == null ? 0 : (int)observation.Observation.PlayerCommon.FoodCap;
+            _spawningPoolExists = observation?.Observation?.RawData?.Units != null
+                && observation.Observation.RawData.Units.Any(unit => unit != null
+                    && unit.Alliance == Alliance.Self
+                    && unit.UnitType == (uint)UnitTypes.ZERG_SPAWNINGPOOL);
             if ((_currentFrame > 0 && _currentFrame % 5 == 0) || _anyWorkerRed)
             {
                Debugger.Break();
@@ -1991,10 +2000,17 @@ namespace BabySharkBot.Managers
                     && instruction.RequireSupplyFull
                     && _currentFoodCap > 0
                     && _currentFoodUsed >= _currentFoodCap;
-                // Gated waits (mineral, frame, or supply) never pass on the cargo-handoff
+                // Spawning-pool gate (owner spec 2026-10-17 14:12): a Wait row
+                // carrying RequireSpawningPool passes only once a friendly pool
+                // exists — the pool happens FIRST, so the trick's 125-bank
+                // window cannot steal the minerals B2 is saving for it.
+                var poolGateSatisfied = instruction.Command == WorkerInstructionCommand.Wait
+                    && instruction.RequireSpawningPool
+                    && _spawningPoolExists;
+                // Gated waits (mineral, frame, supply, or pool) never pass on the cargo-handoff
                 // edge — the handoff wait in front of them would leak them open.
                 var gatedWait = instruction.Command == WorkerInstructionCommand.Wait
-                    && (instruction.RequireMinerals >= 0 || instruction.RequireFrame >= 0 || instruction.RequireSupplyFull);
+                    && (instruction.RequireMinerals >= 0 || instruction.RequireFrame >= 0 || instruction.RequireSupplyFull || instruction.RequireSpawningPool);
                 // A Wait row following a return-cargo command has no ability signature for
                 // "the deposit finished": the drone's order list just goes idle. Let it pass
                 // on the observed cargo transition instead, so the next set's moves cannot
@@ -2002,7 +2018,7 @@ namespace BabySharkBot.Managers
                 var cargoHandedOff = instruction.Command == WorkerInstructionCommand.Wait
                     && !gatedWait
                     && runtimeWorker.CargoReturned;
-                if (!frameSatisfied && !abilitySatisfied && !unconditionalJump && !cargoHandedOff && !harvestReleaseReady && !mineralGateSatisfied && !frameGateSatisfied && !supplyGateSatisfied)
+                if (!frameSatisfied && !abilitySatisfied && !unconditionalJump && !cargoHandedOff && !harvestReleaseReady && !mineralGateSatisfied && !frameGateSatisfied && !supplyGateSatisfied && !poolGateSatisfied)
                 {
                     return true;
                 }
