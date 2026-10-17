@@ -704,7 +704,7 @@ namespace BabySharkBot.Managers
             _currentMinerals = observation?.Observation?.PlayerCommon == null ? 0 : (int)observation.Observation.PlayerCommon.Minerals;
             if ((_currentFrame > 0 && _currentFrame % 5 == 0) || _anyWorkerRed)
             {
-               //Debugger.Break();
+               Debugger.Break();
             }
 
             var relativeFrame = Settings.GetRelativeFrame(_currentFrame);
@@ -2146,9 +2146,31 @@ namespace BabySharkBot.Managers
             // valid; workers get instructions from a list, not an A/B swap).
             if (!string.IsNullOrWhiteSpace(instruction.TargetPointReference))
             {
-                var referencedPoint = ResolvePairTablePoint(ResolveB2PoolReturnReference(assignedWorker, instruction.TargetPointReference));
+                var resolvedReference = ResolveB2PoolReturnReference(assignedWorker, instruction.TargetPointReference);
+                var referencedPoint = ResolvePairTablePoint(resolvedReference);
                 if (referencedPoint != null)
                 {
+                    // Y1/Y2 return-point spread (owner spec 2026-10-17 07:44): the
+                    // two yellow-side miners' chapter lists cover the SAME three
+                    // pair rows ({YA,YB}, {YB,BA}, {BA,YA} — Y1 in one order, Y2
+                    // in the other), so both deposit at the same point on the
+                    // hatchery circle and the two returners interfere with each
+                    // other (and stack into Y3's walk-out line). Rotate each
+                    // one's pair ReturnPoint around the hatchery center by a
+                    // small per-role angle so their deposit points separate.
+                    // Harvest/wait references are untouched — only ".ReturnPoint".
+                    if (resolvedReference.EndsWith(".ReturnPoint", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var spreadDegrees = ReturnPointSpreadDegrees(assignedWorker?.Role);
+                        if (spreadDegrees != 0f)
+                        {
+                            var spreadPoint = SpreadPointAroundTownHall(assignedWorker, referencedPoint, spreadDegrees);
+                            if (spreadPoint != null)
+                            {
+                                return spreadPoint;
+                            }
+                        }
+                    }
                     return referencedPoint;
                 }
             }
@@ -2169,6 +2191,89 @@ namespace BabySharkBot.Managers
                     => ResolveCcaWaitPoint(teamAssignment, assignedWorker.Role),
                 _ => null
             };
+        }
+
+        // Y1/Y2 return-point spread (owner spec 2026-10-17 07:44) — see the
+        // call site in ResolveInstructionPoint. Degrees are applied as a
+        // rotation of the pair ReturnPoint around the hatchery center (+=
+        // counterclockwise); the two miners get opposite signs so their
+        // deposit points land on opposite sides of the shared pair point.
+        // 8 degrees at the ~2.85u hatchery-return radius is ~0.4u of arc per
+        // worker, ~0.8u between them — enough to deposit without contact.
+        private const float Y1ReturnSpreadDegrees = 8f;
+        private const float Y2ReturnSpreadDegrees = -8f;
+
+        private static float ReturnPointSpreadDegrees(string role)
+        {
+            if (string.Equals(role, "Y1", StringComparison.OrdinalIgnoreCase))
+            {
+                return Y1ReturnSpreadDegrees;
+            }
+            if (string.Equals(role, "Y2", StringComparison.OrdinalIgnoreCase))
+            {
+                return Y2ReturnSpreadDegrees;
+            }
+            return 0f;
+        }
+
+        // Rotates a point around the worker's town hall center by the given
+        // angle, preserving its distance from the center (the hatchery-return
+        // radius). Null when no town hall is observable or the point sits on
+        // the center.
+        private static Vector2Dto SpreadPointAroundTownHall(AssignedWorkerDto assignedWorker, Vector2Dto point, float degrees)
+        {
+            var townhall = ResolveWorkerTownHallPosition(assignedWorker);
+            if (townhall == null || point == null || degrees == 0f)
+            {
+                return null;
+            }
+
+            var dx = point.X - townhall.X;
+            var dy = point.Y - townhall.Y;
+            var radius = MathF.Sqrt(dx * dx + dy * dy);
+            if (radius < 0.001f)
+            {
+                return null;
+            }
+
+            var angle = MathF.Atan2(dy, dx) + degrees * MathF.PI / 180f;
+            return new Vector2Dto(
+                townhall.X + MathF.Cos(angle) * radius,
+                townhall.Y + MathF.Sin(angle) * radius,
+                point.Z);
+        }
+
+        // Same town-hall resolution the collision service uses: prefer the
+        // town hall recorded on the worker's mining targets, fall back to the
+        // first observed one (single-hatchery 5x5 experiment).
+        private static Vector2Dto ResolveWorkerTownHallPosition(AssignedWorkerDto assignedWorker)
+        {
+            var townhalls = Globals.CurrentObservation?.CurrentTownHalls;
+            if (townhalls == null || townhalls.Count == 0)
+            {
+                return null;
+            }
+
+            var townHallUnitId = assignedWorker?.MiningTargets
+                ?.Select(target => target?.TownHallUnitId ?? 0)
+                .FirstOrDefault(id => id != 0)
+                ?? 0;
+            if (townHallUnitId != 0
+                && townhalls.TryGetValue(townHallUnitId, out var townHall)
+                && townHall?.Position != null)
+            {
+                return townHall.Position;
+            }
+
+            foreach (var candidate in townhalls.Values)
+            {
+                if (candidate?.Position != null)
+                {
+                    return candidate.Position;
+                }
+            }
+
+            return null;
         }
 
         // Owner spec 2026-10-13 (retargeted from S2/SB to B2/BB): B2 mines BB twice,
