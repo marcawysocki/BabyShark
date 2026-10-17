@@ -498,6 +498,7 @@ namespace BabySharkBot.Managers
             {
                 var tag = labelByTag.Key;
                 var label = labelByTag.Value;
+                UpdateVisualMineralLabelState(tag);
                 var workerEntry = storedWorkers?.FirstOrDefault(worker => worker != null && worker.UnitTag == tag);
                 var liveAssignmentWorker = ResolveBuildGreedyAssignments(startIndex)
                     .SelectMany(assignment => assignment.Workers ?? new List<WorkerEntryDto>())
@@ -520,6 +521,42 @@ namespace BabySharkBot.Managers
 
                 if (position == null) continue;
 
+                // Mineral walk overrides every color cue (owner spec 2026-10-17
+                // 08:11): the ENTIRE label is red for the whole walk.
+                if (Settings.RuntimeWorkers.TryGetValue(tag, out var drawWorker)
+                    && drawWorker.CollisionDetourActive)
+                {
+                    ManagerDebugService.DrawText(displayLabel, new Point
+                    {
+                        X = position.X,
+                        Y = position.Y,
+                        Z = position.Z + 0.5f
+                    }, CollisionRedColor, 12);
+                    continue;
+                }
+
+                // Two-tone label (owner spec 2026-10-17 08:11): after a pickup
+                // the number keeps the collected mineral's color while the
+                // letters show the next mineral; after cargo return the whole
+                // label is the next mineral's color. Drawn as the full label
+                // in the letter color with the number prefix overdrawn.
+                if (TryResolveTwoToneLabelColors(tag, displayLabel, out var prefixColor, out var restColor))
+                {
+                    var drawPoint = new Point
+                    {
+                        X = position.X,
+                        Y = position.Y,
+                        Z = position.Z + 0.5f
+                    };
+                    ManagerDebugService.DrawText(displayLabel, drawPoint, restColor, 12);
+                    var dashIndex = displayLabel.IndexOf('-');
+                    if (dashIndex > 0)
+                    {
+                        ManagerDebugService.DrawText(displayLabel.Substring(0, dashIndex + 1), drawPoint, prefixColor, 12);
+                    }
+                    continue;
+                }
+
                 ManagerDebugService.DrawText(displayLabel, new Point
                 {
                     X = position.X,
@@ -529,8 +566,107 @@ namespace BabySharkBot.Managers
             }
         }
 
+        // Label color-cue state machine (owner spec 2026-10-17 08:11). Pickup
+        // (1183 -> 1184) snapshots the just-collected mineral (current Mti) and
+        // the next mineral (Mti + 1, wrapping — both are frozen at pickup time
+        // because Mti may advance before the deposit frame). Cargo return then
+        // flips the label to the full next-mineral color until the next pickup.
+        private void UpdateVisualMineralLabelState(ulong workerTag)
+        {
+            if (!Settings.RuntimeWorkers.TryGetValue(workerTag, out var runtimeWorker))
+            {
+                return;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0
+                ? Globals.CurrentStartIndex
+                : Settings.CurrentSpawnIndex;
+            var assignedWorker = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?.FirstOrDefault(worker => worker != null && worker.UnitID == workerTag);
+            var targets = assignedWorker?.MiningTargets;
+            if (targets == null || targets.Count == 0)
+            {
+                return;
+            }
+
+            if (runtimeWorker.PreviousAbilityId == (int)Abilities.HARVEST_GATHER_DRONE
+                && runtimeWorker.CurrentAbilityId == (int)Abilities.HARVEST_RETURN_DRONE)
+            {
+                var collected = targets.ElementAtOrDefault(assignedWorker.Mti)?.ResourceLabel;
+                if (!string.IsNullOrWhiteSpace(collected))
+                {
+                    var nextIndex = assignedWorker.Mti + 1;
+                    if (nextIndex >= targets.Count)
+                    {
+                        nextIndex = 0;
+                    }
+                    runtimeWorker.VisualCollectedLabel = collected;
+                    runtimeWorker.VisualNextLabel = targets.ElementAtOrDefault(nextIndex)?.ResourceLabel ?? collected;
+                    runtimeWorker.VisualFullNextLabel = false;
+                }
+            }
+            else if (runtimeWorker.CargoReturned
+                && !string.IsNullOrWhiteSpace(runtimeWorker.VisualNextLabel))
+            {
+                runtimeWorker.VisualFullNextLabel = true;
+            }
+        }
+
+        // Two-tone resolution for the label draw: returns true when the worker
+        // has picked up at least once. Full-next mode yields both colors equal
+        // (the full-label overdraw is a no-op); otherwise the prefix is the
+        // collected mineral and the rest the next mineral.
+        private static bool TryResolveTwoToneLabelColors(ulong workerTag, string displayLabel, out Color prefixColor, out Color restColor)
+        {
+            prefixColor = null;
+            restColor = null;
+            if (string.IsNullOrWhiteSpace(displayLabel)
+                || !Settings.RuntimeWorkers.TryGetValue(workerTag, out var runtimeWorker)
+                || string.IsNullOrWhiteSpace(runtimeWorker.VisualNextLabel))
+            {
+                return false;
+            }
+
+            var nextColor = MineralLabelColor(runtimeWorker.VisualNextLabel);
+            if (runtimeWorker.VisualFullNextLabel)
+            {
+                prefixColor = nextColor;
+                restColor = nextColor;
+                return true;
+            }
+
+            if (string.IsNullOrWhiteSpace(runtimeWorker.VisualCollectedLabel))
+            {
+                return false;
+            }
+
+            prefixColor = MineralLabelColor(runtimeWorker.VisualCollectedLabel);
+            restColor = nextColor;
+            return true;
+        }
+
+        // Mineral label -> display color: the far-B overrides first (same
+        // palette as ResolveWorkerDisplayColor), then the label's team prefix.
+        private static Color MineralLabelColor(string label)
+        {
+            if (string.Equals(label, "SB", StringComparison.OrdinalIgnoreCase)) return TeamColorService.Salmon;
+            if (string.Equals(label, "BB", StringComparison.OrdinalIgnoreCase)) return TeamColorService.Green;
+            if (string.Equals(label, "YB", StringComparison.OrdinalIgnoreCase)) return TeamColorService.Orange;
+            if (string.Equals(label, "SA", StringComparison.OrdinalIgnoreCase)) return TeamColorService.Purple;
+            return TeamColorService.GetColorByPrefix(label.Substring(0, 1));
+        }
+
         private Color ResolveWorkerDisplayColor(ulong workerTag, string label, int startIndex)
         {
+            // Mineral walk (owner spec 2026-10-17 08:11): the ENTIRE label is red
+            // for the whole time the worker mineral-walks — not just the old
+            // within-1u phase. Takes precedence over every other color cue.
+            if (Settings.RuntimeWorkers.TryGetValue(workerTag, out var detouringWorker)
+                && detouringWorker.CollisionDetourActive)
+            {
+                return CollisionRedColor;
+            }
+
             // Collision/bump visual alerts take precedence over team colors for the
             // frame they are active (orange = detour or bump approach, red = within 1u
             // of the avoided worker). Draw-time only — the label itself is unchanged.

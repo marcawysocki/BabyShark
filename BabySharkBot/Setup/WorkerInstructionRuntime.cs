@@ -208,6 +208,15 @@ namespace BabySharkBot.Setup
         // onto a long avoidance line).
         public bool CollisionDetourEngaged { get; set; }
 
+        // Label color-cue state (owner spec 2026-10-17 08:11): on pickup the
+        // number part of the worker label takes the just-collected mineral's
+        // color and the letter part the NEXT mineral's color; at cargo return
+        // the full label switches to the next mineral's color. Red for the
+        // entire mineral walk is handled at draw time (CollisionDetourActive).
+        public string VisualCollectedLabel { get; set; }
+        public string VisualNextLabel { get; set; }
+        public bool VisualFullNextLabel { get; set; }
+
         public void LoadInstructions(string instructionSet, IReadOnlyList<WorkerInstruction> instructions, int relativeFrame)
         {
             if (instructions == null)
