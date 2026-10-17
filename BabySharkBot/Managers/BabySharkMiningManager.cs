@@ -1406,12 +1406,33 @@ namespace BabySharkBot.Managers
                             && (instruction.Command == WorkerInstructionCommand.Gather
                                 || instruction.Command == WorkerInstructionCommand.Return))
                         {
+                            // A Gather self-heal must re-clear the mineral-readiness
+                            // gate — healing a Gather straight onto a busy mineral is
+                            // one of the random-mineral leak paths (owner report
+                            // 2026-10-16: workers landing on unrelated minerals).
+                            if (instruction.Command == WorkerInstructionCommand.Gather
+                                && !IsGatherRowSendReady(instruction))
+                            {
+                                break;
+                            }
                             positionSatisfied = true;
                         }
                         else
                         {
                             break;
                         }
+                    }
+
+                    // Gather-send gate (owner spec 2026-10-16, worker collision pass):
+                    // hold a condition-gated Gather whose mineral is busy beyond the
+                    // release-lead window instead of issuing the Smart command early
+                    // — an early gather is what strands the worker on a busy mineral
+                    // and gets it re-pathed to a random one. The row is retried every
+                    // frame, so the Smart lands exactly when the mineral frees up
+                    // (or is about to, within the lead).
+                    if (!IsGatherRowSendReady(instruction))
+                    {
+                        break;
                     }
 
                     var action = ExecuteWorkerInstruction(runtimeWorker, instruction, assignedWorker, targetPoint, out var followUpAction);
@@ -1522,6 +1543,16 @@ namespace BabySharkBot.Managers
                     break;
                 default:
                     return false;
+            }
+
+            // A Gather the detour interrupted must re-clear the mineral-readiness
+            // gate before being re-issued — resuming it onto a mineral that went
+            // busy during the walk leaks the worker to a random mineral the same
+            // way the self-heal did. Returning false hands the row back to the
+            // normal loop, where the gather-send gate holds it frame by frame.
+            if (!IsGatherRowSendReady(instruction))
+            {
+                return false;
             }
 
             var resumedIndex = runtimeWorker.CurInstrIdx;
@@ -3230,6 +3261,30 @@ namespace BabySharkBot.Managers
                 || _harvestFrameTracker.ShouldReleaseStagedWorker(mineralTag);
         }
 
+        // Gather-send gate (owner spec 2026-10-16, worker collision pass): a
+        // condition-gated Gather row may only be SENT when its target mineral is
+        // free or will be free within the release lead — the same readiness the
+        // staging Wait rows (HarvestReleaseGate) already enforce before a staged
+        // worker leaves the wait point. Rows sent earlier strand the worker at the
+        // busy mineral's footprint as an 1183 waiter, and once it stands there
+        // past ~15 frames the game re-paths it to an UNRELATED mineral — the
+        // "random mineral" leak. NoCondition gathers (extractor-trick mineral
+        // walk, macro-hatchery walk, collision detours, the frame-0 Smart opens)
+        // are choreography rather than mining and always pass; Return rows never
+        // pass through here.
+        private bool IsGatherRowSendReady(WorkerInstruction instruction)
+        {
+            if (instruction == null
+                || instruction.Command != WorkerInstructionCommand.Gather
+                || instruction.NoCondition
+                || instruction.TargetId == 0)
+            {
+                return true;
+            }
+
+            return IsHarvestReleaseReady(instruction.TargetId);
+        }
+
         private void UpdateHarvestFrameTracking(List<SnapshotUnit> liveWorkers)
         {
             var minerals = Globals.CurrentObservation?.Minerals;
@@ -3249,9 +3304,9 @@ namespace BabySharkBot.Managers
         private bool IsGatheringNearCompletion(ulong workerTag, ulong resourceTag)
         {
             // Harvest-frame based: true when the active harvester will flip to 1184
-            // within HarvestFrameTracker.ReleaseLeadFrames frames (31, owner spec
-            // 2026-10-13), i.e. a worker dispatched from a staging point now takes
-            // over while the previous harvester still has up to 31 harvest frames
+            // within HarvestFrameTracker.ReleaseLeadFrames frames (32, owner spec
+            // 2026-10-16), i.e. a worker dispatched from a staging point now takes
+            // over while the previous harvester still has up to 32 harvest frames
             // left — early enough that the game never re-paths it away for standing
             // at a busy mineral.
             return _harvestFrameTracker.IsActiveHarvester(workerTag)

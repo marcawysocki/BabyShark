@@ -26,12 +26,13 @@ namespace BabySharkBot.Managers
     /// with 1183" to the 1183->1184 flip (e.g. stops at 22, flips at 68 => 46).
     /// ShouldReleaseStagedWorker fires when the active harvester has reached
     /// cycle - leadFrames harvest frames, i.e. the mineral will be free leadFrames
-    /// frames from now — per owner spec 2026-10-13 the lead is 31 frames, so a
-    /// staged worker is released while the active harvester still has up to 31
-    /// harvest frames left: early enough that walk-in plus standing at the mineral
-    /// never outlasts the previous harvester (the 15-frame window released too
-    /// soon, the worker stood at the busy mineral, and the game re-pathed it away
-    /// to an unrelated mineral).
+    /// frames from now — per owner spec 2026-10-16 (worker collision pass) the
+    /// lead is 32 frames ("at 32 the staging worker should be given the Smart
+    /// command"), refined from the 31-frame lead of 2026-10-13: a staged worker
+    /// is released while the active harvester still has up to 32 harvest frames
+    /// left, and its ~20-frame walk-in lands it at the mineral with ~12 frames of
+    /// the previous harvest remaining — under the ~15-frame window after which
+    /// the game re-paths a waiting gatherer to an unrelated mineral.
     /// </summary>
     public sealed class HarvestFrameTracker
     {
@@ -40,12 +41,14 @@ namespace BabySharkBot.Managers
         /// <summary>Fallback cycle length before any cycle has been measured on a mineral.</summary>
         public const int DefaultCycleFrames = 46;
         /// <summary>How many frames ahead of the 1184 flip a staged worker is released.
-        /// Owner spec 2026-10-13: 31 — the Y5->BA report ("arrives too soon, leaves BA
-        /// to mine BB, interferes with B2") showed the 15-frame window released the
-        /// staged worker early enough that it stood long enough at the busy mineral
-        /// for the game to re-path it away. Applies to every worker and mineral: all
-        /// staging gates share this window.</summary>
-        public const int ReleaseLeadFrames = 31;
+        /// Owner spec 2026-10-16 (worker collision pass): 32 — "it takes 46 frames to
+        /// harvest... at 32 the staging worker should be given the Smart command on the
+        /// mineral", so the release fires with 32 harvest frames still on the active
+        /// harvester and the ~20-frame walk-in leaves ~12 — inside the ~15-frame window
+        /// before the game re-paths a waiting gatherer away. Refines the 31-frame lead
+        /// of 2026-10-13. Applies to every worker and mineral: all staging gates and
+        /// the mining manager's gather-send gate share this window.</summary>
+        public const int ReleaseLeadFrames = 32;
 
         // A mining worker's position is essentially constant during the gather phase;
         // walking workers move ~0.2-0.4 units per frame. 0.05u squared is well inside

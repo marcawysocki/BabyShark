@@ -2454,7 +2454,13 @@ namespace BabySharkBot.Managers
         {
             var returnBook = new List<WorkerInstruction>();
             AddHarvestReleaseStagingInstructions(returnBook, target.ResourceUnitId);
-            var loopStartIndex = returnBook.Count;
+            // The loop jump targets index 0, NOT the row after the staging pair: B3
+            // shares BB with B4 after the extractor trick, so every cycle must
+            // re-stage at BB's CCA wait point and re-clear the harvest-release
+            // gate before re-approaching — jumping past the staging rows made B3
+            // walk onto a busy BB and get re-pathed to random minerals (owner
+            // report 2026-10-16, worker collision pass).
+            const int loopStartIndex = 0;
             AddSelfPairHarvestInstructions(returnBook, startIndex, "jitMH", target);
             returnBook.Add(new WorkerInstruction
             {
