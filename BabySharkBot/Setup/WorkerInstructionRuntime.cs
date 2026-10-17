@@ -197,6 +197,16 @@ namespace BabySharkBot.Setup
         public ulong CollisionAvoidedUnitTag { get; set; }
         public float CollisionDetourStartOffsetX { get; set; }
         public float CollisionDetourStartOffsetY { get; set; }
+        // True once the detouring walker and the avoided worker have actually come
+        // within contact range (WorkerPassThroughRange) during THIS detour. The
+        // "pair-clear" end test (no carrying worker within contact range) may only
+        // end an ENGAGED detour — a detour that starts at the 2.0u oncoming range
+        // is by definition not within 0.35u of the pair, so without this flag the
+        // next frame's pair-clear ended it immediately and the walk flip-flopped
+        // on/off every frame (owner report 2026-10-16 22:35: "Y3 turned off
+        // mineral walking"; the cancel/reissue churn shoved the returning worker
+        // onto a long avoidance line).
+        public bool CollisionDetourEngaged { get; set; }
 
         public void LoadInstructions(string instructionSet, IReadOnlyList<WorkerInstruction> instructions, int relativeFrame)
         {
