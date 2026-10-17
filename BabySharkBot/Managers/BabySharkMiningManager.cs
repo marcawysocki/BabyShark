@@ -679,6 +679,14 @@ namespace BabySharkBot.Managers
         // freezes the bot either way so the owner can inspect the spot.
         private const string B3MacroHatcheryInstructionSet = "b3mh";
         private const int B3MhBuildVerifyFrames = 45;
+        // Freeze the whole bot when the milestone resolves (owner spec
+        // 2026-10-16 18:35, for placement inspection). DISABLED 2026-10-16
+        // 21:43 (owner report "workers stop mining and are standing at the H1
+        // Hatchery"): the placement is verified, the freeze now fires ~21s in
+        // and blocks the worker-collision work — with this false the game
+        // keeps running and only the log line + on-screen banner mark the
+        // milestone. Flip to true when testing a NEW placement (Roach Warren).
+        private const bool FreezeBotOnMacroHatcheryMilestone = false;
         private int _b3MhBuildIssuedFrame = -1;
         private bool _b3MhResolved;
         private string _b3MhBanner = string.Empty;
@@ -731,6 +739,13 @@ namespace BabySharkBot.Managers
             {
                 DrawB3MacroHatcheryBanner();
                 return Array.Empty<SC2Action>();
+            }
+            if (_b3MhResolved)
+            {
+                // Freeze disabled (collision-work phase): the game keeps running
+                // past the milestone; keep the success/failure banner on screen
+                // as a persistent annotation.
+                DrawB3MacroHatcheryBanner();
             }
 
             var actions = new List<SC2Action>();
@@ -4240,9 +4255,12 @@ namespace BabySharkBot.Managers
         private void ResolveB3MacroHatcheryTest(string result, string detail)
         {
             _b3MhResolved = true;
-            Settings.MacroHatcheryTestFrozen = true;
+            if (FreezeBotOnMacroHatcheryMilestone)
+            {
+                Settings.MacroHatcheryTestFrozen = true;
+            }
             _b3MhBanner = $"MACRO HATCHERY {result} — {detail}";
-            Console.WriteLine($"[MACRO HATCHERY TEST] *** {result} *** {detail} frame={_currentFrame} — BOT FROZEN (unit commands stripped; debug draws alive)");
+            Console.WriteLine($"[MACRO HATCHERY TEST] *** {result} *** {detail} frame={_currentFrame}{(FreezeBotOnMacroHatcheryMilestone ? " — BOT FROZEN (unit commands stripped; debug draws alive)" : " — game continues (freeze disabled)")}");
             if (Debugger.IsAttached)
             {
                 Debugger.Break();
