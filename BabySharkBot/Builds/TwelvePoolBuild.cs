@@ -152,21 +152,22 @@ namespace BabySharkBot.Builds
 
             // 5x5 rotation (owner spec 2026-10-13): the three temp drones
             // (13-B3 BB, 14-S3 SB, 15-B4 BB) replace the worker B2 took with it
-            // into the pool — 11 remaining workers + 3 temps = 14. Desired stays
-            // 12 until the pool morph is observed so no larva morphs early.
-            // 13-B3 extractor trick (owner spec 2026-10-15 22:20): the trick
-            // morph needs the LAST free supply point, so the temp morphing is
-            // staged — hold at 13 (11 + 13-B3 + 14-S3) until the trick larva's
-            // morph is observed begun (supply 14/14), then queue an overlord
-            // (the trick's extra worker needs the supply) and raise to 15 once
-            // a second overlord exists so 15-B4 can morph (11 + 3 temps + the
-            // trick drone = 15 workers — "one extra worker"). On a failed trick
-            // (Done without MorphBegun) fall back to the plain 14 target.
+            // into the pool — 11 remaining workers + 3 temps = 14. The extractor
+            // trick (owner specs 2026-10-17): it is DONE AT 14 SUPPLY to get to
+            // 15, and the spawning pool happens FIRST — so the pre-trick staging
+            // must complete ALL THREE temps (11 + 3 = 14 workers = 14/14
+            // supply), otherwise the trick's supply-full gate can never fire
+            // (the old hold-at-13 assumed the trick's own morph filled the 14th
+            // slot during the window, which deadlocks against the gate). The
+            // trick's larva morph then lands the 15th worker ("one extra
+            // worker"); the post-trick rungs stay 14 -> 15 once the overlords
+            // exist, which is a no-op because the 15 workers already exist.
+            // On a failed trick (Done without MorphBegun) fall back to 14.
             if (Settings.IsMagannatha5x5Rotation
                 && (_poolUnderConstruction || _poolCompleted))
             {
                 var stagedTarget = !Settings.B3ExtractorTrickDone
-                    ? 13
+                    ? 14
                     : !Settings.B3ExtractorTrickMorphBegun
                         ? 14
                         : CountUnits(UnitTypes.ZERG_OVERLORD) >= 2 ? 15 : 14;
