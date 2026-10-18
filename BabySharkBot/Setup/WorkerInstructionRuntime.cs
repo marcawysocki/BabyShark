@@ -174,13 +174,6 @@ namespace BabySharkBot.Setup
         // just an ordinary drone morph with extra steps. Same cargo-handoff
         // exclusion as RequireMinerals.
         public bool RequireSupplyFull { get; set; }
-        // Spawning-pool gate (owner spec 2026-10-17 14:12, extractor trick):
-        // valid on Wait rows — the row passes only once a friendly spawning
-        // pool EXISTS (any build progress; the morph start is what commits the
-        // pool's 200 minerals). The pool happens FIRST: the trick's 125-bank
-        // window must not fire while B2 is still saving for the pool. Same
-        // cargo-handoff exclusion as RequireMinerals.
-        public bool RequireSpawningPool { get; set; }
     }
 
     public sealed class RuntimeWorkerState

@@ -2485,18 +2485,13 @@ namespace BabySharkBot.Managers
             // build frees the supply point the larva morph needs, and the cancel
             // lands at 15/14. Fired early (supply free) it would be an ordinary
             // drone morph with extra steps, so the trick owner waits at VA until
-            // the 14th drone exists AND the bank holds 125. It ALSO carries the
-            // spawning-pool gate (owner spec 2026-10-17 14:12: "the spawning
-            // pool happens first") — the row passes only once a friendly pool
-            // exists, so the trick's bank window can never fire while B2 is
-            // still saving the pool's 200.
+            // the 14th drone exists AND the bank holds 125.
             instructions.Add(new WorkerInstruction
             {
                 InstructionSet = "va",
                 Command = WorkerInstructionCommand.Wait,
                 RequireMinerals = BabySharkMiningManager.ExtractorTrickBuildMinerals,
-                RequireSupplyFull = true,
-                RequireSpawningPool = true
+                RequireSupplyFull = true
             });
             instructions.Add(new WorkerInstruction
             {
