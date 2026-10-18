@@ -1529,12 +1529,11 @@ namespace BabySharkBot.Managers
                 },
                 new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 0 },
                 new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 1 },
-                // The Smart is issued at relative frame 22 (owner spec 2026-10-17
-                // 20:46: "On the first set on Frame 22 Issue a Smart to All Role 1
-                // and 3 workers") — a pure frame gate (PositionTolerance 0), unqueued
-                // so it fires on the frame even if a residual walk order is still
-                // running. The walk rows above still leave at frames 0/1.
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 22, PositionTolerance = 0f, Queue = false }
+                // Owner request 2026-10-17 22:00: the frame-22 Smart experiment is
+                // undone — role 1/3 workers go back to the position-gated queued
+                // gather (fires when the worker arrives within 0.5u of the stored
+                // point). The mineral-walk stage opens (Y4/B2/T4) stay.
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = -1, PositionTolerance = 0.5f, Queue = true }
             };
         }
 
