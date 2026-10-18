@@ -1802,36 +1802,11 @@ namespace BabySharkBot.Managers
                 AddSelfPairReturnInstructions(instructions, startIndex, onlyTarget);
                 instructions.Add(CreateHandoffWait());
 
-                // 13-B3 extractor trick (owner spec 2026-10-15, settled spec 16:13):
-                // after the ONE standard BB harvest + return, B3 issues ONE mineral
-                // walk to the mineral nearest VA, ONE redirect move to VA just before
-                // arrival, then builds the extractor at a 125-mineral bank (75 build +
-                // 50 for the immediate larva morph). THE BUILD ROW IS TERMINAL — the
-                // drone morphs INTO the extractor — and the mining manager's trick
-                // driver takes over from there: morph the larva immediately, cancel
-                // the extractor the frame the morph begins, and load the "b3ret" BB
-                // loop once the drone is restored. Without VA/walk-mineral geometry
-                // the book falls back to the plain S2-style loop below.
-                if (string.Equals(NormalizeRole(workerRole), "B3", StringComparison.OrdinalIgnoreCase)
-                    && TryGetB3TrickGeometry(startIndex, out var b3WalkMineral, out var b3VaGeyser))
-                {
-                    AddB3ExtractorTrickChapter(instructions, b3WalkMineral, b3VaGeyser);
-                    RegisterB3ReturnBook(startIndex, onlyTarget);
-                    // B3 Macro Hatchery test chapter (owner spec 2026-10-16 18:35,
-                    // walk target corrected 19:42): after the extractor trick the
-                    // driver loads "b3mh" INSTEAD of the plain "b3ret" BB loop —
-                    // mine BB once (pickup, carrying), ONE mineral walk for 25
-                    // frames to the mineral at the SIDE OF THE HATCHERY (the
-                    // start's own mineral nearest the townhall), return cargo,
-                    // move to the Macro Hatchery site, wait for 275, morph the
-                    // hatchery. Built only when that mineral exists; otherwise
-                    // the driver falls back to "b3ret" exactly as before.
-                    if (TryGetB3MacroHatcherySideMineral(startIndex, out var b3SideMineral))
-                    {
-                        RegisterB3MacroHatcheryBook(startIndex, onlyTarget, b3SideMineral);
-                    }
-                    return instructions;
-                }
+                // The extractor trick moved OFF 13-B3 (owner spec 2026-10-17 11:27):
+                // B3 is now a plain BB temp drone running the standard loop below,
+                // exactly like S3/B4. The trick chapter lives in the trick owner's
+                // own book (Y5 on Start 0, T1 on Start 1) — see the splices in the
+                // prologue and swing branches below.
 
                 // Harvest-frame test case (owner spec 2026-10-11): the new S2 (W6)
                 // stages at SB's CCA wait point and waits on the harvest-release gate
@@ -1919,6 +1894,18 @@ namespace BabySharkBot.Managers
                 });
                 AddSelfPairReturnInstructions(instructions, startIndex, targets[0]);
                 instructions.Add(CreateHandoffWait());
+                // Extractor-trick owner splice (owner spec 2026-10-17 11:27): T1 on
+                // Start 1 does the trick right after its FIRST TA harvest + return.
+                // The trick chapter ends in the TERMINAL BuildExtractor row; the
+                // mining manager's driver cancels the extractor once the larva
+                // morph begins and RESUMES THIS BOOK at the row after the build —
+                // the staging row of the prologue's second TA harvest below — so
+                // T1 mines TA after the trick, then runs its normal rotation.
+                if (string.Equals(NormalizeRole(workerRole), GetExtractorTrickRole(startIndex), StringComparison.OrdinalIgnoreCase)
+                    && TryGetB3TrickGeometry(startIndex, out var trickWalkMineral, out var trickVaGeyser))
+                {
+                    AddB3ExtractorTrickChapter(instructions, trickWalkMineral, trickVaGeyser);
+                }
                 // Harvest-release staging (owner spec 2026-10-12, all workers): stage at
                 // the mineral's CCA wait point and gate on the harvest-release window
                 // before the prologue's second harvest.
@@ -2009,6 +1996,33 @@ namespace BabySharkBot.Managers
                 });
                 AddReturnInstructions(instructions, startIndex, targets[0], targets[swingStart]);
                 instructions.Add(CreateHandoffWait());
+                // Extractor-trick owner splice (owner spec 2026-10-17 11:27): Y5 on
+                // Start 0 does the trick right after the startup harvest + return.
+                // The trick chapter ends in the TERMINAL BuildExtractor row; the
+                // mining manager's driver cancels the extractor once the larva
+                // morph begins and RESUMES THIS BOOK at the row after the build.
+                // The one-time YA chapter below sits at exactly that spot, so Y5
+                // mines YA after the trick, then hands into the normal YB -> BA ->
+                // YA swing rotation (the mti -> swingStart row that follows).
+                if (string.Equals(NormalizeRole(workerRole), GetExtractorTrickRole(startIndex), StringComparison.OrdinalIgnoreCase)
+                    && targets.Count >= 4
+                    && TryGetB3TrickGeometry(startIndex, out var trickWalkMineral, out var trickVaGeyser))
+                {
+                    AddB3ExtractorTrickChapter(instructions, trickWalkMineral, trickVaGeyser);
+                    var yaTarget = targets[2];
+                    var ybTarget = targets[3];
+                    AddHarvestReleaseStagingInstructions(instructions, yaTarget.ResourceUnitId);
+                    AddHarvestInstructions(instructions, startIndex, "jitMH", yaTarget, ybTarget, WorkerInstructionPoint.JitHarvestA);
+                    instructions.Add(new WorkerInstruction
+                    {
+                        InstructionSet = "wait",
+                        Command = WorkerInstructionCommand.Wait,
+                        PreviousAbilityId = firstGatherAbility,
+                        TargetAbilityId = returnAbility
+                    });
+                    AddReturnInstructions(instructions, startIndex, yaTarget, ybTarget);
+                    instructions.Add(CreateHandoffWait());
+                }
                 instructions.Add(new WorkerInstruction { InstructionSet = "wait", Command = WorkerInstructionCommand.Wait, NextTargetIndex = targets.Count == 5 ? 1 : swingStart });
 
                 var loopStart = 1;
@@ -2328,6 +2342,12 @@ namespace BabySharkBot.Managers
         // drone. Built here at onboarding (build manager owns book construction);
         // the mining manager only executes/loads it.
         private const string B3ReturnInstructionSet = "b3ret";
+
+        // Extractor-trick owner (owner spec 2026-10-17 11:27): the worker that does
+        // the trick changed — Y5 on Start 0 (VA sits next to YA), T1 on Start 1
+        // (VA next to TA). The trick chapter splices into the owner's OWN book;
+        // after the trick they mine that side's A mineral (the resume lands on it).
+        private static string GetExtractorTrickRole(int startIndex) => startIndex == 0 ? "Y5" : "T1";
 
         // Geometry for the 13-B3 trick chapter: the main-base VA geyser and the
         // mineral nearest it (the walk mineral — YA or TA depending on start, by
