@@ -113,7 +113,12 @@ namespace BabySharkBot
             Console.WriteLine($"BabySharkBot: BaseDtos loaded before GameConnection opened={Settings.BaseDtosLoadedBeforeGameConnection}");
 
             var myRace = Race.Zerg;
-            if (args.Length == 0)
+            // Harness-only flags (e.g. --suicide-end) are consumed above and
+            // must not reroute the bot into ladder mode — the tuning loop
+            // still wants the self-launched single-player game.
+            var harnessOnlyArgs = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase) { "--suicide-end" };
+            var hasLadderArgs = args.Any(a => !harnessOnlyArgs.Contains(a));
+            if (args.Length == 0 || !hasLadderArgs)
             {
                 gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild, botName: botName).Wait();
             }
