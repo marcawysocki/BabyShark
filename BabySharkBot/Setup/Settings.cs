@@ -95,6 +95,17 @@ namespace BabySharkBot.Setup
         // optimization loop. Enabled only via the --suicide-end command line
         // flag; never active in ladder or normal runs.
         public static bool EarlySuicideTestEnd = false;
+        // Bump test harness (owner spec 2026-10-18): BumpTestMode 0 = normal opening,
+        // 1 = no-help baseline (T4/T5/Y4/B2 mineral-walk at frame 0), 2 = T4/Y4 bump
+        // only (T5/B2 walk at frame 0), 3 = full choreography with bumpers. BumpAngle
+        // rotates the bumper stand point around the A-mineral SM harvest point
+        // (0 = straight-on); the sweep starts severe and reduces toward 0.
+        public static int BumpTestMode = 0;
+        public static float BumpAngleDegrees = 0f;
+        // Spawn guard (measurement hygiene): when true, a game that rolls the NW spawn
+        // exits at frame 0 so only SE games are ever measured. Only ever set in the
+        // single-player path — on ladder it must stay false (exiting = forfeit).
+        public static bool SpawnGuardExitOnNw = false;
         // 13-B3 extractor trick (owner spec 2026-10-15): set by the mining manager's
         // trick driver, read by TwelvePoolBuild's drone morph gating. MorphBegun = the
         // trick larva's TRAIN_DRONE order was observed (supply 14/14); Done = the

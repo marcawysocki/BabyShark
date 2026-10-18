@@ -116,8 +116,11 @@ namespace BabySharkBot
             // Harness-only flags (e.g. --suicide-end) are consumed above and
             // must not reroute the bot into ladder mode — the tuning loop
             // still wants the self-launched single-player game.
-            var harnessOnlyArgs = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase) { "--suicide-end" };
-            var hasLadderArgs = args.Any(a => !harnessOnlyArgs.Contains(a));
+            var hasLadderArgs = args.Any(a => !IsHarnessArg(a));
+            // Spawn guard: only in self-launched single-player games (on ladder,
+            // exiting would forfeit). --no-spawn-guard opts out explicitly.
+            Settings.SpawnGuardExitOnNw = !hasLadderArgs
+                && !args.Any(a => string.Equals(a, "--no-spawn-guard", StringComparison.OrdinalIgnoreCase));
             if (args.Length == 0 || !hasLadderArgs)
             {
                 gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild, botName: botName).Wait();
@@ -129,6 +132,23 @@ namespace BabySharkBot
 
             var miningManager = babySharkBot.Managers.OfType<BabySharkMiningManager>().FirstOrDefault();
             WriteBaseDataSnapshot(mapNameForData, miningManager?.CurrentMapData);
+        }
+
+        private static bool IsHarnessArg(string arg)
+        {
+            if (string.IsNullOrEmpty(arg))
+            {
+                return false;
+            }
+            if (string.Equals(arg, "--suicide-end", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "--no-spawn-guard", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            // --bump-test=N / --bump-angle=X (=value form so the value token never
+            // leaks into the ladder-args check).
+            return arg.StartsWith("--bump-test=", StringComparison.OrdinalIgnoreCase)
+                || arg.StartsWith("--bump-angle=", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string SanitizeMapNameForFilename(string map)
@@ -163,6 +183,26 @@ namespace BabySharkBot
             if (Settings.EarlySuicideTestEnd)
             {
                 Console.WriteLine("EarlySuicideTestEnd ENABLED — at 200 minerals the pool is cancelled and all workers attack our own hatchery");
+            }
+
+            // Bump test harness (owner spec 2026-10-18): --bump-test=1|2|3 selects the
+            // opening configuration, --bump-angle=degrees rotates the bumper stand point
+            // for the angle sweep. Both are single-player harness flags (=value form so
+            // the ladder-arg filter above can recognize them).
+            var bumpTestArg = args.FirstOrDefault(a => a.StartsWith("--bump-test=", StringComparison.OrdinalIgnoreCase));
+            if (bumpTestArg != null
+                && int.TryParse(bumpTestArg.Substring("--bump-test=".Length), out var bumpTestMode)
+                && bumpTestMode >= 1 && bumpTestMode <= 3)
+            {
+                Settings.BumpTestMode = bumpTestMode;
+                Console.WriteLine($"BumpTestMode ENABLED — mode {bumpTestMode} opening configuration");
+            }
+            var bumpAngleArg = args.FirstOrDefault(a => a.StartsWith("--bump-angle=", StringComparison.OrdinalIgnoreCase));
+            if (bumpAngleArg != null
+                && float.TryParse(bumpAngleArg.Substring("--bump-angle=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var bumpAngleDegrees))
+            {
+                Settings.BumpAngleDegrees = bumpAngleDegrees;
+                Console.WriteLine($"BumpAngleDegrees ENABLED — {bumpAngleDegrees:F1}° bumper stand-point rotation");
             }
 
             if (hasTrainFlag && !trainingDataExists)

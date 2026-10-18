@@ -614,6 +614,18 @@ namespace BabySharkBot.Managers
                     // the perpetual 3-mineral rotation.
                     if (Settings.IsMagannatha5x5Rotation && Is5x5RotationRole(role))
                     {
+                        // Bump test harness (owner spec 2026-10-18). Mode 0 = normal
+                        // opening. Mode 1 = no-help baseline: T4/T5/Y4/B2 mineral-walk
+                        // at frame 0 (walk frame 0 / stage frame 20) so T1/Y1 walk
+                        // clean. Mode 2 = T4/Y4 bump (Version-2 bump sets) with T5/B2
+                        // walking at frame 0. Mode 3 = full choreography: T4/Y4 bump,
+                        // everyone else in their normal role.
+                        var bumpTestMode = Settings.BumpTestMode;
+                        var is5x5BumpTestRole = (bumpTestMode == 2 || bumpTestMode == 3) && Is5x5BumpRole(role);
+                        var normalizedRole5x5 = NormalizeRole(role);
+                        var is5x5HelperRole = normalizedRole5x5 == "T4" || normalizedRole5x5 == "Y4"
+                            || normalizedRole5x5 == "B2" || normalizedRole5x5 == "T5";
+                        var helpersWalkAtFrameZero = (bumpTestMode == 1 || bumpTestMode == 2) && is5x5HelperRole;
                         var is5x5WalkStageRole = Is5x5MineralWalkStageRole(role);
                         // 5x5 A-miners (owner spec 2026-10-09): every worker whose first
                         // mining target is an A mineral (TA/SA/BA/YA — in the full
@@ -626,29 +638,46 @@ namespace BabySharkBot.Managers
                         // Harvest point on the hatchery->mineral line — owner request
                         // 2026-10-13: the optimal circle sample angled the T1/Y1 walk
                         // toward T5/Y5's side instead of the direct straight line.
-                        var is5x5AMiner = !is5x5WalkStageRole
+                        var is5x5AMiner = !is5x5WalkStageRole && !is5x5BumpTestRole
                             && IsAMineralLabel(initialTarget.ResourceLabel);
-                        var instructionSet5x5 = is5x5WalkStageRole ? $"mwstage5x5{role}"
-                            : is5x5AMiner ? "jitSM5x5A"
-                            : "jitMH5x5";
-                        var startup5x5 = is5x5WalkStageRole
-                            ? Build5x5MineralWalkStageStartup(
-                                instructionSet5x5,
-                                initialTarget.ResourceUnitId,
-                                NormalizeRole(role) == "B2" ? 45 : 40)
-                            : is5x5AMiner
-                                ? Build5x5AMinerStartupInstructions(instructionSet5x5, initialTarget.ResourceUnitId, role)
-                                : NormalizeRole(role) == "T5"
-                                    // Harvest-frame test case: the new T5 (W1) stages at
-                                    // SB's CCA wait point and waits on the harvest-release
-                                    // gate before its one-time SB trip — "going to a wait
-                                    // position until S2 finishes SB". The gate passes
-                                    // immediately when SB is free, so an uncontested start
-                                    // still mines at once; the standard startup rows sit
-                                    // behind the gate and their relative frames count from
-                                    // the gate pass.
-                                    ? Build5x5SwingStartupWithStaging(instructionSet5x5, initialTarget.ResourceUnitId)
-                                    : BuildStandardStartupInstructions(instructionSet5x5, WorkerInstructionPoint.Harvest, initialTarget.ResourceUnitId, -1);
+                        string instructionSet5x5;
+                        IReadOnlyList<WorkerInstruction> startup5x5;
+                        if (is5x5BumpTestRole)
+                        {
+                            instructionSet5x5 = $"bump{role}";
+                            startup5x5 = Build5x5BumpInstructions(
+                                instructionSet5x5, role, initialTarget.ResourceUnitId, initialTarget.ResourceLabel, startIndex, assignments);
+                        }
+                        else if (helpersWalkAtFrameZero)
+                        {
+                            instructionSet5x5 = $"mwstage5x5{role}";
+                            startup5x5 = Build5x5MineralWalkStageStartup(
+                                instructionSet5x5, initialTarget.ResourceUnitId, 20, 0);
+                        }
+                        else
+                        {
+                            instructionSet5x5 = is5x5WalkStageRole ? $"mwstage5x5{role}"
+                                : is5x5AMiner ? "jitSM5x5A"
+                                : "jitMH5x5";
+                            startup5x5 = is5x5WalkStageRole
+                                ? Build5x5MineralWalkStageStartup(
+                                    instructionSet5x5,
+                                    initialTarget.ResourceUnitId,
+                                    NormalizeRole(role) == "B2" ? 45 : 40)
+                                : is5x5AMiner
+                                    ? Build5x5AMinerStartupInstructions(instructionSet5x5, initialTarget.ResourceUnitId, role)
+                                    : NormalizeRole(role) == "T5"
+                                        // Harvest-frame test case: the new T5 (W1) stages at
+                                        // SB's CCA wait point and waits on the harvest-release
+                                        // gate before its one-time SB trip — "going to a wait
+                                        // position until S2 finishes SB". The gate passes
+                                        // immediately when SB is free, so an uncontested start
+                                        // still mines at once; the standard startup rows sit
+                                        // behind the gate and their relative frames count from
+                                        // the gate pass.
+                                        ? Build5x5SwingStartupWithStaging(instructionSet5x5, initialTarget.ResourceUnitId)
+                                        : BuildStandardStartupInstructions(instructionSet5x5, WorkerInstructionPoint.Harvest, initialTarget.ResourceUnitId, -1);
+                        }
 
                         var list5x5 = BuildMineralInstructionList(startIndex, assignedWorker, instructionSet5x5, startup5x5);
                         runtimeWorker.LoadInstructions(instructionSet5x5, list5x5, Settings.GetRelativeFrame(frame));
@@ -1266,9 +1295,11 @@ namespace BabySharkBot.Managers
         // 20:46). The set is built on the trick walk's verified row shape:
         //   row 0: ONE mineral walk — a single NoCondition Smart Harvest on the
         //          worker's own first mineral (Y4: YB, T4: TB, B2: BB), RelativeFrame
-        //          20 so the walk holds until frame 20 exactly (the engine honors an
-        //          explicit frame gate on NoCondition rows) and NoCondition so the
-        //          walk is never held by the gather-send gate on a busy mineral.
+        //          = walkFrame (20 in the normal opening; 0 in the bump-test no-help
+        //          configurations) so the walk holds until that frame exactly (the
+        //          engine honors an explicit frame gate on NoCondition rows) and
+        //          NoCondition so the walk is never held by the gather-send gate on
+        //          a busy mineral.
         //   row 1: at RelativeFrame stageFrame (40 for Y4/T4, 45 for B2) an unqueued
         //          move to the mineral's CCA wait point interrupts the walk —
         //          "then stage".
@@ -1281,7 +1312,8 @@ namespace BabySharkBot.Managers
         private static IReadOnlyList<WorkerInstruction> Build5x5MineralWalkStageStartup(
             string instructionSet,
             ulong mineralTag,
-            int stageFrame)
+            int stageFrame,
+            int walkFrame = 20)
         {
             var instructions = new List<WorkerInstruction>
             {
@@ -1291,7 +1323,7 @@ namespace BabySharkBot.Managers
                     Command = WorkerInstructionCommand.Gather,
                     Point = WorkerInstructionPoint.None,
                     TargetId = mineralTag,
-                    RelativeFrame = 20,
+                    RelativeFrame = walkFrame,
                     NoCondition = true,
                     Queue = false
                 },

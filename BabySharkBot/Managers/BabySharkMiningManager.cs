@@ -841,6 +841,38 @@ namespace BabySharkBot.Managers
         // 75 spend and the ideal both-same-frame 125 drop are excluded; the
         // latter lands the bank under 50, caught by the bank check).
         private int _b3TrickLastMinerals = -1;
+        // Spawn guard one-shot: at the first frame with units observable, check
+        // our ACTUAL hatchery position. The bot hardcodes the SE start; when SC2
+        // rolls the NW spawn the game is garbage for measurement (wrong return
+        // points, wrong books) — exit so the run loop can relaunch. Only ever
+        // armed in the single-player path (Program sets the flag; ladder never).
+        private bool _spawnGuardChecked;
+
+        private void CheckSpawnGuard(ResponseObservation observation)
+        {
+            if (!Settings.SpawnGuardExitOnNw || _spawnGuardChecked)
+            {
+                return;
+            }
+            var units = observation?.Observation?.RawData?.Units;
+            if (units == null)
+            {
+                return;
+            }
+            var hatchery = units.FirstOrDefault(u => u != null
+                && u.Alliance == Alliance.Self
+                && u.UnitType == (uint)UnitTypes.ZERG_HATCHERY);
+            if (hatchery == null)
+            {
+                return;
+            }
+            _spawnGuardChecked = true;
+            if (hatchery.Pos.X < 100f)
+            {
+                Console.WriteLine($"[SPAWN-GUARD] NW spawn detected (hatchery at {hatchery.Pos.X:F1},{hatchery.Pos.Y:F1}) — exiting so only SE games are measured; relaunch for an SE game");
+                Environment.Exit(0);
+            }
+        }
 
         public IEnumerable<SC2Action> OnFrame(ResponseObservation observation)
         {
@@ -864,6 +896,8 @@ namespace BabySharkBot.Managers
                 Console.WriteLine($"[MINING REACH] skipped frame={_currentFrame}: Globals.CurrentObservation is null");
                 return Array.Empty<SC2Action>();
             }
+
+            CheckSpawnGuard(observation);
 
             ProcessFrameObservation(observation);
             UpdateCollisionVisualStates();
@@ -2719,6 +2753,22 @@ namespace BabySharkBot.Managers
             projection = MathF.Max(0f, MathF.Min(1f, projection));
             var bumperX = hatcheryPosition.X + projection * directionX;
             var bumperY = hatcheryPosition.Y + projection * directionY;
+
+            // Bump angle sweep knob (owner spec 2026-10-18): rotate the bumper stand
+            // point around the A-mineral SM harvest point by Settings.BumpAngleDegrees.
+            // 0 = straight-on (the pre-sweep geometry, T1's direct walk to its harvest
+            // point). Positive and negative angles sweep either side of the line; the
+            // sweep starts severe and reduces toward 0, measuring T1/Y1 arrival each run.
+            var angleRad = Settings.BumpAngleDegrees * MathF.PI / 180f;
+            if (MathF.Abs(angleRad) > 0.0005f)
+            {
+                var cos = MathF.Cos(angleRad);
+                var sin = MathF.Sin(angleRad);
+                var vx = bumperX - smHarvest.X;
+                var vy = bumperY - smHarvest.Y;
+                bumperX = smHarvest.X + vx * cos - vy * sin;
+                bumperY = smHarvest.Y + vx * sin + vy * cos;
+            }
 
             var offsetX = assignedWorker.CurrentXY.X - bumperX;
             var offsetY = assignedWorker.CurrentXY.Y - bumperY;
