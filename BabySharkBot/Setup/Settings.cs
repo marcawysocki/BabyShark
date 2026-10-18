@@ -87,6 +87,14 @@ namespace BabySharkBot.Setup
         // carrying worker is SMART-walked through its own mineral and the worker's
         // instruction list resumes at the suspended row once the pair is clear.
         public static bool WorkerCollisionAvoidance = true;
+        // Autorun test harness (owner request 2026-10-17 22:41): when the bank
+        // reaches 200 minerals, suppress every other command, cancel the
+        // spawning pool if it exists, and order all workers to attack our own
+        // hatchery so the game ends immediately — the opponent otherwise takes
+        // ~7 minutes to end the game, which blocks the frame-at-200
+        // optimization loop. Enabled only via the --suicide-end command line
+        // flag; never active in ladder or normal runs.
+        public static bool EarlySuicideTestEnd = false;
         // 13-B3 extractor trick (owner spec 2026-10-15): set by the mining manager's
         // trick driver, read by TwelvePoolBuild's drone morph gating. MorphBegun = the
         // trick larva's TRAIN_DRONE order was observed (supply 14/14); Done = the

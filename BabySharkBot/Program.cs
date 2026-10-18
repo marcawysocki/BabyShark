@@ -152,6 +152,14 @@ namespace BabySharkBot
             Settings.EnableTraining = hasTrainFlag && trainingDataExists;
             Settings.EnableRLInference = (hasTrainFlag || hasEvaluateFlag || modelExists) && modelExists && metadataExists;
 
+            // Autorun test harness (owner request 2026-10-17 22:41): end the
+            // game at the 200-mineral bank so the optimization loop can restart.
+            Settings.EarlySuicideTestEnd = args.Any(a => string.Equals(a, "--suicide-end", StringComparison.OrdinalIgnoreCase));
+            if (Settings.EarlySuicideTestEnd)
+            {
+                Console.WriteLine("EarlySuicideTestEnd ENABLED — at 200 minerals the pool is cancelled and all workers attack our own hatchery");
+            }
+
             if (hasTrainFlag && !trainingDataExists)
             {
                 Console.WriteLine($"RL disabled: missing training data folder '{Settings.RLTrainingDataPath}'");

@@ -89,6 +89,14 @@ namespace BabySharkBot.Managers
         private int _pauseUntilFrame = -1;
         private bool _forceCcaOnce = false;
         private bool _handoffBreakTriggered = false;
+        // Early suicide test end (owner spec 2026-10-17 22:41): collision
+        // iteration harness only — once the bank first reaches 200 minerals,
+        // cancel the spawning pool and send all drones to attack our own
+        // hatchery so the test game resolves in seconds instead of minutes.
+        private bool _suicideTestEndTriggered = false;
+        // Generic ATTACK ability id (protocol constant; the external Abilities
+        // enum in use here has no ATTACK member).
+        private const int SuicideAttackAbilityId = 3674;
         private int _allMiningConsecutiveFrames;
         private const int AllMiningConfirmationFrames = 2;
 
@@ -905,7 +913,80 @@ namespace BabySharkBot.Managers
             UpdateMineralReturnRate(observation);
             PrintMineralReturnRateSummary(observation);
             PrintTwelveDroneMilestone(observation);
+
+            // Early suicide test end (collision iteration harness, owner spec
+            // 2026-10-17 22:41): when the bank first reaches 200 minerals this
+            // manager takes over completely for the rest of the game — cancel
+            // the spawning pool and have all drones attack our own hatchery so
+            // the game ends quickly and the run loop can restart. Returning
+            // the end actions here also suppresses the books/trick driver, so
+            // nothing re-issues the pool build or any mining command.
+            if (Settings.EarlySuicideTestEnd)
+            {
+                var endActions = TryBuildEarlySuicideTestEndActions(observation);
+                if (endActions != null)
+                {
+                    LogMiningCommands(endActions, commandContexts);
+                    return endActions;
+                }
+            }
+
             LogMiningCommands(actions, commandContexts);
+            return actions;
+        }
+
+        // Returns null until the trigger frame; after that, every frame returns
+        // the standing cancel-pool + attack-hatchery action set.
+        private List<SC2Action> TryBuildEarlySuicideTestEndActions(ResponseObservation observation)
+        {
+            if (!_suicideTestEndTriggered)
+            {
+                if (_currentMinerals < 200 || _currentFrame <= 100)
+                {
+                    return null;
+                }
+                _suicideTestEndTriggered = true;
+                Console.WriteLine($"[SUICIDE-END] frame={_currentFrame} bank={_currentMinerals} — cancelling pool, all drones attacking own hatchery");
+            }
+
+            var actions = new List<SC2Action>();
+            var units = observation?.Observation?.RawData?.Units;
+            if (units == null)
+            {
+                return actions;
+            }
+
+            foreach (var unit in units)
+            {
+                if (unit == null || unit.Alliance != Alliance.Self)
+                {
+                    continue;
+                }
+                if (unit.UnitType == (uint)UnitTypes.ZERG_SPAWNINGPOOL)
+                {
+                    actions.Add(CreateRawUnitCommandAction(Abilities.CANCEL_BUILDINPROGRESS, unit.Tag));
+                }
+            }
+
+            var hatchery = units.FirstOrDefault(u => u != null
+                && u.Alliance == Alliance.Self
+                && u.UnitType == (uint)UnitTypes.ZERG_HATCHERY);
+            var droneTags = units.Where(u => u != null
+                    && u.Alliance == Alliance.Self
+                    && u.UnitType == (uint)UnitTypes.ZERG_DRONE)
+                .Select(u => u.Tag)
+                .ToList();
+            if (hatchery != null && droneTags.Count > 0)
+            {
+                var command = new ActionRawUnitCommand
+                {
+                    AbilityId = SuicideAttackAbilityId,
+                    TargetUnitTag = hatchery.Tag,
+                    QueueCommand = false
+                };
+                command.UnitTags.AddRange(droneTags);
+                actions.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = command } });
+            }
             return actions;
         }
 
