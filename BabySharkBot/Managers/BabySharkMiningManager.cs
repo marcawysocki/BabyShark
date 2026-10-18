@@ -1537,7 +1537,13 @@ namespace BabySharkBot.Managers
 
                     var positionSatisfied = targetPoint != null
                         && DistanceSquared(runtimeWorker.Position, targetPoint) <= instruction.PositionTolerance * instruction.PositionTolerance;
-                    if (instruction.NoCondition)
+                    // NoCondition rows are choreography (mineral walks, build morphs,
+                    // store/load rows) and pass every gate — EXCEPT an explicitly set
+                    // RelativeFrame: a frame-gated NoCondition row (the mineral-walk
+                    // stage startup, owner spec 2026-10-17 20:46) must hold until its
+                    // frame so the walk starts on schedule while still bypassing the
+                    // position/ability/gather-send gates.
+                    if (instruction.NoCondition && instruction.RelativeFrame < 0)
                     {
                         positionSatisfied = true;
                     }
