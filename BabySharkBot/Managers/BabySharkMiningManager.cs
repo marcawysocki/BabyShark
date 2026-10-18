@@ -86,12 +86,6 @@ namespace BabySharkBot.Managers
         // Current mineral bank, refreshed every frame in OnFrame — the gate for the
         // S2 spawning-pool preposition return (owner spec 2026-10-13).
         private int _currentMinerals;
-        // Current supply snapshot (FoodUsed / FoodCap), refreshed every frame in
-        // OnFrame — the supply-full gate for the extractor trick (owner spec
-        // 2026-10-17 14:08: "The extractor trick is done at 14 supply to get to
-        // 15" — it only nets the extra worker when fired at a full supply).
-        private int _currentFoodUsed;
-        private int _currentFoodCap;
         private int _pauseUntilFrame = -1;
         private bool _forceCcaOnce = false;
         private bool _handoffBreakTriggered = false;
@@ -844,8 +838,6 @@ namespace BabySharkBot.Managers
         {
             _currentFrame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
             _currentMinerals = observation?.Observation?.PlayerCommon == null ? 0 : (int)observation.Observation.PlayerCommon.Minerals;
-            _currentFoodUsed = observation?.Observation?.PlayerCommon == null ? 0 : (int)observation.Observation.PlayerCommon.FoodUsed;
-            _currentFoodCap = observation?.Observation?.PlayerCommon == null ? 0 : (int)observation.Observation.PlayerCommon.FoodCap;
             if ((_currentFrame > 0 && _currentFrame % 5 == 0) || _anyWorkerRed)
             {
                Debugger.Break();
@@ -1982,19 +1974,10 @@ namespace BabySharkBot.Managers
                 var frameGateSatisfied = instruction.Command == WorkerInstructionCommand.Wait
                     && instruction.RequireFrame >= 0
                     && _currentFrame >= instruction.RequireFrame;
-                // Supply-full gate (owner spec 2026-10-17 14:08, extractor trick):
-                // a Wait row carrying RequireSupplyFull passes only when FoodUsed
-                // has reached FoodCap — the trick fires at a full 14/14 supply so
-                // the extractor build frees the point the larva morph needs and
-                // the cancel lands at 15/14 (one extra worker).
-                var supplyGateSatisfied = instruction.Command == WorkerInstructionCommand.Wait
-                    && instruction.RequireSupplyFull
-                    && _currentFoodCap > 0
-                    && _currentFoodUsed >= _currentFoodCap;
-                // Gated waits (mineral, frame, or supply) never pass on the cargo-handoff
+                // Gated waits (mineral or frame) never pass on the cargo-handoff
                 // edge — the handoff wait in front of them would leak them open.
                 var gatedWait = instruction.Command == WorkerInstructionCommand.Wait
-                    && (instruction.RequireMinerals >= 0 || instruction.RequireFrame >= 0 || instruction.RequireSupplyFull);
+                    && (instruction.RequireMinerals >= 0 || instruction.RequireFrame >= 0);
                 // A Wait row following a return-cargo command has no ability signature for
                 // "the deposit finished": the drone's order list just goes idle. Let it pass
                 // on the observed cargo transition instead, so the next set's moves cannot
@@ -2002,7 +1985,7 @@ namespace BabySharkBot.Managers
                 var cargoHandedOff = instruction.Command == WorkerInstructionCommand.Wait
                     && !gatedWait
                     && runtimeWorker.CargoReturned;
-                if (!frameSatisfied && !abilitySatisfied && !unconditionalJump && !cargoHandedOff && !harvestReleaseReady && !mineralGateSatisfied && !frameGateSatisfied && !supplyGateSatisfied)
+                if (!frameSatisfied && !abilitySatisfied && !unconditionalJump && !cargoHandedOff && !harvestReleaseReady && !mineralGateSatisfied && !frameGateSatisfied)
                 {
                     return true;
                 }

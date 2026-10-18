@@ -2478,20 +2478,11 @@ namespace BabySharkBot.Managers
             // 50 — the morph's spend), then BUILD_EXTRACTOR — TERMINAL row; the
             // drone morphs into the extractor and the mining manager's trick driver
             // owns the rest. No approach rows: set 3's move already ended at VA.
-            // The wait ALSO carries the supply-full gate (owner spec 2026-10-17
-            // 14:08: "The extractor trick is done at 14 supply to get to 15") —
-            // the row passes only when FoodUsed has reached FoodCap, because the
-            // trick only nets the extra worker at a full supply: the extractor
-            // build frees the supply point the larva morph needs, and the cancel
-            // lands at 15/14. Fired early (supply free) it would be an ordinary
-            // drone morph with extra steps, so the trick owner waits at VA until
-            // the 14th drone exists AND the bank holds 125.
             instructions.Add(new WorkerInstruction
             {
                 InstructionSet = "va",
                 Command = WorkerInstructionCommand.Wait,
-                RequireMinerals = BabySharkMiningManager.ExtractorTrickBuildMinerals,
-                RequireSupplyFull = true
+                RequireMinerals = BabySharkMiningManager.ExtractorTrickBuildMinerals
             });
             instructions.Add(new WorkerInstruction
             {

@@ -166,14 +166,6 @@ namespace BabySharkBot.Setup
         // rows: the row passes only once the ABSOLUTE game frame reaches this
         // value (-1 = disabled). Same cargo-handoff exclusion as RequireMinerals.
         public int RequireFrame { get; set; } = -1;
-        // Supply-full gate (owner spec 2026-10-17 14:08, extractor trick): valid
-        // on Wait rows — the row passes only when FoodUsed has reached FoodCap
-        // (supply is FULL, e.g. 14/14). The extractor trick only nets the extra
-        // worker when it fires at a full supply: the extractor build frees the
-        // supply point the larva morph needs. Fired early (supply free) it is
-        // just an ordinary drone morph with extra steps. Same cargo-handoff
-        // exclusion as RequireMinerals.
-        public bool RequireSupplyFull { get; set; }
     }
 
     public sealed class RuntimeWorkerState
