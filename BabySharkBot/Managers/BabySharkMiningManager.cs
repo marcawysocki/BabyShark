@@ -4399,36 +4399,28 @@ namespace BabySharkBot.Managers
                     && WorkerTypes.Contains((UnitTypes)worker.UnitType)
                     && Settings.RuntimeWorkers.TryGetValue(_b3TrickWorkerTag, out var runtimeWorker))
                 {
-                    // Trick-owner book resume (owner spec 2026-10-17 11:27): the
-                    // trick now runs on an OPENING worker (Y5 on Start 0 / T1 on
-                    // Start 1), not 13-B3. The worker's own book holds the whole
-                    // trick chapter inline — xwalk walk + redirect, the 125-mineral
-                    // wait, and the TERMINAL BuildExtractor row — followed by the
-                    // rows it should run once the cancelled extractor restores it
-                    // (T1: the prologue's second TA harvest staging; Y5: the
-                    // one-time YA chapter). Resume THIS book at the row after the
-                    // build instead of loading a separate book, so the post-trick
-                    // continuation is exactly the owner's normal rotation ("mine
-                    // TA/YA after the Extractor Trick").
-                    var resumeIndex = -1;
-                    for (var i = 0; i < runtimeWorker.Instructions.Count; i++)
+                    // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): after
+                    // the trick, prefer the "b3mh" book (mine BB once -> 25-frame
+                    // hatchery-side mineral walk -> return cargo -> MH site ->
+                    // wait 275 -> morph). "b3ret" remains the fallback when the
+                    // hatchery-side mineral geometry was unavailable at
+                    // onboarding.
+                    var bookName = B3ReturnInstructionSet;
+                    if (!Settings.RuntimeInstructionSets.TryGetValue(B3MacroHatcheryInstructionSet, out var book)
+                        || book == null)
                     {
-                        if (runtimeWorker.Instructions[i]?.Command == WorkerInstructionCommand.BuildExtractor)
-                        {
-                            resumeIndex = i + 1;
-                            break;
-                        }
+                        Settings.RuntimeInstructionSets.TryGetValue(B3ReturnInstructionSet, out book);
+                    }
+                    else
+                    {
+                        bookName = B3MacroHatcheryInstructionSet;
                     }
 
-                    if (resumeIndex > 0 && resumeIndex < runtimeWorker.Instructions.Count)
+                    if (book != null)
                     {
-                        runtimeWorker.LoadInstructions(
-                            runtimeWorker.InstructionSetName,
-                            runtimeWorker.Instructions,
-                            Settings.GetRelativeFrame(_currentFrame),
-                            resumeIndex);
+                        runtimeWorker.LoadInstructions(bookName, book, Settings.GetRelativeFrame(_currentFrame));
                         _b3TrickPhase = 3;
-                        Console.WriteLine($"[EXTRACTOR TRICK] cancel complete — book '{runtimeWorker.InstructionSetName}' resumed at row {resumeIndex} worker={_b3TrickWorkerTag} frame={_currentFrame}");
+                        Console.WriteLine($"[EXTRACTOR TRICK] cancel complete — {bookName} loaded worker={_b3TrickWorkerTag} frame={_currentFrame}");
                     }
                 }
             }
