@@ -172,7 +172,6 @@ namespace BabySharkBot.Setup
     {
         public ulong UnitTag { get; init; }
         public List<WorkerInstruction> Instructions { get; set; } = new();
-        public string InstructionSetName { get; set; } = string.Empty;
         public int CurInstrIdx { get; set; }
         public int InstructionStartFrame { get; set; }
         public int CurrentAbilityId { get; set; } = -1;
@@ -226,24 +225,9 @@ namespace BabySharkBot.Setup
             }
 
             Instructions = new List<WorkerInstruction>(instructions);
-            InstructionSetName = instructionSet ?? string.Empty;
             CurInstrIdx = 0;
             InstructionStartFrame = relativeFrame;
             TargetAbilityId = Instructions.Count == 0 ? -1 : Instructions[0].TargetAbilityId;
-        }
-
-        // Resume overload (extractor-trick rework, owner spec 2026-10-17 11:27):
-        // reloads the SAME book but starts executing at startIndex — used by the
-        // trick driver to continue the trick owner's rotation right after the
-        // (cancelled) BuildExtractor row instead of loading a separate book.
-        public void LoadInstructions(string instructionSet, IReadOnlyList<WorkerInstruction> instructions, int relativeFrame, int startIndex)
-        {
-            LoadInstructions(instructionSet, instructions, relativeFrame);
-            if (startIndex > 0 && startIndex < Instructions.Count)
-            {
-                CurInstrIdx = startIndex;
-                TargetAbilityId = Instructions[startIndex].TargetAbilityId;
-            }
         }
     }
 }

@@ -1802,23 +1802,35 @@ namespace BabySharkBot.Managers
                 AddSelfPairReturnInstructions(instructions, startIndex, onlyTarget);
                 instructions.Add(CreateHandoffWait());
 
-                // 13-B3 cover chapter (owner spec 2026-10-17 11:27): the extractor
-                // trick moved OFF B3 — the larva-born drone arrived too late for
-                // the 125-bank window — onto an opening worker (Y5 on Start 0, T1
-                // on Start 1). B3's book is now: the ONE standard BB harvest +
-                // return above, then ONE cover assignment on the trick side's B
-                // mineral (YB on Start 0 / TB on Start 1 — "replacing the drone
-                // doing the extractor trick for one assignment"), and on that
-                // trip's pickup (1183 -> 1184) ONE mineral walk to the mineral on
-                // the opposite side of the hatchery to get around it, returning
-                // cargo 25 frames in — once past the other workers' return
-                // points. Then the plain BB loop below. When the cover template
-                // or the opposite-side mineral is unavailable the chapter is
-                // skipped (logged) and B3 just loops BB.
-                var isB3CoverRole = string.Equals(NormalizeRole(workerRole), "B3", StringComparison.OrdinalIgnoreCase);
-                if (isB3CoverRole)
+                // 13-B3 extractor trick (owner spec 2026-10-15, settled spec 16:13):
+                // after the ONE standard BB harvest + return, B3 issues ONE mineral
+                // walk to the mineral nearest VA, ONE redirect move to VA just before
+                // arrival, then builds the extractor at a 125-mineral bank (75 build +
+                // 50 for the immediate larva morph). THE BUILD ROW IS TERMINAL — the
+                // drone morphs INTO the extractor — and the mining manager's trick
+                // driver takes over from there: morph the larva immediately, cancel
+                // the extractor the frame the morph begins, and load the "b3ret" BB
+                // loop once the drone is restored. Without VA/walk-mineral geometry
+                // the book falls back to the plain S2-style loop below.
+                if (string.Equals(NormalizeRole(workerRole), "B3", StringComparison.OrdinalIgnoreCase)
+                    && TryGetB3TrickGeometry(startIndex, out var b3WalkMineral, out var b3VaGeyser))
                 {
-                    AddB3CoverChapter(instructions, startIndex);
+                    AddB3ExtractorTrickChapter(instructions, b3WalkMineral, b3VaGeyser);
+                    RegisterB3ReturnBook(startIndex, onlyTarget);
+                    // B3 Macro Hatchery test chapter (owner spec 2026-10-16 18:35,
+                    // walk target corrected 19:42): after the extractor trick the
+                    // driver loads "b3mh" INSTEAD of the plain "b3ret" BB loop —
+                    // mine BB once (pickup, carrying), ONE mineral walk for 25
+                    // frames to the mineral at the SIDE OF THE HATCHERY (the
+                    // start's own mineral nearest the townhall), return cargo,
+                    // move to the Macro Hatchery site, wait for 275, morph the
+                    // hatchery. Built only when that mineral exists; otherwise
+                    // the driver falls back to "b3ret" exactly as before.
+                    if (TryGetB3MacroHatcherySideMineral(startIndex, out var b3SideMineral))
+                    {
+                        RegisterB3MacroHatcheryBook(startIndex, onlyTarget, b3SideMineral);
+                    }
+                    return instructions;
                 }
 
                 // Harvest-frame test case (owner spec 2026-10-11): the new S2 (W6)
@@ -1827,7 +1839,6 @@ namespace BabySharkBot.Managers
                 // time while W1 is mining". The staging rows sit inside the jump loop
                 // so every cycle re-stages; the self-pair harvest behind the gate
                 // still mines the {SB,SB} speed-mining point.
-                var loopStagingIndex = instructions.Count;
                 AddHarvestReleaseStagingInstructions(instructions, onlyTarget.ResourceUnitId);
                 var selfHarvestIndex = instructions.Count;
                 AddSelfPairHarvestInstructions(instructions, startIndex, "jitMH", onlyTarget);
@@ -1841,20 +1852,14 @@ namespace BabySharkBot.Managers
 
                 if (!string.Equals(NormalizeRole(workerRole), "B2", StringComparison.OrdinalIgnoreCase))
                 {
-                    // S2/B3/S3/B4: the infinite self-pair speed-mining loop. B3 jumps
-                    // back to the STAGING rows (loopStagingIndex), not the harvest —
-                    // it shares BB with B4 after the cover chapter, so every cycle
-                    // must re-stage at BB's CCA wait point and re-clear the
-                    // harvest-release gate before re-approaching (same fix the
-                    // retired "b3ret" book used; jumping past staging walked B3
-                    // onto a busy BB and got it re-pathed to random minerals).
+                    // S2: the infinite {SB,SB} self-pair speed-mining loop.
                     AddSelfPairReturnInstructions(instructions, startIndex, onlyTarget);
                     instructions.Add(CreateHandoffWait());
                     instructions.Add(new WorkerInstruction
                     {
                         InstructionSet = "last-line",
                         Command = WorkerInstructionCommand.Jump,
-                        JumpToInstructionIndex = isB3CoverRole ? loopStagingIndex : selfHarvestIndex
+                        JumpToInstructionIndex = selfHarvestIndex
                     });
                     return instructions;
                 }
@@ -1914,22 +1919,6 @@ namespace BabySharkBot.Managers
                 });
                 AddSelfPairReturnInstructions(instructions, startIndex, targets[0]);
                 instructions.Add(CreateHandoffWait());
-                // Extractor-trick owner splice (owner spec 2026-10-17 11:27): the
-                // trick moved OFF the larva-born 13-B3 onto an opening worker —
-                // T1 on Start 1 (VA sits next to TA) — right after its FIRST TA
-                // harvest + return, so it reaches VA near frame ~120 instead of
-                // B3's ~700 and only WAITS for the 125 bank. The trick chapter
-                // ends in the TERMINAL BuildExtractor row; the mining manager's
-                // driver cancels the extractor once the larva morph begins and
-                // RESUMES THIS BOOK at the row after the build — the staging row
-                // of the prologue's second TA harvest below — so T1 "mines TA
-                // after the Extractor Trick" and then runs its normal TB/TA
-                // rotation.
-                if (string.Equals(NormalizeRole(workerRole), GetExtractorTrickRole(startIndex), StringComparison.OrdinalIgnoreCase)
-                    && TryGetB3TrickGeometry(startIndex, out var trickWalkMineral, out var trickVaGeyser))
-                {
-                    AddB3ExtractorTrickChapter(instructions, trickWalkMineral, trickVaGeyser);
-                }
                 // Harvest-release staging (owner spec 2026-10-12, all workers): stage at
                 // the mineral's CCA wait point and gate on the harvest-release window
                 // before the prologue's second harvest.
@@ -2020,35 +2009,6 @@ namespace BabySharkBot.Managers
                 });
                 AddReturnInstructions(instructions, startIndex, targets[0], targets[swingStart]);
                 instructions.Add(CreateHandoffWait());
-                // Extractor-trick owner splice (owner spec 2026-10-17 11:27): the
-                // trick moved OFF the larva-born 13-B3 onto an opening worker —
-                // Y5 on Start 0 (VA sits next to YA) — right after the startup
-                // harvest + return. The trick chapter ends in the TERMINAL
-                // BuildExtractor row; the mining manager's driver cancels the
-                // extractor once the larva morph begins and RESUMES THIS BOOK at
-                // the row after the build. The one-time YA chapter below sits at
-                // exactly that spot, so Y5 "mines YA after the Extractor Trick",
-                // then hands off into the normal YB -> BA -> YA swing rotation
-                // (the mti -> swingStart row that already follows).
-                if (string.Equals(NormalizeRole(workerRole), GetExtractorTrickRole(startIndex), StringComparison.OrdinalIgnoreCase)
-                    && targets.Count >= 4
-                    && TryGetB3TrickGeometry(startIndex, out var trickWalkMineral, out var trickVaGeyser))
-                {
-                    AddB3ExtractorTrickChapter(instructions, trickWalkMineral, trickVaGeyser);
-                    var yaTarget = targets[2];
-                    var ybTarget = targets[3];
-                    AddHarvestReleaseStagingInstructions(instructions, yaTarget.ResourceUnitId);
-                    AddHarvestInstructions(instructions, startIndex, "jitMH", yaTarget, ybTarget, WorkerInstructionPoint.JitHarvestA);
-                    instructions.Add(new WorkerInstruction
-                    {
-                        InstructionSet = "wait",
-                        Command = WorkerInstructionCommand.Wait,
-                        PreviousAbilityId = firstGatherAbility,
-                        TargetAbilityId = returnAbility
-                    });
-                    AddReturnInstructions(instructions, startIndex, yaTarget, ybTarget);
-                    instructions.Add(CreateHandoffWait());
-                }
                 instructions.Add(new WorkerInstruction { InstructionSet = "wait", Command = WorkerInstructionCommand.Wait, NextTargetIndex = targets.Count == 5 ? 1 : swingStart });
 
                 var loopStart = 1;
@@ -2369,17 +2329,6 @@ namespace BabySharkBot.Managers
         // the mining manager only executes/loads it.
         private const string B3ReturnInstructionSet = "b3ret";
 
-        // Extractor-trick owner (owner spec 2026-10-17 11:27): the trick moved
-        // OFF 13-B3 — the larva-born drone arrived too late for the 125-bank
-        // window ("B3 is not arriving soon enough"). An opening worker does it
-        // instead: Y5 on Start 0 (yellow side — VA sits next to YA), T1 on
-        // Start 1 (teal — VA next to TA). After the trick the owner mines that
-        // side's A mineral. B3 (first temp drone) instead covers ONE assignment
-        // on the trick side's B mineral (YB / TB) with a far-side walk return.
-        private static string GetExtractorTrickRole(int startIndex) => startIndex == 0 ? "Y5" : "T1";
-        private static string GetTrickSideBLabel(int startIndex) => startIndex == 0 ? "YB" : "TB";
-        private static string GetTrickOppositeALabel(int startIndex) => startIndex == 0 ? "TA" : "YA";
-
         // Geometry for the 13-B3 trick chapter: the main-base VA geyser and the
         // mineral nearest it (the walk mineral — YA or TA depending on start, by
         // distance). False when either is unavailable, in which case the caller
@@ -2493,80 +2442,47 @@ namespace BabySharkBot.Managers
             });
         }
 
-        // 13-B3 cover chapter (owner spec 2026-10-17 11:27): B3 no longer does
-        // the extractor trick — it covers ONE assignment on the trick side's B
-        // mineral while the trick owner (Y5/T1) is away at VA:
-        //   coverwalk 0 (stage/wait/jitMH/wait): stage at the cover mineral's
-        //            CCA wait point, release gate, self-pair harvest rows, then
-        //            the ability gate (1183 -> 1184) that passes the pickup
-        //            frame, so the mineral walk below is issued CARRYING.
-        //   coverwalk 1 (coverwalk Gather): ONE mineral walk — a single
-        //            unqueued Smart Harvest on the OPPOSITE side's A mineral
-        //            (TA on Start 0 / YA on Start 1) — to get around the
-        //            hatchery ("issue ONE Mineral Walk to the opposite side to
-        //            get around the Hatchery"). No re-issue rows.
-        //   coverwalk 2 (coverwalk Return): return cargo at RelativeFrame 25 —
-        //            25 frames in the walker is past the other workers' return
-        //            points ("return Cargo when it is past any other return
-        //            points"). The frame count starts at the pickup gate above
-        //            (same pattern as the extractor-trick xwalk set and the
-        //            retired b3mh "mhwalk" set). Return resolves the town hall
-        //            through the cover mining target.
-        //   handoff wait: passes when the deposit lands; the caller's BB loop
-        //            staging then takes over.
-        // When the cover mining-target template or the opposite-side mineral is
-        // unavailable the chapter is SKIPPED (logged) and B3 falls straight
-        // into the plain BB loop.
-        private static void AddB3CoverChapter(List<WorkerInstruction> instructions, int startIndex)
+        // 13-B3 return book: the EXACT loop S3/B4 run (Build5x5Book temp branch,
+        // the rows after the startup cycle) — re-stage on the harvest-release gate
+        // every cycle, self-pair harvest, the ability-gated harvest->return wait,
+        // self-pair return, handoff wait, jump back to the harvest. The previous
+        // hand-rolled variant dropped the ability-gated wait, so the jitRM rows
+        // fired out of phase with the drone's actual gather->return cycle: the
+        // return point was stored while the drone stood at the mineral and the
+        // queued move parked it there on a no-op (owner report 2026-10-16 00:52
+        // "mines a few times then gets stuck at the hatchery"). Loaded by the
+        // mining manager's trick driver the frame the cancelled extractor restores
+        // the drone, so 13-B3 returns to mining BB after the trick (owner spec:
+        // "13-B3 cancels the extractor and will mineral walk or move back to BB
+        // and return to mining").
+        private static void RegisterB3ReturnBook(int startIndex, MiningTargetDto target)
         {
-            var coverLabel = GetTrickSideBLabel(startIndex);
-            var oppositeALabel = GetTrickOppositeALabel(startIndex);
-
-            var mapData = Globals.CurrentMapData;
-            var assigned = mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
-            var coverTarget = assigned?
-                .SelectMany(worker => worker?.MiningTargets ?? new List<MiningTargetDto>())
-                .FirstOrDefault(candidate => candidate != null
-                    && string.Equals(candidate.ResourceLabel, coverLabel, StringComparison.OrdinalIgnoreCase));
-            var oppositeMineral = mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)?
-                .FirstOrDefault(candidate => candidate != null
-                    && candidate.UnitTag != 0
-                    && string.Equals(candidate.Label, oppositeALabel, StringComparison.OrdinalIgnoreCase));
-
-            if (coverTarget == null || oppositeMineral == null)
-            {
-                Console.WriteLine($"[B3 COVER SKIP] start={startIndex} cover={coverLabel} template={(coverTarget == null ? "missing" : "ok")} opposite={oppositeALabel} mineral={(oppositeMineral == null ? "missing" : "ok")} — B3 falls into the plain BB loop");
-                return;
-            }
-
-            AddHarvestReleaseStagingInstructions(instructions, coverTarget.ResourceUnitId);
-            AddSelfPairHarvestInstructions(instructions, startIndex, "jitMH", coverTarget);
-            instructions.Add(new WorkerInstruction
+            var returnBook = new List<WorkerInstruction>();
+            AddHarvestReleaseStagingInstructions(returnBook, target.ResourceUnitId);
+            // The loop jump targets index 0, NOT the row after the staging pair: B3
+            // shares BB with B4 after the extractor trick, so every cycle must
+            // re-stage at BB's CCA wait point and re-clear the harvest-release
+            // gate before re-approaching — jumping past the staging rows made B3
+            // walk onto a busy BB and get re-pathed to random minerals (owner
+            // report 2026-10-16, worker collision pass).
+            const int loopStartIndex = 0;
+            AddSelfPairHarvestInstructions(returnBook, startIndex, "jitMH", target);
+            returnBook.Add(new WorkerInstruction
             {
                 InstructionSet = "wait",
                 Command = WorkerInstructionCommand.Wait,
                 PreviousAbilityId = (int)Abilities.HARVEST_GATHER_DRONE,
                 TargetAbilityId = (int)Abilities.HARVEST_RETURN_DRONE
             });
-
-            instructions.Add(new WorkerInstruction
+            AddSelfPairReturnInstructions(returnBook, startIndex, target);
+            returnBook.Add(CreateHandoffWait());
+            returnBook.Add(new WorkerInstruction
             {
-                InstructionSet = "coverwalk",
-                Command = WorkerInstructionCommand.Gather,
-                TargetId = oppositeMineral.UnitTag,
-                NoCondition = true,
-                Queue = false
+                InstructionSet = "last-line",
+                Command = WorkerInstructionCommand.Jump,
+                JumpToInstructionIndex = loopStartIndex
             });
-            instructions.Add(new WorkerInstruction
-            {
-                InstructionSet = "coverwalk",
-                Command = WorkerInstructionCommand.Return,
-                TargetId = coverTarget.ResourceUnitId,
-                RelativeFrame = 25,
-                Queue = false
-            });
-
-            instructions.Add(CreateHandoffWait());
+            Settings.RuntimeInstructionSets[B3ReturnInstructionSet] = returnBook;
         }
 
         // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): the book the
