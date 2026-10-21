@@ -95,17 +95,23 @@ namespace BabySharkBot.Setup
         // optimization loop. Enabled only via the --suicide-end command line
         // flag; never active in ladder or normal runs.
         public static bool EarlySuicideTestEnd = false;
-        // Bump test harness (owner spec 2026-10-18): BumpTestMode 0 = normal opening,
-        // 1 = no-help baseline (T4/T5/Y4/B2 mineral-walk at frame 0), 2 = T4/Y4 bump
-        // only (T5/B2 walk at frame 0), 3 = full choreography with bumpers. BumpAngle
-        // rotates the bumper stand point around the A-mineral SM harvest point
-        // (0 = straight-on); the sweep starts severe and reduces toward 0.
+        // Bump test harness (owner spec 2026-10-18; frame-schedule choreography
+        // 2026-10-20 "South New Worker Order", REPLACES the retired 2026-10-19
+        // distance-trigger chase):
+        // BumpTestMode 0 (default) = the frame-schedule choreography: T4/T5 walk
+        // SA and Y4/Y5 walk SB for frames 0-5 — Y4/Y5 until 0.4u clear of every
+        // role-1/2/3 worker — then all four follow T1/Y1's live position every
+        // frame 6-18, mineral-walk SB at frame 19, and stage on their own B
+        // mineral at frame 25 (Y-side chaser B2->Y5 per the 2026-10-21 W12/W10
+        // switch worker order).
+        // 1 = no-help baseline (T4/T5/Y4/Y5 mineral-walk at frame 0).
+        // 2/3 = aliases of 0 (modes 0/2/3 behave identically; owner directive
+        // 2026-10-20 19:03: the choreography is the default opening, no flag).
+        // BumpAngle is the retired stand-point rotation knob (now inert).
         public static int BumpTestMode = 0;
         public static float BumpAngleDegrees = 0f;
-        // Spawn guard (measurement hygiene): when true, a game that rolls the NW spawn
-        // exits at frame 0 so only SE games are ever measured. Only ever set in the
-        // single-player path — on ladder it must stay false (exiting = forfeit).
-        public static bool SpawnGuardExitOnNw = false;
+        // Spawn guard REMOVED 2026-10-20 (owner directive "Turn NW Start back
+        // on"): NW games no longer exit; the flag and its only consumer are gone.
         // 13-B3 extractor trick (owner spec 2026-10-15): set by the mining manager's
         // trick driver, read by TwelvePoolBuild's drone morph gating. MorphBegun = the
         // trick larva's TRAIN_DRONE order was observed (supply 14/14); Done = the

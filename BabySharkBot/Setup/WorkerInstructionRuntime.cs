@@ -68,6 +68,29 @@ namespace BabySharkBot.Setup
         // partner chase) so a blocked walk can never park the bumper on the walk
         // mineral.
         BumpSmBumper,
+        // 5x5 chase-bump follow target (owner spec 2026-10-20 "South New Worker
+        // Order", REPLACES the retired distance triggers): resolves to the chased
+        // partner's live position (T4/T5: T1, Y4/B2: Y1) — the chase Move rows are
+        // purely frame-gated (relative frames 6-18). The Y-side roles (Y4/B2)
+        // hold until the walker is CLEAR of every role-1/2/3 worker (0.4u
+        // radius): null while any is inside the radius ("Mineral Walk to SB
+        // until they are clear of any workers"), so the frame-gated row waits
+        // silently and the SB walk gather keeps carrying the worker; deadline
+        // fail-open at relative frame 20 so a permanently crowded corridor can
+        // never park the walker out of the frame-19 SB walk row.
+        BumpChasePartner,
+        // 5x5 chase-bump clearance gate (owner spec 2026-10-19): resolves to the
+        // worker's own position once NO role-1/2/3 worker (T1/T2/T3/Y1/Y2/Y3) is
+        // within 0.4u — the walker has cleared the miners' corridors around the
+        // central walk mineral (SA) and can safely move to its own B-mineral
+        // staging area. The four chase-bump walkers (T4/T5/Y4/B2) are NOT
+        // blockers — they share the central mineral and must never gate each
+        // other (B2's label ends in 2, but in this choreography it is the Y-line
+        // backstop, not a role-2 miner). Null while any role-1/2/3 worker is
+        // inside the radius, so the inverted-gate jump keeps re-issuing the SA
+        // mineral walk. Timeout fail-open so a permanently crowded mineral can
+        // never park the walker on the gather forever.
+        BumpClearOfWorkersGate,
         // 5x5 B2 pool build (owner spec 2026-10-13): the persisted spawning-pool
         // placement (mini-wall spot) for the current spawn — B2's "Move to Pool"
         // rows walk to this point after depositing its cargo, so the mineral
@@ -113,10 +136,11 @@ namespace BabySharkBot.Setup
         // point (one unit farther from the mineral center than the JIT harvest
         // point). A staged worker stands here — outside the footprint — until the
         // harvest-release gate (WorkerInstruction.HarvestReleaseGate) says the
-        // mineral's active harvester has ReleaseLeadFrames or fewer harvest
-        // frames left, so the worker is never the standing 1183 waiter the game
-        // re-pathes away after 15 frames. Resolved from the team assignments by
-        // mineral UnitTag, with the team JIT wait point as fallback.
+        // mineral is free or its active harvester has ACCUMULATED
+        // HarvestFrameTracker.StagedReleaseHarvestFrames (32) harvest frames
+        // (owner spec 2026-10-20 20:09), so the worker is never the standing 1183
+        // waiter the game re-pathes away after 15 frames. Resolved from the team
+        // assignments by mineral UnitTag, with the team JIT wait point as fallback.
         CcaWait
     }
 
@@ -148,13 +172,22 @@ namespace BabySharkBot.Setup
         // Used by the bump walk loop to re-issue the 1183 harvest every frame until
         // the BumpAlignedGate resolves, then fall through to the stop row.
         public bool InvertGate { get; set; }
-        // New-logic harvest-release gate (owner spec 2026-10-11), valid on Wait rows:
-        // the row passes when the row TargetId mineral has NO active harvester (free
-        // right now) or its active harvester will flip to 1184 within
-        // HarvestFrameTracker.ReleaseLeadFrames frames. While neither holds the row
-        // blocks with no command, leaving the worker standing at the CcaWait staging
-        // point — never on the busy mineral's footprint where the game would re-path
-        // it away after 15 frames.
+        // Relative jump target (owner fix 2026-10-19): when true, the jump targets
+        // the row DIRECTLY ABOVE itself (CurInstrIdx - 1) instead of the absolute
+        // JumpToInstructionIndex. BuildMineralInstructionList PREPENDS rows for
+        // single-target temp roles (B2's {BB,BB} self-pair setup), which shifts
+        // every absolute index in the startup set — the chase-bump clearance jump
+        // sits immediately below its walk-gather row, so "previous row" is
+        // prepend-proof. JumpToInstructionIndex is ignored when this is set.
+        public bool JumpToPreviousRow { get; set; }
+        // New-logic harvest-release gate (owner specs 2026-10-11 / 2026-10-20 20:09),
+        // valid on Wait rows: the row passes when the row TargetId mineral has NO
+        // active harvester (free right now) or its active harvester has ACCUMULATED
+        // HarvestFrameTracker.StagedReleaseHarvestFrames (32) harvest frames —
+        // "All Workers needs to stage until the active mineral has 32 Harvest
+        // frames". While neither holds the row blocks with no command, leaving the
+        // worker standing at the CcaWait staging point — never on the busy
+        // mineral's footprint where the game would re-path it away after 15 frames.
         public bool HarvestReleaseGate { get; set; }
         // Mineral gate (owner spec 2026-10-13, B2 pool build), valid on Wait rows:
         // the row passes only when the mineral bank holds at least this many

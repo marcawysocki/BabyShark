@@ -117,10 +117,8 @@ namespace BabySharkBot
             // must not reroute the bot into ladder mode — the tuning loop
             // still wants the self-launched single-player game.
             var hasLadderArgs = args.Any(a => !IsHarnessArg(a));
-            // Spawn guard: only in self-launched single-player games (on ladder,
-            // exiting would forfeit). --no-spawn-guard opts out explicitly.
-            Settings.SpawnGuardExitOnNw = !hasLadderArgs
-                && !args.Any(a => string.Equals(a, "--no-spawn-guard", StringComparison.OrdinalIgnoreCase));
+            // Spawn guard removed 2026-10-20 (owner directive "Turn NW Start back
+            // on"): NW and SE games both run in self-launched single-player games.
             if (args.Length == 0 || !hasLadderArgs)
             {
                 gameConnection.RunSinglePlayer(sharkyExampleBot, @randomMap, myRace, Race.Zerg, Difficulty.CheatInsane, AIBuild.RandomBuild, botName: botName).Wait();
@@ -185,10 +183,16 @@ namespace BabySharkBot
                 Console.WriteLine("EarlySuicideTestEnd ENABLED — at 200 minerals the pool is cancelled and all workers attack our own hatchery");
             }
 
-            // Bump test harness (owner spec 2026-10-18): --bump-test=1|2|3 selects the
-            // opening configuration, --bump-angle=degrees rotates the bumper stand point
-            // for the angle sweep. Both are single-player harness flags (=value form so
-            // the ladder-arg filter above can recognize them).
+            // Bump test harness (owner spec 2026-10-18; frame-schedule choreography
+            // 2026-10-20): --bump-test=1|2|3 selects the opening configuration —
+            // mode 1 = no-help baseline (helpers mineral-walk at frame 0); modes
+            // 0/2/3 = the frame-schedule choreography (T4/T5 mineral-walk SA, Y4/B2
+            // SB for frames 0-5, then all four follow T1/Y1's live position every
+            // frame 6-18, mineral-walk SB at frame 19, and stage on their own B
+            // mineral at frame 25) — mode 0 is the default, so no flag is needed.
+            // --bump-angle=degrees is the retired stand-point rotation knob (now
+            // inert). Both are single-player harness flags (=value form so the
+            // ladder-arg filter above can recognize them).
             var bumpTestArg = args.FirstOrDefault(a => a.StartsWith("--bump-test=", StringComparison.OrdinalIgnoreCase));
             if (bumpTestArg != null
                 && int.TryParse(bumpTestArg.Substring("--bump-test=".Length), out var bumpTestMode)
@@ -196,6 +200,15 @@ namespace BabySharkBot
             {
                 Settings.BumpTestMode = bumpTestMode;
                 Console.WriteLine($"BumpTestMode ENABLED — mode {bumpTestMode} opening configuration");
+            }
+            else
+            {
+                // Always print the effective mode: mode 0 (no flag) IS the
+                // frame-schedule choreography now (owner directive 2026-10-20
+                // 19:03) — T4/T5 target SA frames 0-5 then follow T1 from
+                // frame 6. Only mode 1 (--bump-test=1) keeps the no-help
+                // baseline opening.
+                Console.WriteLine($"BumpTestMode = {Settings.BumpTestMode} (0/2/3 = frame-schedule choreography; 1 = no-help baseline)");
             }
             var bumpAngleArg = args.FirstOrDefault(a => a.StartsWith("--bump-angle=", StringComparison.OrdinalIgnoreCase));
             if (bumpAngleArg != null

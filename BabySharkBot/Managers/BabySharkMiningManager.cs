@@ -156,6 +156,32 @@ namespace BabySharkBot.Managers
         private const float WaitWalkPastPartnerMargin = 0.10f;
         private const int WaitWalkGateTimeoutFrames = 70;
 
+        // 5x5 chase-bump clearance gate (owner spec 2026-10-19): the frame-16 central-BB
+        // mineral walk ends the moment the walker is BumpClearGateRadius (0.4u) from
+        // EVERY other assigned worker. Timeout fail-open mirrors the wait-walk gate;
+        // hold start is tracked per worker here for the same InstructionStartFrame-reset
+        // reason.
+        private readonly Dictionary<ulong, int> _bumpClearGateHoldStartFrames = new Dictionary<ulong, int>();
+        private const float BumpClearGateRadius = 0.4f;
+        private const int BumpClearGateTimeoutFrames = 70;
+
+        // 5x5 chase-bump follow resolver state — RETIRED 2026-10-20 with the
+        // distance triggers (owner spec "South New Worker Order"; owner report
+        // on the triggers: "I don't think it was working as intended"). The
+        // frame-schedule rows (walk 1-5, chase 6-18, SB walk 19, stage 25) gate
+        // themselves; the only resolver state left is the Y-side clear-hold
+        // start frames for the "mineral walk to SB until clear" deadline.
+        private readonly Dictionary<ulong, int> _chaseBumpSetStartFrames = new Dictionary<ulong, int>();
+        private const int BumpChaseMaxRelativeFrame = 20;
+
+        // First-harvest wait (owner directive 2026-10-19 23:19): the four chase
+        // helpers hold on the central SA mineral until their chased partner
+        // finishes its first harvest. Absolute fail-open — the first harvest
+        // always completes well before this frame; past it the wait never
+        // holds (a broken partner observation cannot park the walker).
+        private const int BumpFirstHarvestWaitMaxFrame = 300;
+        private readonly HashSet<ulong> _bumpFirstHarvestHoldLogged = new HashSet<ulong>();
+
         private readonly object _instructionTraceLock = new object();
         private readonly JsonSerializerOptions _instructionTraceJsonOptions = new JsonSerializerOptions { WriteIndented = false };
         private readonly string _instructionTraceFile;
@@ -841,38 +867,9 @@ namespace BabySharkBot.Managers
         // 75 spend and the ideal both-same-frame 125 drop are excluded; the
         // latter lands the bank under 50, caught by the bank check).
         private int _b3TrickLastMinerals = -1;
-        // Spawn guard one-shot: at the first frame with units observable, check
-        // our ACTUAL hatchery position. The bot hardcodes the SE start; when SC2
-        // rolls the NW spawn the game is garbage for measurement (wrong return
-        // points, wrong books) — exit so the run loop can relaunch. Only ever
-        // armed in the single-player path (Program sets the flag; ladder never).
-        private bool _spawnGuardChecked;
-
-        private void CheckSpawnGuard(ResponseObservation observation)
-        {
-            if (!Settings.SpawnGuardExitOnNw || _spawnGuardChecked)
-            {
-                return;
-            }
-            var units = observation?.Observation?.RawData?.Units;
-            if (units == null)
-            {
-                return;
-            }
-            var hatchery = units.FirstOrDefault(u => u != null
-                && u.Alliance == Alliance.Self
-                && u.UnitType == (uint)UnitTypes.ZERG_HATCHERY);
-            if (hatchery == null)
-            {
-                return;
-            }
-            _spawnGuardChecked = true;
-            if (hatchery.Pos.X < 100f)
-            {
-                Console.WriteLine($"[SPAWN-GUARD] NW spawn detected (hatchery at {hatchery.Pos.X:F1},{hatchery.Pos.Y:F1}) — exiting so only SE games are measured; relaunch for an SE game");
-                Environment.Exit(0);
-            }
-        }
+        // NW spawn guard REMOVED (owner directive 2026-10-20 "Turn NW Start back
+        // on … do not gate just remove the guard"): NW and SE games both run and
+        // are measured now; only one start location runs per game.
 
         public IEnumerable<SC2Action> OnFrame(ResponseObservation observation)
         {
@@ -897,11 +894,10 @@ namespace BabySharkBot.Managers
                 return Array.Empty<SC2Action>();
             }
 
-            CheckSpawnGuard(observation);
-
             ProcessFrameObservation(observation);
             UpdateCollisionVisualStates();
             WriteInstructionTrace();
+            TraceBumpContact();
 
             // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): resolve
             // the build milestone (success/failure) BEFORE the frozen check so
@@ -1650,6 +1646,23 @@ namespace BabySharkBot.Managers
                         break;
                     }
 
+                    // A Move/Stop whose point cannot resolve yet is WAITING, not
+                    // failing: a frame-gated chase row (BumpChasePartner) is
+                    // frame-satisfied from its relative frame onward, so without
+                    // this break it attempted execution every frame before the
+                    // trigger fired, logged a no-action failure each frame, and
+                    // never consumed (bumptest_chase2_run1: Y4/B2 spammed
+                    // [WORKER INSTRUCTION FAILURE] on every frame 0-260+). The
+                    // trigger-gated resolver returning null is the same state as
+                    // an unsatisfied gate — wait silently; the row executes the
+                    // frame the point resolves.
+                    if (targetPoint == null
+                        && (instruction.Command == WorkerInstructionCommand.Move
+                            || instruction.Command == WorkerInstructionCommand.Stop))
+                    {
+                        break;
+                    }
+
                     var positionSatisfied = targetPoint != null
                         && DistanceSquared(runtimeWorker.Position, targetPoint) <= instruction.PositionTolerance * instruction.PositionTolerance;
                     // NoCondition rows are choreography (mineral walks, build morphs,
@@ -1968,12 +1981,17 @@ namespace BabySharkBot.Managers
             }
 
             // Bump partner for the red-alert proximity check. 5x5 Version 2 bump roles
-            // are T4 (bumps T1) and Y4 (bumps Y1); experiment 1 bumps with T3/Y3.
+            // are T4 (bumps T1) and Y4 (bumps Y1); the 2026-10-19 chase-bump
+            // choreography adds T5 (chases T1) and B2 (chases Y1) — with the
+            // 2026-10-21 W12/W10 label swap the Y5-keyed chase is run by W12 and
+            // B2 (W10) runs the BB mineral walk; experiment 1 bumps with T3/Y3.
             string partnerRole;
             if (Settings.IsMagannatha5x5Rotation)
             {
                 partnerRole = string.Equals(assignedWorker.Role, "T4", StringComparison.OrdinalIgnoreCase) ? "T1"
+                    : string.Equals(assignedWorker.Role, "T5", StringComparison.OrdinalIgnoreCase) ? "T1"
                     : string.Equals(assignedWorker.Role, "Y4", StringComparison.OrdinalIgnoreCase) ? "Y1"
+                    : string.Equals(assignedWorker.Role, "Y5", StringComparison.OrdinalIgnoreCase) ? "Y1"
                     : string.Empty;
             }
             else
@@ -2053,7 +2071,10 @@ namespace BabySharkBot.Managers
                 // several times in the frame the jump runs.
                 if (instruction.Command == WorkerInstructionCommand.Jump && instruction.InvertGate)
                 {
-                    if (instruction.JumpToInstructionIndex < 0 || instruction.JumpToInstructionIndex >= runtimeWorker.Instructions.Count)
+                    var invertedTarget = instruction.JumpToPreviousRow
+                        ? runtimeWorker.CurInstrIdx - 1
+                        : instruction.JumpToInstructionIndex;
+                    if (invertedTarget < 0 || invertedTarget >= runtimeWorker.Instructions.Count)
                     {
                         ReportInstructionFailure(runtimeWorker, "inverted-gate jump row has invalid target index", instruction);
                         return false;
@@ -2067,7 +2088,7 @@ namespace BabySharkBot.Managers
                         continue;
                     }
 
-                    runtimeWorker.CurInstrIdx = instruction.JumpToInstructionIndex;
+                    runtimeWorker.CurInstrIdx = invertedTarget;
                     runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
                     return false;
                 }
@@ -2128,13 +2149,16 @@ namespace BabySharkBot.Managers
                     return true;
                 }
 
-                if (instruction.JumpToInstructionIndex < 0 || instruction.JumpToInstructionIndex >= runtimeWorker.Instructions.Count)
+                var jumpTargetIndex = instruction.JumpToPreviousRow
+                    ? runtimeWorker.CurInstrIdx - 1
+                    : instruction.JumpToInstructionIndex;
+                if (jumpTargetIndex < 0 || jumpTargetIndex >= runtimeWorker.Instructions.Count)
                 {
                     ReportInstructionFailure(runtimeWorker, "jump row has invalid target index", instruction);
                     return false;
                 }
 
-                runtimeWorker.CurInstrIdx = instruction.JumpToInstructionIndex;
+                runtimeWorker.CurInstrIdx = jumpTargetIndex;
                 runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
             }
 
@@ -2325,6 +2349,14 @@ namespace BabySharkBot.Managers
                 return ResolveWaitWalkClearGatePoint(assignedWorker, instruction);
             }
 
+            // Same for the chase-bump clearance gate: it compares the walker's live
+            // position against EVERY other assigned worker's live position — none of
+            // which is the row TargetId's stored mining target point.
+            if (instruction.Point == WorkerInstructionPoint.BumpClearOfWorkersGate)
+            {
+                return ResolveBumpClearOfWorkersGatePoint(assignedWorker, instruction);
+            }
+
             // 5x5 T1 first set: the SM-line midpoint and the T4 bumper gate are computed
             // from the pair table and live observation, not from the row TargetId's
             // stored mining target, so they run before the MiningTargets lookup below.
@@ -2370,6 +2402,19 @@ namespace BabySharkBot.Managers
             if (instruction.Point == WorkerInstructionPoint.VaWalkRedirect)
             {
                 return ResolveVaWalkRedirectPoint(runtimeWorker, instruction);
+            }
+
+            // Same for the chase-bump phase-1 chase: the trigger distances, the
+            // frame-15 deadline, and the chased partner's live position are all
+            // live observation across assigned workers — none of it is the row
+            // TargetId's stored mining target (B2's rows carry the Y1-partner A
+            // mineral YA, which is not in B2's single-target book, so the
+            // MiningTargets lookup below returned null before the resolver ever
+            // ran — bumptest_chase2_run2: B2 never captured its start, never
+            // chased, and silently mined BB instead).
+            if (instruction.Point == WorkerInstructionPoint.BumpChasePartner)
+            {
+                return ResolveBumpChasePartnerPoint(assignedWorker);
             }
 
             // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): the site is
@@ -2435,7 +2480,7 @@ namespace BabySharkBot.Managers
             return instruction.Point switch
             {
                 WorkerInstructionPoint.Harvest => _speedMiningActive && HasNonZeroPoint(target.SmHarvestPoint) ? target.SmHarvestPoint : target.HarvestPoint,
-                WorkerInstructionPoint.Return => _speedMiningActive && HasNonZeroPoint(target.SmReturnPoint) ? target.SmReturnPoint : target.ReturnPoint,
+                WorkerInstructionPoint.Return => SpreadReturnPoint(assignedWorker, _speedMiningActive && HasNonZeroPoint(target.SmReturnPoint) ? target.SmReturnPoint : target.ReturnPoint),
                 WorkerInstructionPoint.StoredTarget when HasNonZeroPoint(runtimeWorker?.StoredTargetPoint) => runtimeWorker.StoredTargetPoint,
                 WorkerInstructionPoint.Staging when teamAssignment != null
                     => ResolveCcaWaitPoint(teamAssignment, assignedWorker.Role),
@@ -2457,20 +2502,71 @@ namespace BabySharkBot.Managers
         // deposit points land on opposite sides of the shared pair point.
         // 8 degrees at the ~2.85u hatchery-return radius is ~0.4u of arc per
         // worker, ~0.8u between them — enough to deposit without contact.
+        // Generalized 2026-10-19 (owner screenshot: V5 bounced off the H1
+        // rim on the first return — the whole V team deposits at one spot):
+        // the V and C teams get their own slot on the return circle, 24° per
+        // slot (1.2u of arc at the return radius — owner directive "wider"
+        // 2026-10-19, up from the 16°/0.8u Y-pair spacing after V5 still
+        // bounced); C is half-stepped off V's grid since C2 deposits in the
+        // same cluster. T and B stay at 0 — measured 2026-10-19
+        // (bumptest_chase2_sprd_run1: 349 vs 339.7): spreading T pushes its
+        // deposit off its own mineral line and costs ~9 frames a trip, and
+        // B2's pool preposition rides a ".ReturnPoint" reference that must
+        // stay exact. Y keeps only the owner-spec 2026-10-17 Y1/Y2 pair.
         private const float Y1ReturnSpreadDegrees = 8f;
         private const float Y2ReturnSpreadDegrees = -8f;
 
         private static float ReturnPointSpreadDegrees(string role)
         {
-            if (string.Equals(role, "Y1", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrEmpty(role) || role.Length < 2)
             {
-                return Y1ReturnSpreadDegrees;
+                return 0f;
             }
-            if (string.Equals(role, "Y2", StringComparison.OrdinalIgnoreCase))
+
+            var prefix = char.ToUpperInvariant(role[0]);
+            if (!int.TryParse(role.Substring(1), out var slot) || slot < 1)
             {
-                return Y2ReturnSpreadDegrees;
+                return 0f;
             }
-            return 0f;
+
+            switch (prefix)
+            {
+                case 'V':
+                    return (slot - 1) * 24f - 48f;
+                case 'C':
+                    return (slot - 1) * 24f - 48f + 12f;
+                case 'Y':
+                    // Y1/Y2 keep the owner-spec 2026-10-17 values exactly.
+                    if (slot == 1)
+                    {
+                        return Y1ReturnSpreadDegrees;
+                    }
+
+                    if (slot == 2)
+                    {
+                        return Y2ReturnSpreadDegrees;
+                    }
+
+                    return 0f;
+                default:
+                    return 0f;
+            }
+        }
+
+        // Applies the per-role return spread to any resolved return point
+        // (reference rows, plain Return rows, and the T1 first-return
+        // interrupt). Falls back to the unsprayed point whenever the town
+        // hall or the spread cannot resolve so a spread glitch can never
+        // stall a return row.
+        private static Vector2Dto SpreadReturnPoint(AssignedWorkerDto assignedWorker, Vector2Dto point)
+        {
+            var spread = ReturnPointSpreadDegrees(assignedWorker?.Role);
+            if (spread == 0f || point == null)
+            {
+                return point;
+            }
+
+            return SpreadPointAroundTownHall(assignedWorker, point, spread) ?? point;
         }
 
         // Rotates a point around the worker's town hall center by the given
@@ -2890,8 +2986,14 @@ namespace BabySharkBot.Managers
             string partnerRole;
             if (Settings.IsMagannatha5x5Rotation)
             {
+                // 5x5 Version 2 bump roles were T4 (bumps T1) and Y4 (bumps Y1); the
+                // 2026-10-19 chase-bump choreography adds T5 (chases T1) and B2
+                // (chases Y1) — with the 2026-10-21 W12/W10 label swap the
+                // Y5-keyed chase is run by W12 and B2 (W10) runs the BB walk.
                 partnerRole = workerRole.Equals("T4", StringComparison.OrdinalIgnoreCase) ? "T1"
+                    : workerRole.Equals("T5", StringComparison.OrdinalIgnoreCase) ? "T1"
                     : workerRole.Equals("Y4", StringComparison.OrdinalIgnoreCase) ? "Y1"
+                    : workerRole.Equals("Y5", StringComparison.OrdinalIgnoreCase) ? "Y1"
                     : string.Empty;
             }
             else
@@ -3091,6 +3193,359 @@ namespace BabySharkBot.Managers
             return null;
         }
 
+        // Chase-bump clearance gate (owner spec 2026-10-19): resolves to the walker's
+        // own position once it is BumpClearGateRadius (0.4u) clear of EVERY role-1/2/3
+        // worker — "when they are 0.4u or more away from any Role 1,2,3 worker, then
+        // they may move to the staging area of their target mineral". The four chase-
+        // bump walkers (T4/T5/Y4/Y5) are never blockers: they share the central SA
+        // mineral and would otherwise gate each other forever (Y5's label ends in 5,
+        // but here it is the Y-line pusher, not a role-5 swing miner — with the
+        // W12/W10 label swap W12 runs this chase under the Y5 label). Null while any
+        // role-1/2/3 worker is inside the radius, so the inverted-gate jump keeps re-
+        // issuing the central-SA mineral walk. Timeout fail-open (logged) so a
+        // permanently crowded SA can never park the walker on the gather forever; the
+        // hold age is tracked per worker because the inverted-gate jump resets
+        // InstructionStartFrame every loop pass. The phase-1 chase captures are
+        // deliberately NOT released here: a backstop's chase trigger reads the
+        // bumper's captured start, which must survive the bumper finishing the
+        // choreography first (bumptest_chase2_run2: B2 was collision-detoured until
+        // frame 68 while Y4 finished at 16 — releasing Y4's capture then would have
+        // deadlocked B2's trigger). The dictionaries hold one small entry per worker
+        // for the game duration.
+        private Vector2Dto? ResolveBumpClearOfWorkersGatePoint(AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            if (!Settings.IsMagannatha5x5Rotation || assignedWorker == null)
+            {
+                return null;
+            }
+
+            var selfPosition = HasNonZeroPoint(assignedWorker.CurrentXY) ? assignedWorker.CurrentXY : null;
+            if (selfPosition == null)
+            {
+                return null;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?? new List<AssignedWorkerDto>();
+
+            // Owner directive 2026-10-19 23:19 ("Four starting worker must wait
+            // for the initial workers to finish harvesting"): the walker holds
+            // on the central SA mineral until its chased partner (T4/T5: T1,
+            // Y4/Y5: Y1) has FINISHED its first harvest — observed as carrying
+            // or already returning. The partner's live state comes from the
+            // runtime worker entry (Settings.RuntimeWorkers): the
+            // AssignedWorkerDto's IsCarrying/CurrentAbilityId are onboarding
+            // values and are never refreshed (only CurrentXY is, line ~1351).
+            // The helpers mine nothing during the first trip; the earlier Y1
+            // return and the freed mineral lines are the point. Absolute
+            // fail-open at BumpFirstHarvestWaitMaxFrame so a broken partner
+            // observation can never park the walker forever.
+            var partnerRole = assignedWorker.Role != null && assignedWorker.Role.StartsWith("T", StringComparison.OrdinalIgnoreCase)
+                ? "T1"
+                : "Y1";
+            var partner = assignedWorkers.FirstOrDefault(worker =>
+                string.Equals(worker?.Role, partnerRole, StringComparison.OrdinalIgnoreCase));
+            var partnerHarvestDone = partner != null
+                && Settings.RuntimeWorkers.TryGetValue(partner.UnitID, out var partnerRuntime)
+                && (partnerRuntime.IsCarrying
+                    || partnerRuntime.CurrentAbilityId == (int)Abilities.HARVEST_RETURN_DRONE);
+            if (partner != null && !partnerHarvestDone && _currentFrame <= BumpFirstHarvestWaitMaxFrame)
+            {
+                if (_bumpFirstHarvestHoldLogged.Add(assignedWorker.UnitID))
+                {
+                    Console.WriteLine($"[BUMP FIRST-HARVEST WAIT] frame={_currentFrame} worker={assignedWorker.UnitID} role={assignedWorker.Role} partner={partnerRole} partnerObserved={Settings.RuntimeWorkers.ContainsKey(partner.UnitID)}");
+                }
+
+                return null;
+            }
+
+            var radiusSquared = BumpClearGateRadius * BumpClearGateRadius;
+            foreach (var other in assignedWorkers)
+            {
+                if (other == null || other.UnitID == assignedWorker.UnitID)
+                {
+                    continue;
+                }
+
+                // Only role-1/2/3 miners can hold a walker on the central mineral.
+                if (!IsChaseBumpRole123Miner(other.Role))
+                {
+                    continue;
+                }
+
+                if (other.CurrentXY != null
+                    && HasNonZeroPoint(other.CurrentXY)
+                    && DistanceSquared(selfPosition, other.CurrentXY) < radiusSquared)
+                {
+                    if (!_bumpClearGateHoldStartFrames.TryGetValue(assignedWorker.UnitID, out var holdStartFrame))
+                    {
+                        _bumpClearGateHoldStartFrames[assignedWorker.UnitID] = _currentFrame;
+                    }
+                    else if (_currentFrame - holdStartFrame > BumpClearGateTimeoutFrames)
+                    {
+                        _bumpClearGateHoldStartFrames.Remove(assignedWorker.UnitID);
+                        Console.WriteLine($"[BUMP CLEAR GATE TIMEOUT] frame={_currentFrame} worker={assignedWorker.UnitID} role={assignedWorker.Role} walkTag={instruction?.TargetId ?? 0}");
+                        return selfPosition;
+                    }
+
+                    return null;
+                }
+            }
+
+            _bumpClearGateHoldStartFrames.Remove(assignedWorker.UnitID);
+            return selfPosition;
+        }
+
+        // Role-1/2/3 miner predicate for the chase-bump clearance gate: exactly
+        // T1/T2/T3/Y1/Y2/Y3. The chase-bump walkers (T4/T5/Y4/Y5) are excluded by
+        // construction — see ResolveBumpClearOfWorkersGatePoint.
+        private static bool IsChaseBumpRole123Miner(string role)
+        {
+            return !string.IsNullOrWhiteSpace(role)
+                && (role.Equals("T1", StringComparison.OrdinalIgnoreCase)
+                    || role.Equals("T2", StringComparison.OrdinalIgnoreCase)
+                    || role.Equals("T3", StringComparison.OrdinalIgnoreCase)
+                    || role.Equals("Y1", StringComparison.OrdinalIgnoreCase)
+                    || role.Equals("Y2", StringComparison.OrdinalIgnoreCase)
+                    || role.Equals("Y3", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Chase-bump follow target — NEW FRAME SCHEDULE (owner spec 2026-10-20
+        // "South New Worker Order", REPLACES the 2026-10-19 distance triggers:
+        // "I don't think it was working as intended"). Resolves to the chased
+        // partner's LIVE position (T4/T5: T1, Y4/Y5: Y1) — "every frame the Bump
+        // teams move to either Y1 or T1 current position depending on team". The
+        // chase Move rows are purely frame-gated (relative frames 6-18); this
+        // resolver only:
+        //   T4/T5 — returns T1's live position (null only while T1's position is
+        //           unobserved).
+        //   Y4/Y5 — "Mineral Walk to SB until they are clear of any workers":
+        //           returns null while ANY role-1/2/3 worker (T1/T2/T3/Y1/Y2/Y3)
+        //           is within BumpClearGateRadius (0.4u) of the walker, so the
+        //           frame-gated chase row waits silently and the SB walk gather
+        //           keeps carrying it; returns Y1's live position once clear.
+        //           Deadline fail-open at relative frame BumpChaseMaxRelativeFrame
+        //           (20) so a permanently crowded corridor can never park the
+        //           walker out of the frame-19 SB walk row behind the chase rows.
+        //           The set-start frame is captured on first evaluation because
+        //           control-row passes reset InstructionStartFrame.
+        private Vector2Dto? ResolveBumpChasePartnerPoint(AssignedWorkerDto assignedWorker)
+        {
+            if (!Settings.IsMagannatha5x5Rotation || assignedWorker == null)
+            {
+                return null;
+            }
+
+            var workerRole = assignedWorker.Role ?? string.Empty;
+            string partnerRole;
+            var clearGated = false;
+            if (workerRole.Equals("T4", StringComparison.OrdinalIgnoreCase))
+            {
+                partnerRole = "T1";
+            }
+            else if (workerRole.Equals("T5", StringComparison.OrdinalIgnoreCase))
+            {
+                partnerRole = "T1";
+            }
+            else if (workerRole.Equals("Y4", StringComparison.OrdinalIgnoreCase))
+            {
+                partnerRole = "Y1";
+                clearGated = true;
+            }
+            // W12/W10 label swap (owner spec 2026-10-21): the Y5-keyed Y1 chase is
+            // run by W12 — same walk SB / chase Y1 / clear-gated hold.
+            else if (workerRole.Equals("Y5", StringComparison.OrdinalIgnoreCase))
+            {
+                partnerRole = "Y1";
+                clearGated = true;
+            }
+            else
+            {
+                return null;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?? new List<AssignedWorkerDto>();
+
+            if (clearGated)
+            {
+                // Capture the set-start frame on the first evaluation so the
+                // deadline is anchored regardless of InstructionStartFrame resets.
+                if (!_chaseBumpSetStartFrames.TryGetValue(assignedWorker.UnitID, out _)
+                    && HasNonZeroPoint(assignedWorker.CurrentXY))
+                {
+                    _chaseBumpSetStartFrames[assignedWorker.UnitID] = Settings.GetRelativeFrame(_currentFrame);
+                }
+
+                if (_chaseBumpSetStartFrames.TryGetValue(assignedWorker.UnitID, out var setStartFrame)
+                    && Settings.GetRelativeFrame(_currentFrame) - setStartFrame > BumpChaseMaxRelativeFrame)
+                {
+                    if (_bumpFirstHarvestHoldLogged.Add(assignedWorker.UnitID))
+                    {
+                        Console.WriteLine($"[BUMP CLEAR-HOLD DEADLINE FAIL-OPEN] frame={_currentFrame} worker={assignedWorker.UnitID} role={workerRole} — still not clear of role-1/2/3 workers by relative frame {BumpChaseMaxRelativeFrame}; releasing to the frame-19 SB walk");
+                    }
+                }
+                else if (!IsClearOfRole123Workers(assignedWorker, assignedWorkers))
+                {
+                    return null;
+                }
+            }
+
+            // Chase the partner's live position.
+            var partner = assignedWorkers.FirstOrDefault(worker =>
+                string.Equals(worker?.Role, partnerRole, StringComparison.OrdinalIgnoreCase));
+            if (partner?.CurrentXY == null || !HasNonZeroPoint(partner.CurrentXY))
+            {
+                return null;
+            }
+
+            return partner.CurrentXY;
+        }
+
+        // Shared "clear of the miners' corridors" test (owner spec 2026-10-20):
+        // true when NO role-1/2/3 worker (T1/T2/T3/Y1/Y2/Y3) is within
+        // BumpClearGateRadius (0.4u) of the walker. The chase-bump walkers
+        // (T4/T5/Y4/Y5) are never blockers — they share the corridor and must
+        // never gate each other.
+        private static bool IsClearOfRole123Workers(AssignedWorkerDto assignedWorker, List<AssignedWorkerDto> assignedWorkers)
+        {
+            var selfPosition = HasNonZeroPoint(assignedWorker?.CurrentXY) ? assignedWorker.CurrentXY : null;
+            if (selfPosition == null)
+            {
+                return false;
+            }
+
+            var radiusSquared = BumpClearGateRadius * BumpClearGateRadius;
+            foreach (var other in assignedWorkers)
+            {
+                if (other == null || other.UnitID == assignedWorker.UnitID)
+                {
+                    continue;
+                }
+
+                if (!IsChaseBumpRole123Miner(other.Role))
+                {
+                    continue;
+                }
+
+                if (other.CurrentXY != null
+                    && HasNonZeroPoint(other.CurrentXY)
+                    && DistanceSquared(selfPosition, other.CurrentXY) < radiusSquared)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        // Bump-contact diagnostic trace (owner directive 2026-10-19 "yes" to
+        // instrumenting the bump): one line per frame in the choreography modes
+        // (0/2/3 — everything except the mode-1 no-help baseline) for absolute
+        // frames 0-200 (owner spec 2026-10-20 "write the frames to 200
+        // in the console") — positions of the six choreography workers, the
+        // four chaser→role-1 distances, and the TA/YA mineral positions (for
+        // line-progress analysis). Worker contact ≈ center distance ≤ 0.75u
+        // (two 0.375 radii). The trace also emits one [FIRST-RETURN] line each
+        // for T1 and Y1 at their first cargo-return frame (owner spec: "write a
+        // line each for T1 and Y1 first return cargo Frame") — detected from
+        // the LIVE snapshot carrying flag (the AssignedWorkerDto IsCarrying is
+        // an onboarding value and is never refreshed).
+        private const int BumpTraceMaxFrame = 200;
+
+        // First-return tracking for the trace's [FIRST-RETURN] lines (owner spec
+        // 2026-10-20 "write a line each for T1 and Y1 first return cargo Frame").
+        // Live-snapshot carrying flags, one slot per role; -1 = not yet returned.
+        private int _t1FirstReturnFrame = -1;
+        private int _y1FirstReturnFrame = -1;
+        private readonly Dictionary<ulong, bool> _bumpPrevCarrying = new Dictionary<ulong, bool>();
+
+        private void TraceBumpContact()
+        {
+            if ((Settings.BumpTestMode == 1)
+                || _currentFrame < 0
+                || _currentFrame > BumpTraceMaxFrame)
+            {
+                return;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
+            if (assignedWorkers == null)
+            {
+                return;
+            }
+
+            AssignedWorkerDto FindRole(string role) =>
+                assignedWorkers.FirstOrDefault(worker =>
+                    string.Equals(worker?.Role, role, StringComparison.OrdinalIgnoreCase));
+
+            string Pos(AssignedWorkerDto worker) =>
+                worker == null || !HasNonZeroPoint(worker.CurrentXY)
+                    ? "—"
+                    : $"({worker.CurrentXY.X:F2},{worker.CurrentXY.Y:F2}){(worker.IsCarrying ? "*" : "")}";
+
+            float? Dist(string fromRole, string toRole)
+            {
+                var from = FindRole(fromRole);
+                var to = FindRole(toRole);
+                if (from == null || to == null
+                    || !HasNonZeroPoint(from.CurrentXY) || !HasNonZeroPoint(to.CurrentXY))
+                {
+                    return null;
+                }
+
+                return Distance(from.CurrentXY, to.CurrentXY);
+            }
+
+            string MinPos(string role)
+            {
+                var worker = FindRole(role);
+                var target = worker?.MiningTargets?.FirstOrDefault();
+                return target == null || !HasNonZeroPoint(target.ResourcePosition)
+                    ? "—"
+                    : $"({target.ResourcePosition.X:F2},{target.ResourcePosition.Y:F2})";
+            }
+
+            TrackFirstReturn("T1", FindRole("T1"), ref _t1FirstReturnFrame);
+            TrackFirstReturn("Y1", FindRole("Y1"), ref _y1FirstReturnFrame);
+
+            Console.WriteLine(
+                $"[BUMPTRACE] f={_currentFrame} rel={Settings.GetRelativeFrame(_currentFrame)}"
+                + $" T1={Pos(FindRole("T1"))} Y1={Pos(FindRole("Y1"))}"
+                + $" T4={Pos(FindRole("T4"))} T5={Pos(FindRole("T5"))}"
+                + $" Y4={Pos(FindRole("Y4"))} Y5={Pos(FindRole("Y5"))}"
+                + $" dT4T1={Dist("T4", "T1"):F2} dT5T1={Dist("T5", "T1"):F2}"
+                + $" dY4Y1={Dist("Y4", "Y1"):F2} dY5Y1={Dist("Y5", "Y1"):F2}"
+                + $" TA={MinPos("T1")} YA={MinPos("Y1")}");
+        }
+
+        // Watches the worker's LIVE snapshot carrying flag and logs the first
+        // carrying→not-carrying transition — the first cargo return. Runs inside
+        // the frame-gated trace, so a role that never returns inside the traced
+        // window simply never emits a line.
+        private void TrackFirstReturn(string role, AssignedWorkerDto worker, ref int firstReturnFrame)
+        {
+            if (worker == null
+                || firstReturnFrame >= 0
+                || Globals.CurrentObservation?.SelfUnits == null
+                || !Globals.CurrentObservation.SelfUnits.TryGetValue(worker.UnitID, out var observed))
+            {
+                return;
+            }
+
+            var carrying = observed.IsCarrying;
+            _bumpPrevCarrying.TryGetValue(worker.UnitID, out var previous);
+            _bumpPrevCarrying[worker.UnitID] = carrying;
+            if (previous && !carrying)
+            {
+                firstReturnFrame = _currentFrame;
+                Console.WriteLine($"[FIRST-RETURN] role={role} frame={_currentFrame} rel={Settings.GetRelativeFrame(_currentFrame)}");
+            }
+        }
+
         // Normalized projection of a point onto the hatchery-to-mineral segment: 0 at the
         // hatchery end, 1 at the mineral end, clamped — a unit "ahead on the line" has a
         // higher progress than one still near the hatchery.
@@ -3164,8 +3619,14 @@ namespace BabySharkBot.Managers
             string partnerRole;
             if (Settings.IsMagannatha5x5Rotation)
             {
+                // 5x5 Version 2 bump roles were T4 (bumps T1) and Y4 (bumps Y1); the
+                // 2026-10-19 chase-bump choreography adds T5 (chases T1) and B2
+                // (chases Y1) — with the 2026-10-21 W12/W10 label swap the
+                // Y5-keyed chase is run by W12 and B2 (W10) runs the BB walk.
                 partnerRole = workerRole.Equals("T4", StringComparison.OrdinalIgnoreCase) ? "T1"
+                    : workerRole.Equals("T5", StringComparison.OrdinalIgnoreCase) ? "T1"
                     : workerRole.Equals("Y4", StringComparison.OrdinalIgnoreCase) ? "Y1"
+                    : workerRole.Equals("Y5", StringComparison.OrdinalIgnoreCase) ? "Y1"
                     : string.Empty;
             }
             else
@@ -3647,11 +4108,13 @@ namespace BabySharkBot.Managers
                 return true;
             }
 
-            // Free right now -> send immediately; otherwise wait until the active
-            // harvester's remaining harvest frames fit the staged worker's walk-in
-            // time (ReleaseLeadFrames).
+            // Free right now -> send immediately; otherwise stage until the active
+            // harvester has ACCUMULATED StagedReleaseHarvestFrames harvest frames
+            // (owner spec 2026-10-20 20:09 "All Workers needs to stage until the
+            // active mineral has 32 Harvest frames" — Y4 was leaving YB because it
+            // was told to harvest too soon under the old near-completion lead).
             return !_harvestFrameTracker.HasActiveHarvester(mineralTag)
-                || _harvestFrameTracker.ShouldReleaseStagedWorker(mineralTag);
+                || _harvestFrameTracker.HasAccumulatedReleaseFrames(mineralTag);
         }
 
         // Gather-send gate (owner spec 2026-10-16, worker collision pass): a
@@ -4119,17 +4582,21 @@ namespace BabySharkBot.Managers
             if (target != null)
             {
                 // 5x5 Version 2: first return on the speed-mining return point.
+                // Owner spec 2026-10-19 (V5 first-return bounce): spread applies
+                // here too — the interrupt return is exactly a first-return
+                // deposit, the most crowded moment of the game.
                 if (!_returnInterruptSmFirstTripUsed.Contains(assignedWorker.UnitID)
                     && HasNonZeroPoint(target.SmReturnPoint))
                 {
                     _returnInterruptSmFirstTripUsed.Add(assignedWorker.UnitID);
-                    Console.WriteLine($"[RETURN INTERRUPT] frame={_currentFrame} worker={assignedWorker.UnitID} first-return=SM point=({target.SmReturnPoint.X:F4},{target.SmReturnPoint.Y:F4})");
-                    return target.SmReturnPoint;
+                    var spreadSmPoint = SpreadReturnPoint(assignedWorker, target.SmReturnPoint);
+                    Console.WriteLine($"[RETURN INTERRUPT] frame={_currentFrame} worker={assignedWorker.UnitID} first-return=SM point=({spreadSmPoint.X:F4},{spreadSmPoint.Y:F4})");
+                    return spreadSmPoint;
                 }
 
                 if (target.ReturnPoint != null)
                 {
-                    return target.ReturnPoint;
+                    return SpreadReturnPoint(assignedWorker, target.ReturnPoint);
                 }
             }
 

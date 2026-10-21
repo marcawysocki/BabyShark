@@ -597,11 +597,11 @@ namespace BabySharkBot.Managers
                     runtimeWorker ??= new RuntimeWorkerState { UnitTag = assignedWorker.UnitTag };
 
                     // 5x5 rotation, Version 2: role-specific startup sets on top of the
-                    // rotation book. Bump roles are ONLY T4 (bumps T1 toward TA) and
-                    // Y4 (bumps Y1 toward YA) — T3 no longer bumps, it is a first miner
-                    // on SA. After the alignment gate the bumper parks on its B mineral
-                    // wait point (TB/YB) and takes the frame-45 handoff gather as that
-                    // mineral's 2nd miner (Build5x5BumpInstructions). There are no wait
+                    // rotation book. In bump-test modes 2/3 the four chase-bump roles
+                    // (T4/T5/Y4/Y5) run the chase set instead — see
+                    // Build5x5ChaseBumpInstructions; T3 is a first miner on SA (no
+                    // longer a bumper). Outside the bump harness the bump-slot workers
+                    // take their normal Version-2 startup. There are no wait
                     // roles in Version 2: T5/Y5 are swing miners that walk straight to
                     // SB/BB (one trip, SA-SB/BA-BB return),
                     // S2/B2 speed-mine SB/BB
@@ -614,18 +614,39 @@ namespace BabySharkBot.Managers
                     // the perpetual 3-mineral rotation.
                     if (Settings.IsMagannatha5x5Rotation && Is5x5RotationRole(role))
                     {
-                        // Bump test harness (owner spec 2026-10-18). Mode 0 = normal
-                        // opening. Mode 1 = no-help baseline: T4/T5/Y4/B2 mineral-walk
-                        // at frame 0 (walk frame 0 / stage frame 20) so T1/Y1 walk
-                        // clean. Mode 2 = T4/Y4 bump (Version-2 bump sets) with T5/B2
-                        // walking at frame 0. Mode 3 = full choreography: T4/Y4 bump,
-                        // everyone else in their normal role.
+                        // Bump test harness (owner spec 2026-10-18; choreography
+                        // replaced 2026-10-19, re-specified 2026-10-20 "South New
+                        // Worker Order"; Y-side chaser B2->Y5 per the 2026-10-21
+                        // W12/W10 switch). Mode 0 (the default, no flag) = the
+                        // frame-schedule choreography: T4/T5 mineral-walk SA and
+                        // Y4/Y5 walk SB for frames 0-5 (Y4/Y5 until 0.4u clear of
+                        // every role-1/2/3 worker), all
+                        // four follow T1/Y1's live position every frame 6-18,
+                        // mineral-walk SB at frame 19, and stage on their own B
+                        // mineral at frame 25 (Y5 stages on BB — its swing book's
+                        // first mineral). Mode 1 = no-help baseline (helpers
+                        // mineral-walk at frame 0). Modes 2 and 3 are accepted as
+                        // aliases of the choreography (modes 0/2/3 behave
+                        // identically).
                         var bumpTestMode = Settings.BumpTestMode;
-                        var is5x5BumpTestRole = (bumpTestMode == 2 || bumpTestMode == 3) && Is5x5BumpRole(role);
+                        // All four bump (owner directives 2026-10-19: "Do not run
+                        // this without bumping" + "All four bump" — T4/T5 chase
+                        // T1, Y4/Y5 chase Y1, window to frame 20, then park at
+                        // their own stage mineral and wait (no mining) until the
+                        // initial workers finish harvesting. The central SA walk
+                        // is retired: re-issuing it through the hold made the
+                        // helpers harvest SA — "Your mining the wrong minerals",
+                        // owner report 2026-10-19 23:43.)
+                        // Choreography is the DEFAULT opening (owner directive
+                        // 2026-10-20 19:03: the SA walks + T1/Y1 follow must run
+                        // with no flag): modes 0/2/3 all load the chase set; only
+                        // mode 1 (no-help baseline) keeps the helpers' frame-0
+                        // walk instead.
+                        var is5x5BumpTestRole = (bumpTestMode == 0 || bumpTestMode == 2 || bumpTestMode == 3) && Is5x5BumpRole(role);
                         var normalizedRole5x5 = NormalizeRole(role);
                         var is5x5HelperRole = normalizedRole5x5 == "T4" || normalizedRole5x5 == "Y4"
-                            || normalizedRole5x5 == "B2" || normalizedRole5x5 == "T5";
-                        var helpersWalkAtFrameZero = (bumpTestMode == 1 || bumpTestMode == 2) && is5x5HelperRole;
+                            || normalizedRole5x5 == "Y5" || normalizedRole5x5 == "T5";
+                        var helpersWalkAtFrameZero = bumpTestMode == 1 && is5x5HelperRole;
                         var is5x5WalkStageRole = Is5x5MineralWalkStageRole(role);
                         // 5x5 A-miners (owner spec 2026-10-09): every worker whose first
                         // mining target is an A mineral (TA/SA/BA/YA — in the full
@@ -645,7 +666,7 @@ namespace BabySharkBot.Managers
                         if (is5x5BumpTestRole)
                         {
                             instructionSet5x5 = $"bump{role}";
-                            startup5x5 = Build5x5BumpInstructions(
+                            startup5x5 = Build5x5ChaseBumpInstructions(
                                 instructionSet5x5, role, initialTarget.ResourceUnitId, initialTarget.ResourceLabel, startIndex, assignments);
                         }
                         else if (helpersWalkAtFrameZero)
@@ -656,35 +677,53 @@ namespace BabySharkBot.Managers
                         }
                         else
                         {
-                            instructionSet5x5 = is5x5WalkStageRole ? $"mwstage5x5{role}"
+                            // W12/W10 switch (owner spec 2026-10-21, owner: "W12
+                            // becomes Y5 and W10 becomes B2"): both workers KEEP
+                            // their first sets — W12 keeps the Y1 chase (now
+                            // keyed to its new Y5 label, see the chase branch
+                            // above) and W10 keeps the frame-0-5 mineral walk to
+                            // BB (it is next to Y1 and the walk pushes it), now
+                            // under its new B2 label — then W10 stays on BB with
+                            // the B2 book and W12 mines BB once and takes the Y5
+                            // rotation.
+                            var is5x5B2Role = normalizedRole5x5 == "B2";
+                            instructionSet5x5 = is5x5B2Role ? "bbwalkB2"
+                                : is5x5WalkStageRole ? $"mwstage5x5{role}"
                                 : is5x5AMiner ? "jitSM5x5A"
                                 : "jitMH5x5";
-                            startup5x5 = is5x5WalkStageRole
-                                ? Build5x5MineralWalkStageStartup(
-                                    instructionSet5x5,
-                                    initialTarget.ResourceUnitId,
-                                    NormalizeRole(role) == "B2" ? 45 : 40)
-                                : is5x5AMiner
-                                    ? Build5x5AMinerStartupInstructions(instructionSet5x5, initialTarget.ResourceUnitId, role)
-                                    : NormalizeRole(role) == "T5"
-                                        // Harvest-frame test case: the new T5 (W1) stages at
-                                        // SB's CCA wait point and waits on the harvest-release
-                                        // gate before its one-time SB trip — "going to a wait
-                                        // position until S2 finishes SB". The gate passes
-                                        // immediately when SB is free, so an uncontested start
-                                        // still mines at once; the standard startup rows sit
-                                        // behind the gate and their relative frames count from
-                                        // the gate pass.
-                                        ? Build5x5SwingStartupWithStaging(instructionSet5x5, initialTarget.ResourceUnitId)
-                                        : BuildStandardStartupInstructions(instructionSet5x5, WorkerInstructionPoint.Harvest, initialTarget.ResourceUnitId, -1);
+                            startup5x5 = is5x5B2Role
+                                ? Build5x5BbWalkStartup(instructionSet5x5, initialTarget.ResourceUnitId, startIndex, assignments)
+                                : is5x5WalkStageRole
+                                    ? Build5x5MineralWalkStageStartup(
+                                        instructionSet5x5,
+                                        initialTarget.ResourceUnitId,
+                                        40)
+                                    : is5x5AMiner
+                                        ? Build5x5AMinerStartupInstructions(instructionSet5x5, initialTarget.ResourceUnitId, role)
+                                        : NormalizeRole(role) == "T5"
+                                            // Harvest-frame test case: the new T5 (W1) stages at
+                                            // SB's CCA wait point and waits on the harvest-release
+                                            // gate before its one-time SB trip — "going to a wait
+                                            // position until S2 finishes SB". The gate passes
+                                            // immediately when SB is free, so an uncontested start
+                                            // still mines at once; the standard startup rows sit
+                                            // behind the gate and their relative frames count from
+                                            // the gate pass.
+                                            ? Build5x5SwingStartupWithStaging(instructionSet5x5, initialTarget.ResourceUnitId)
+                                            : BuildStandardStartupInstructions(instructionSet5x5, WorkerInstructionPoint.Harvest, initialTarget.ResourceUnitId, -1);
                         }
 
                         var list5x5 = BuildMineralInstructionList(startIndex, assignedWorker, instructionSet5x5, startup5x5);
-                        runtimeWorker.LoadInstructions(instructionSet5x5, list5x5, Settings.GetRelativeFrame(frame));
+                        var dephase5x5 = FirstTripDephaseFrames(role);
+                        runtimeWorker.LoadInstructions(instructionSet5x5, list5x5, Settings.GetRelativeFrame(frame) + dephase5x5);
                         Settings.RuntimeWorkers[assignedWorker.UnitTag] = runtimeWorker;
                         _jitMhStartupLogs.Add(assignedWorker.UnitTag);
 
                         Console.WriteLine($"[BUILD START 5X5 LOADED] worker={assignedWorker.UnitTag} role={role} set={instructionSet5x5} target={initialTarget.ResourceUnitId}");
+                        if (dephase5x5 > 0)
+                        {
+                            Console.WriteLine($"[BUILD START 5X5 DEPHASE] worker={assignedWorker.UnitTag} role={role} frames={dephase5x5}");
+                        }
                         continue;
                     }
 
@@ -742,7 +781,12 @@ namespace BabySharkBot.Managers
                         assignedWorker,
                         instructionSet,
                         startupInstructions);
-                    runtimeWorker.LoadInstructions(instructionSet, instructionList, Settings.GetRelativeFrame(frame));
+                    var firstTripDephase = FirstTripDephaseFrames(role);
+                    runtimeWorker.LoadInstructions(instructionSet, instructionList, Settings.GetRelativeFrame(frame) + firstTripDephase);
+                    if (firstTripDephase > 0)
+                    {
+                        Console.WriteLine($"[BUILD START 5X5 DEPHASE] worker={assignedWorker.UnitTag} role={role} frames={firstTripDephase}");
+                    }
                     Settings.RuntimeWorkers[assignedWorker.UnitTag] = runtimeWorker;
                     var loaded = Settings.RuntimeWorkers.TryGetValue(assignedWorker.UnitTag, out var loadedWorker)
                         && loadedWorker.Instructions.Count > 0
@@ -1210,14 +1254,20 @@ namespace BabySharkBot.Managers
                 && normalized[1] >= '1' && normalized[1] <= '5';
         }
 
-        // Bump roles, Version 2: ONLY T4 (W2) bumps T1 toward TA and Y4 (W11) bumps
-        // Y1 toward YA. T3 is a first miner on SA in Version 2 — its Version 1 bump
-        // of S2 is gone. T4/Y4 reuse the walk minerals of the experiment-1 T3/Y3
-        // sets (ordered [3] / ordered [5]).
+        // Bump roles for the chase-bump choreography: all four bump (owner
+        // directive 2026-10-19 23:58 "All four bump") — T4 and T5 chase/push T1,
+        // Y4 and Y5 chase/push Y1. W12/W10 SWITCH (owner spec 2026-10-21
+        // "MagannathaAIE_v2 South W12 W10 Switch Worker Order", owner: "W12
+        // becomes Y5 and W10 becomes B2"): the final-role LABELS swapped, so this
+        // Y5-keyed chase set is run by W12 — which keeps the Y1-push first set it
+        // always ran — and W10 (next to Y1, the primary pusher via its BB walk)
+        // becomes B2 and stays on BB. The chase set resolves every mineral by
+        // label (phase-1 walks T4: SA, T5: SA, Y4: SB, Y5: SB), never from the
+        // worker's own team table — Y4 sits in the BA/BB team.
         private static bool Is5x5BumpRole(string role)
         {
             var normalized = NormalizeRole(role);
-            return normalized == "T4" || normalized == "Y4";
+            return normalized == "T4" || normalized == "T5" || normalized == "Y4" || normalized == "Y5";
         }
 
         // Swing roles, Version 2: T5 (W6) mines SB once (returning via the SA-SB pair
@@ -1279,16 +1329,17 @@ namespace BabySharkBot.Managers
         }
 
         // Mineral-walk-then-stage startup roles (owner spec 2026-10-17 20:46):
-        // T4, Y4 and B2. All three hold at the hatchery until frame 20 while the
+        // T4 and Y4. Both hold at the hatchery until frame 20 while the
         // role 1/3 workers (Smart at frame 22) and the other direct miners walk
-        // straight out, then run ONE mineral walk (Y4/T4 frames 20-40, B2 frames
-        // 20-45 — the window that carries them clear of Y1), then stage at their
-        // first mineral's CCA wait point. T4/Y4 replace their Version-2 bump role:
-        // T1/Y1 are no longer bumped.
+        // straight out, then run ONE mineral walk (Y4/T4 frames 20-40), then
+        // stage at their first mineral's CCA wait point. T4/Y4 replace their
+        // Version-2 bump role: T1/Y1 are no longer bumped. B2 left this group
+        // with the 2026-10-21 W12/W10 switch — it opens with the frame-0-5
+        // mineral walk to BB instead (the bbwalkB2 set, the walk Y5 used to run).
         private static bool Is5x5MineralWalkStageRole(string role)
         {
             var normalized = NormalizeRole(role);
-            return normalized == "T4" || normalized == "Y4" || normalized == "B2";
+            return normalized == "T4" || normalized == "Y4";
         }
 
         // Startup set for the mineral-walk-then-stage roles (owner spec 2026-10-17
@@ -1348,22 +1399,58 @@ namespace BabySharkBot.Managers
             return instructions;
         }
 
-        // Bump set for the 5x5 rotation, Version 2. Owner-spec bumper-gate shape
-        // ("T1 - T4 Bump Set", extended 2026-10-13): frame-0 smart harvest on the walk
-        // mineral, bumper-gated bump move onto the partner, a per-frame live-position
-        // chase of the partner from relative frames 8-25 ("keep pushing until frame
-        // 25"), wait-point moves at 26/27, and the frame-45 handoff gather:
-        //   - T4 and Y4 both come through here; the partner mapping is evaluated in
-        //     BabySharkMiningManager.ResolveBumpSmBumperPoint / ResolveObservedBumpPartner
-        //     (T4->T1, Y4->Y1).
-        //   - The bumper gate's A mineral is resolved BY LABEL across all assignments
-        //     (T4: TA, Y4: YA) because Y4 (W11) sits in the BA/BB team whose own A
-        //     mineral is BA — a teamAssignment lookup would gate Y4 on the wrong mineral.
-        //   - After the chase the bumper parks on its B mineral's self-pair wait point
-        //     ({TB,TB}/{YB,YB} WaitPointA) — "move to a wait point on a B mineral" —
-        //     and the frame-45 gather hands off on that B mineral (MiningTargets[0],
-        //     TB for T4 / YB for Y4) as its 2nd miner.
-        private static IReadOnlyList<WorkerInstruction> Build5x5BumpInstructions(
+        // Chase-bump set for the 5x5 rotation — NEW WORKER ORDER TEST CHOREOGRAPHY
+        // (owner spec 2026-10-20 "MagannathaAIE_v2 South New Worker Order",
+        // REPLACES the 2026-10-19 distance-trigger chase in bump-test modes 2/3;
+        // owner report on the distance triggers: "I don't think it was working as
+        // intended"). Four roles run this set — T4 and T5 follow T1, Y4 and Y5
+        // follow Y1 (Y5 inherited the Y1 push from B2 in the 2026-10-21 W12/W10
+        // switch) — on an explicit frame schedule (relative frames):
+        //   row 0:     the phase-1 mineral walk — a NoCondition 1183 gather on the
+        //              role's walk mineral (T4: SA, T5: SA, Y4: SB, Y5: SB —
+        //              owner spec 2026-10-20 18:22), issued once at frame 0; it
+        //              carries the walker through the walk window (frames 0-5).
+        //   rows 1-13: one unqueued move per frame (relative frames 6-18) to the
+        //              chased partner's LIVE position (T4/T5: T1, Y4/Y5: Y1) —
+        //              "every frame the Bump teams move to either Y1 or T1 current
+        //              position depending on team" (owner answer 2026-10-20).
+        //              PositionTolerance 0 makes the rows purely frame-gated; the
+        //              Y-side rows (Y4/Y5) additionally hold until the walker is
+        //              CLEAR of every role-1/2/3 worker (0.4u radius, the
+        //              BumpClearGateRadius definition of "clear") — "Y4 and Y5
+        //              will Mineral Walk to SB until they are clear of any
+        //              workers" (owner spec 2026-10-21: the Y1 push moved from
+        //              B2 to Y5) — via ResolveBumpChasePartnerPoint, which returns
+        //              null (row waits, the walk keeps running) while any
+        //              role-1/2/3 worker is inside the radius and fails open at
+        //              relative frame 19 so the SB walk row is always reached.
+        //   row 14:    frame-19 SB MINERAL WALK — a NoCondition 1183 gather on SB
+        //              for all four roles ("on frame 19 they both Mineral Walk to
+        //              SB"); frame-gated NoCondition holds it to its frame.
+        //   row 15:    frame-25 STAGE move to the worker's own stage-mineral CCA
+        //              wait point ("on frame 25 T4 will move to the stage for TB
+        //              and T5 the stage for SB"; Y4 -> YB, Y5 -> BB by the same
+        //              role-keyed staging as the retired chase set). Position-
+        //              Tolerance 0 keeps it purely frame-gated.
+        //   row 16:    HARVEST-RELEASE STAGING GATE (owner spec 2026-10-20 20:27):
+        //              a gated Wait holding the worker at the CCA point until the
+        //              stage mineral is free or its active harvester has
+        //              ACCUMULATED StagedReleaseHarvestFrames (32) harvest frames
+        //              — "Any worker going to a mineral that is being harvested by
+        //              another worker needs to stage until the other worker reaches
+        //              Harvest frame 32", then the Smart command. WITHOUT this
+        //              row the standard tail's queued gather fired the instant the
+        //              mineral was free at frame 25 and the StoredTarget moves
+        //              walked Y4 off the stage point straight onto busy YB (owner
+        //              log worker_commands_20261020201925: Y4's gather on YB sent
+        //              at frame 25, six frames after Y2 started harvesting).
+        //              Passing the gate resets InstructionStartFrame, so the tail
+        //              rows count from the release frame.
+        // The standard startup tail appended below follows the gate, and the
+        // rotation book appended by BuildMineralInstructionList takes over.
+        // Walk/SB/stage minerals resolve BY LABEL across all assignments (never
+        // from the worker's own team table — Y4 sits in the BA/BB team).
+        private static IReadOnlyList<WorkerInstruction> Build5x5ChaseBumpInstructions(
             string instructionSet,
             string role,
             ulong targetId,
@@ -1376,136 +1463,239 @@ namespace BabySharkBot.Managers
                 .SelectMany(assignment => assignment?.Minerals ?? new List<OrderedMineral>())
                 .ToList();
 
-            // T4 mirrors the old T3 walk (ordered [3]); Y4 mirrors the old Y3 walk
-            // (ordered [5]). The gate mineral is the partner's A mineral by label.
-            OrderedMineral walkMineral;
-            string aLabel;
-            if (normalizedRole == "T4")
+            // Phase-1 walk mineral, the chased partner's A mineral, and the
+            // frame-19 walk mineral, by role (owner spec 2026-10-20).
+            string walkLabel;
+            string partnerALabel;
+            switch (normalizedRole)
             {
-                walkMineral = allMinerals.FirstOrDefault(mineral => mineral != null && mineral.Index == 3);
-                aLabel = "TA";
+                case "T4":
+                    walkLabel = "SA";
+                    partnerALabel = "TA";
+                    break;
+                case "T5":
+                    walkLabel = "SA";
+                    partnerALabel = "TA";
+                    break;
+                case "Y4":
+                    walkLabel = "SB";
+                    partnerALabel = "YA";
+                    break;
+                // W12/W10 switch (owner spec 2026-10-21, owner: "W12 becomes Y5
+                // and W10 becomes B2"): the Y5-keyed chase rows are run by W12
+                // (now labeled Y5) — its kept first set: walk SB, chase Y1 (the
+                // primary pusher slot), stage on its own BB at frame 25.
+                case "Y5":
+                    walkLabel = "SB";
+                    partnerALabel = "YA";
+                    break;
+                default:
+                    Console.WriteLine($"[BUILD START 5X5 CHASE BUMP FALLBACK] role={normalizedRole} set={instructionSet} reason=unknown-chase-bump-role");
+                    return BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1);
             }
-            else if (normalizedRole == "Y4")
+
+            // The frame-19 walk mineral is SB for all four roles ("on frame 19
+            // they both Mineral Walk to SB").
+            const string frame19WalkLabel = "SB";
+
+            OrderedMineral FindMineralByLabel(string label) =>
+                allMinerals.FirstOrDefault(mineral =>
+                    mineral != null
+                    && string.Equals(mineral.FinalLabel, label, StringComparison.OrdinalIgnoreCase));
+
+            var walkMineral = FindMineralByLabel(walkLabel);
+            var frame19WalkMineral = FindMineralByLabel(frame19WalkLabel);
+            var partnerAMineral = FindMineralByLabel(partnerALabel);
+            if (walkMineral?.UnitTag == 0 || frame19WalkMineral?.UnitTag == 0)
             {
-                walkMineral = allMinerals.FirstOrDefault(mineral => mineral != null && mineral.Index == 5);
-                aLabel = "YA";
-            }
-            else
-            {
-                Console.WriteLine($"[BUILD START 5X5 BUMP FALLBACK] role={normalizedRole} set={instructionSet} reason=unknown-bump-role");
+                // Missing walk/SB mineral data: fall back to the plain jitMH walk
+                // rather than seeding a chase list that can never resolve its rows.
+                Console.WriteLine($"[BUILD START 5X5 CHASE BUMP FALLBACK] role={normalizedRole} set={instructionSet} walk={walkLabel} tag={walkMineral?.UnitTag ?? 0} frame19Walk={frame19WalkLabel} tag={frame19WalkMineral?.UnitTag ?? 0}");
                 return BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1);
             }
 
-            var aMineral = allMinerals.FirstOrDefault(mineral =>
-                mineral != null
-                && string.Equals(mineral.FinalLabel, aLabel, StringComparison.OrdinalIgnoreCase));
-            var harvestTargetId = aMineral?.UnitTag != 0 ? aMineral.UnitTag : targetId;
-            if (walkMineral?.UnitTag == 0 || harvestTargetId == 0)
-            {
-                Console.WriteLine($"[BUILD START 5X5 BUMP FALLBACK] role={normalizedRole} set={instructionSet} walkTag={walkMineral?.UnitTag ?? 0} aLabel={aLabel} aTag={harvestTargetId}");
-                return BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1);
-            }
+            Console.WriteLine($"[BUILD START 5X5 CHASE BUMP SET] role={normalizedRole} set={instructionSet} walk=[{walkMineral.Index}]{walkMineral.FinalLabel} tag={walkMineral.UnitTag} frame19Walk=[{frame19WalkMineral.Index}]{frame19WalkMineral.FinalLabel} tag={frame19WalkMineral.UnitTag} partnerA={partnerALabel} aTag={partnerAMineral?.UnitTag ?? 0} stage={targetLabel} tag={targetId}");
 
-            Console.WriteLine($"[BUILD START 5X5 BUMP SET] role={normalizedRole} set={instructionSet} walkMineral=[{walkMineral.Index}]{walkMineral.FinalLabel} tag={walkMineral.UnitTag} aMineral={aLabel} aTag={harvestTargetId} handoff={targetLabel} tag={targetId}");
+            var instructions = new List<WorkerInstruction>();
 
-            // "T1 - T4 Bump Set" (owner spec, extended 2026-10-13): BOTH bump roles run
-            // this set — T4 (bumps T1 toward TA) and Y4 (bumps Y1 toward YA). The bump is
-            // gated on the bumper point — where the mineral-walk line intersects the
-            // partner's A-mineral speed-mining line — and from relative frame 8 through
-            // relative frame 25 ("keep pushing until frame 25", owner request) the
-            // bumper chases the partner's live X,Y with one unqueued move per frame. All
-            // frames are absolute from frame 0 (no InstructionStartFrame reset anywhere
-            // in this set): the bumper gate fails open at frame 8 so the chase window
-            // always runs.
-            return new List<WorkerInstruction>
+            // Row 0: the phase-1 mineral walk (T4: SA, T5: SA, Y4: SB, B2: SB —
+            // owner spec 2026-10-20 18:22) — issued once; the walk runs until a
+            // chase row's unqueued move interrupts it (or the frame-19 walk
+            // gather does).
+            instructions.Add(new WorkerInstruction
             {
-                // Frame 0: 1183 Smart Harvest on the walk mineral — the mineral walk
-                // that carries the bumper to the bumper point behind its partner.
-                // Issued once; the walk runs until the bumper move below interrupts it.
-                new WorkerInstruction
-                {
-                    InstructionSet = instructionSet,
-                    Command = WorkerInstructionCommand.Gather,
-                    Point = WorkerInstructionPoint.None,
-                    TargetId = walkMineral.UnitTag,
-                    NoCondition = true,
-                    Queue = false
-                },
-                // The bumper move: BumpSmBumper resolves to the partner's live position
-                // once the bumper reaches the bumper point (and fails open at relative
-                // frame 8), so this row fires the frame the gate resolves and switches
-                // the bumper off the mineral walk onto a bump move behind its partner,
-                // accelerating it toward the A-mineral SM harvest point. The 100u
-                // tolerance makes the row's own position gate a formality — the bumper
-                // gate lives in the resolver; while the resolver is null the row waits
-                // silently. The {TA,TA}/{YA,YA} reference carries the A-mineral SM
-                // harvest point the bumper point is computed against.
-                new WorkerInstruction
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = walkMineral.UnitTag,
+                NoCondition = true,
+                Queue = false
+            });
+
+            // chase rows REMOVED 2026-10-20 (owner spec "South New Worker Order"):
+            // the 0-20 distance-trigger window is replaced by the explicit 6-18
+            // frame schedule below.
+
+            // Rows 1-13: per-frame partner chase (relative frames 6-18), each row
+            // resolving the partner's live position at the frame it fires
+            // ("every frame the Bump teams move to either Y1 or T1 current
+            // position depending on team", owner answer 2026-10-20). Purely
+            // frame-gated (PositionTolerance 0); the Y-side clear hold ("mineral
+            // walk to SB until clear of any workers") lives in
+            // ResolveBumpChasePartnerPoint.
+            for (var frame = 6; frame <= 18; frame++)
+            {
+                instructions.Add(new WorkerInstruction
                 {
                     InstructionSet = instructionSet,
                     Command = WorkerInstructionCommand.Move,
-                    Point = WorkerInstructionPoint.BumpSmBumper,
-                    TargetId = harvestTargetId,
-                    NoCondition = false,
-                    PositionTolerance = 100f,
-                    Queue = false,
-                    TargetPointReference = BuildPairReference(startIndex, aLabel, aLabel, "HarvestA")
-                },
-                // Then the partner chase (owner request 2026-10-13): from relative frame
-                // 8 through relative frame 25 the bumper moves to its partner's current
-                // X,Y — one unqueued move row per frame, each resolving the partner's
-                // live position at the frame it fires, so the bumper is always moving to
-                // where the partner actually is and shoves it forward toward the
-                // A-mineral speed-mining harvest point. PositionTolerance 0 makes the
-                // rows purely frame-gated (a position gate could fire them early the
-                // moment the bumper touches its partner). Frames are absolute from
-                // frame 0 — no gate reset anywhere in this set.
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 8, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 9, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 10, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 11, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 12, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 13, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 14, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 15, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 16, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 17, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 18, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 19, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 20, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 21, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 22, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 23, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 24, PositionTolerance = 0f, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpPartner, TargetId = targetId, RelativeFrame = 25, PositionTolerance = 0f, Queue = false },
-                // The chase window is over: switch to the B-mineral wait point (existing
-                // Version 2 handoff geometry) at frames 26/27, and the frame-45 gather
-                // hands off on that B mineral (TB for T4 / YB for Y4) as before.
-                new WorkerInstruction
+                    Point = WorkerInstructionPoint.BumpChasePartner,
+                    TargetId = partnerAMineral?.UnitTag != 0 ? partnerAMineral.UnitTag : targetId,
+                    RelativeFrame = frame,
+                    PositionTolerance = 0f,
+                    Queue = false
+                });
+            }
+
+            // Row 14: the frame-19 SB mineral walk — a NoCondition 1183 gather on
+            // SB for all four roles ("on frame 19 they both Mineral Walk to SB").
+            // NoCondition bypasses the gather-send/mineral-busy gates so the walk
+            // issues exactly at frame 19 even if SB is mid-cycle; the explicit
+            // RelativeFrame holds the row to its frame.
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = frame19WalkMineral.UnitTag,
+                RelativeFrame = 19,
+                NoCondition = true,
+                Queue = false
+            });
+
+            // Row 19 (the inverted-gate park hold) and row 18 (the frame-21
+            // central SA mineral walk) REMOVED 2026-10-20: the new schedule is
+            // walk -> chase 6-18 -> SB walk 19 -> stage 25 -> release gate ->
+            // tail. (The 2026-10-20 20:27 spec restored a WAIT gate after the
+            // stage move — the harvest-release gate holding the worker at the
+            // CCA point until the active harvester reaches 32 frames — distinct
+            // from the retired frame-gated park hold.)
+
+            // Row 15: frame-25 staging — move to the worker's stage-mineral CCA
+            // wait point ("on frame 25 T4 will move to the stage for TB and T5
+            // the stage for SB"; Y4 -> YB, B2 -> BB — the row TargetId, same
+            // role-keyed staging the retired chase set used). PositionTolerance
+            // 0 keeps the row purely frame-gated.
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Move,
+                Point = WorkerInstructionPoint.CcaWait,
+                TargetId = targetId,
+                RelativeFrame = 25,
+                PositionTolerance = 0f,
+                Queue = false
+            });
+
+            // Row 16: the harvest-release staging gate (owner spec 2026-10-20
+            // 20:27) — hold at the CCA point until the stage mineral's active
+            // harvester has accumulated 32 harvest frames (or the mineral is
+            // free), THEN run the tail: the stored-point walk out and the Smart
+            // command count their relative frames from the gate pass.
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Wait,
+                TargetId = targetId,
+                HarvestReleaseGate = true
+            });
+
+            instructions.AddRange(BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1));
+            return instructions;
+        }
+
+        // BB mineral-walk startup (owner spec 2026-10-21 W12/W10 switch: the walk
+        // Y5 used to open with — owner spec 2026-10-20 18:22 "Y5 Mineral Walk to
+        // BB", frames 0-5 — moved to B2, "W12 will stay on BB"): row 0
+        // mineral-walks BB (NoCondition 1183 gather, issued at load); the standard
+        // startup follows with every frame-gated row shifted +6 so the walk window
+        // runs clear first — frames 0/1 moves become 6/7, the 14/15 moves become
+        // 20/21, the queued +16 gather becomes +22. If the BB mineral cannot be
+        // resolved the set falls back to the plain standard startup. Minerals
+        // resolve BY LABEL across all assignments.
+        private static IReadOnlyList<WorkerInstruction> Build5x5BbWalkStartup(
+            string instructionSet,
+            ulong targetId,
+            int startIndex,
+            List<TeamPatchAssignmentDto> allAssignments)
+        {
+            var allMinerals = (allAssignments ?? new List<TeamPatchAssignmentDto>())
+                .SelectMany(assignment => assignment?.Minerals ?? new List<OrderedMineral>())
+                .ToList();
+            var bbMineral = allMinerals.FirstOrDefault(mineral =>
+                mineral != null
+                && string.Equals(mineral.FinalLabel, "BB", StringComparison.OrdinalIgnoreCase));
+
+            var instructions = new List<WorkerInstruction>();
+            if (bbMineral == null || bbMineral.UnitTag == 0)
+            {
+                Console.WriteLine($"[BUILD START 5X5 B2 BBWALK FALLBACK] set={instructionSet} reason=missing-BB tag={bbMineral?.UnitTag ?? 0}");
+                instructions.AddRange(BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1));
+                return instructions;
+            }
+
+            Console.WriteLine($"[BUILD START 5X5 B2 BBWALK SET] set={instructionSet} bb=[{bbMineral.Index}]{bbMineral.FinalLabel} tag={bbMineral.UnitTag} target={targetId}");
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = bbMineral.UnitTag,
+                NoCondition = true,
+                Queue = false
+            });
+
+            foreach (var row in BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1))
+            {
+                if (row.RelativeFrame >= 0)
                 {
-                    InstructionSet = instructionSet,
-                    Command = WorkerInstructionCommand.UseTargetPoint,
-                    Point = WorkerInstructionPoint.JitWaitPointA,
-                    TargetId = targetId,
-                    NoCondition = true,
-                    StoreTargetPoint = true,
-                    TargetPointReference = BuildPairReference(startIndex, targetLabel, targetLabel, "WaitPointA")
-                },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 26, Queue = false },
-                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 27, Queue = false },
-                // The bumper then takes the B mineral itself (2nd miner on TB/YB) and
-                // the appended rotation book (whose MiningTargets[0] is that same
-                // mineral) takes over.
-                new WorkerInstruction
-                {
-                    InstructionSet = instructionSet,
-                    Command = WorkerInstructionCommand.Gather,
-                    Point = WorkerInstructionPoint.Harvest,
-                    TargetId = targetId,
-                    RelativeFrame = 45,
-                    Queue = true
+                    row.RelativeFrame += 6;
                 }
-            };
+
+                instructions.Add(row);
+            }
+
+            return instructions;
+        }
+
+        // First-return de-phase (owner spec 2026-10-19 "fix the first return
+        // set choreography"): the first return lands every teammate at the
+        // hatchery in the same frames — with the tight V-mineral cluster the
+        // deposit crowd bounces a worker off the rim (V5, owner screenshot).
+        // The spatial spread (ReturnPointSpreadDegrees) separates the deposit
+        // POINTS; this separates the deposit TIMES: each V/C worker's whole
+        // startup phase (walk out, first gather, first return) shifts later
+        // by (slot-1) frames via the list-load frame anchor, so V1..V5's
+        // first returns land 0/1/2/3/4 frames apart instead of in one clump.
+        // The anchor re-bases on the first control-row pass, so ONLY the
+        // first trip de-phases — steady-state rotation timing is untouched.
+        // T/Y/B stay at 0: the bounce was observed on the V team, and the
+        // 12-worker bump test has no V/C roles, keeping the measured
+        // pool-timing band byte-identical.
+        private static int FirstTripDephaseFrames(string role)
+        {
+            if (string.IsNullOrEmpty(role) || role.Length < 2)
+            {
+                return 0;
+            }
+
+            var prefix = char.ToUpperInvariant(role[0]);
+            if (prefix != 'V' && prefix != 'C')
+            {
+                return 0;
+            }
+
+            return int.TryParse(role.Substring(1), out var slot) && slot > 1 ? slot - 1 : 0;
         }
 
         // True when the label names an "A" mineral (TA/SA/BA/YA) — the 5x5 A-miner
@@ -1533,6 +1723,10 @@ namespace BabySharkBot.Managers
         //   - T1/Y1: the (speed-mining) Harvest point on the hatchery->mineral line —
         //     the direct straight-line walk. The computed optimal first-harvest point
         //     angled their walk toward T5/Y5's side, so it is not used for them.
+        //   - T3/Y3 (owner specs 2026-10-20 18:30/18:34 "Y3 Target is BA", "Same
+        //     thing T3 target SA — Move to Harvest point and Harvest"): same direct
+        //     Harvest point — the computed optimal point angled Y3's BA walk into
+        //     Y2's YB area and T3 gets the identical direct walk.
         //   - every other A-miner: the OPTIMAL first-harvest approach point (resolved
         //     live: the point minimizing |worker start -> P| + |P -> SM return point|
         //     over the candidate standoff points around the mineral — the SM harvest
@@ -1545,7 +1739,7 @@ namespace BabySharkBot.Managers
             string role)
         {
             var normalizedRole = NormalizeRole(role);
-            var firstTripPoint = normalizedRole == "T1" || normalizedRole == "Y1"
+            var firstTripPoint = normalizedRole == "T1" || normalizedRole == "Y1" || normalizedRole == "T3" || normalizedRole == "Y3"
                 ? WorkerInstructionPoint.Harvest
                 : WorkerInstructionPoint.OptimalFirstHarvest;
             return new List<WorkerInstruction>
@@ -2091,11 +2285,12 @@ namespace BabySharkBot.Managers
                 // Owner spec 2026-10-14 ("add Y5 back with the new code"): Y5 rejoins
                 // the swing rotation and enters at its LAST target (YB) instead of BA
                 // — with the old BA entry Y2/Y4/Y5 all piled onto one mineral every
-                // cycle. With Y4's cycle de-synced (one-time BA chapter) and Y2's
+                // cycle. Y4's prologue is now the {YA,YB} first return (owner spec
+                // 2026-10-21 18:03, one-time BA chapter retired) and Y2's
                 // double-YB prologue (2026-10-15: its BB detour is retired, it joins
                 // the rotation at BA), the yellow entries are Y1=YB, Y2=BA, Y3=YA,
-                // Y4=YA(+desync), Y5=YB — a 2/2/1 spread. T5 keeps the original
-                // targets[1] (SA) entry.
+                // Y4=YA (YA-YB first return), Y5=YB — a 2/2/1 spread. T5 keeps
+                // the original targets[1] (SA) entry.
                 var swingStart = NormalizeRole(workerRole) == "Y5" && targets.Count == 4
                     ? targets.Count - 1
                     : 1;
@@ -2179,14 +2374,12 @@ namespace BabySharkBot.Managers
                 return instructions;
             }
 
-            // Owner spec 2026-10-13 ("starting on different minerals"): Y2, Y4 and
-            // Y5 all entered the rotation at BA and marched in lockstep — the yellow
-            // bunching (teal spreads 2/2/1 because its roles enter at SA/TA/TB/SA).
-            // Y4 enters at YA: its three chapters run t2 -> t0 -> t1
-            // (YA -> YB -> BA — the canonical direction), looping forever, after a
-            // ONE-TIME BA chapter that de-synchronizes its cycle from the others
-            // (see below). Yellow rotation entries are Y1=YB, Y2=BA, Y3=YA,
-            // Y4=YA(desynced), Y5=YB (swing enters at YB) — a 2/2/1 spread.
+            // Owner spec 2026-10-21 18:03 ("Yellow is still crowded on YB — insert
+            // a row for Y4"): Y4's startup mines YB ONCE, then returns its cargo
+            // ON THE {YA,YB} PAIR POINT (the inserted row — returning toward YA),
+            // then joins the cycle YA -> YB -> BA forever. Book: YB, YA, YB, BA,
+            // then repeat YA, YB, BA. The 2026-10-13 one-time BA de-sync chapter
+            // is retired.
             if (NormalizeRole(workerRole) == "Y4" && targets.Count >= 3)
             {
                 instructions.Add(new WorkerInstruction
@@ -2196,26 +2389,10 @@ namespace BabySharkBot.Managers
                     PreviousAbilityId = firstGatherAbility,
                     TargetAbilityId = returnAbility
                 });
-                // Prologue just mined YB (t0): return on the {YB,BA} pair row, hand
-                // off, then run a ONE-TIME BA chapter (t1) BEFORE joining the loop.
-                // The extra trip de-synchronizes Y4's cycle from Y1/Y2/Y3 — with
-                // all four yellow rotation workers sharing ~equal 3-chapter cycle
-                // lengths, equal-length cycles preserved the entry offsets forever
-                // and the same three workers re-formed their pile at YB every
-                // cycle ("we keep getting 3 workers trying to mine YB").
-                AddReturnInstructions(instructions, startIndex, targets[0], targets[1]);
-                instructions.Add(CreateHandoffWait());
-                instructions.Add(new WorkerInstruction { InstructionSet = "wait", Command = WorkerInstructionCommand.Wait, NextTargetIndex = 1 });
-                AddHarvestReleaseStagingInstructions(instructions, targets[1].ResourceUnitId);
-                AddHarvestInstructions(instructions, startIndex, "jitMH", targets[1], targets[2], WorkerInstructionPoint.JitHarvestA);
-                instructions.Add(new WorkerInstruction
-                {
-                    InstructionSet = "wait",
-                    Command = WorkerInstructionCommand.Wait,
-                    PreviousAbilityId = firstGatherAbility,
-                    TargetAbilityId = returnAbility
-                });
-                AddReturnInstructions(instructions, startIndex, targets[1], targets[2]);
+                // The startup trip just mined YB (t0): return on the {YA,YB}
+                // pair row (from YB toward YA — owner spec 2026-10-21 18:03),
+                // hand off, then run the cycle YA -> YB -> BA, looping forever.
+                AddReturnInstructions(instructions, startIndex, targets[0], targets[2]);
                 instructions.Add(CreateHandoffWait());
                 instructions.Add(new WorkerInstruction { InstructionSet = "wait", Command = WorkerInstructionCommand.Wait, NextTargetIndex = 2 });
 
@@ -2733,14 +2910,18 @@ namespace BabySharkBot.Managers
             return prefix == 'S' && suffix == '2';
         }
 
-        // New-logic staging pair (owner spec 2026-10-11): a frame-0 move to the target
-        // mineral's CCA wait point followed by the harvest-release gate. The gate
-        // blocks with no command until the mineral is free or its active harvester has
-        // HarvestFrameTracker.ReleaseLeadFrames or fewer harvest frames left, so the
-        // staged worker never stands on a busy mineral's footprint as the 1183 waiter
-        // the game re-pathes away after 15 frames. When the gate passes, the Wait row
-        // resets InstructionStartFrame, so the harvest rows behind it count their
-        // relative frames from the release frame.
+        // New-logic staging pair (owner spec 2026-10-11, release rule 2026-10-20 20:09):
+        // a frame-0 move to the target mineral's CCA wait point followed by the
+        // harvest-release gate. The gate blocks with no command until the mineral is
+        // free or its active harvester has ACCUMULATED
+        // HarvestFrameTracker.StagedReleaseHarvestFrames (32) harvest frames ("All
+        // Workers needs to stage until the active mineral has 32 Harvest frames" —
+        // Y4 was leaving YB because it was told to harvest too soon under the old
+        // near-completion lead), so the staged worker never stands on a busy
+        // mineral's footprint as the 1183 waiter the game re-pathes away after 15
+        // frames. When the gate passes, the Wait row resets InstructionStartFrame,
+        // so the harvest rows behind it count their relative frames from the
+        // release frame.
         private static void AddHarvestReleaseStagingInstructions(List<WorkerInstruction> instructions, ulong mineralTag)
         {
             instructions.Add(new WorkerInstruction
@@ -2917,6 +3098,26 @@ namespace BabySharkBot.Managers
                 "jitMH5x5" => WorkerInstructionPoint.JitHarvestA,
                 "mwstage5x5T4" => WorkerInstructionPoint.JitHarvestA,
                 "mwstage5x5Y4" => WorkerInstructionPoint.JitHarvestA,
+                // Chase-bump sets (owner spec 2026-10-19): the standard startup tail
+                // appended after the staging move walks/gathers the StoredTarget pair
+                // point — without this store row the tail's StoredTarget never
+                // resolves and the walker sits at its stage point forever
+                // (bumptest_chase2_run4/opt_run1: T4 idle frames 16-79 until a
+                // collision re-command rescued it; the rotation book never ran).
+                // bumpY5 and bbwalkB2 need the same store row: Y5's swing book's
+                // first return rides the {BA,BB} pair row and B2's tail walks the
+                // StoredTarget pair point after the BB walk (W12/W10 switch
+                // 2026-10-21). B2's single-target book also stores the BB
+                // self-pair point via AddSelfPairSetupInstruction.
+                "bumpT4" => WorkerInstructionPoint.JitHarvestA,
+                "bumpT5" => WorkerInstructionPoint.JitHarvestA,
+                "bumpY4" => WorkerInstructionPoint.JitHarvestA,
+                "bumpY5" => WorkerInstructionPoint.JitHarvestA,
+                // B2's BB-walk set (W12/W10 switch 2026-10-21): the standard
+                // startup tail appended after the BB walk row walks/gathers the
+                // StoredTarget pair point — same store requirement as the
+                // chase-bump sets above (this is the bbwalkY5 shape moved to B2).
+                "bbwalkB2" => WorkerInstructionPoint.JitHarvestA,
                 "jitMH" when role?.EndsWith("2", StringComparison.OrdinalIgnoreCase) == true => WorkerInstructionPoint.JitHarvestB,
                 "jitMH" => WorkerInstructionPoint.JitHarvestA,
                 _ => WorkerInstructionPoint.None
@@ -3721,7 +3922,10 @@ namespace BabySharkBot.Managers
             // Build5x5Book loops the rotation forever. Changes from Version 1:
             //   T4/Y4 (bumpers) now hand off on their B mineral (TB/YB) — 2nd miner —
             //   instead of the team A mineral, so their books start at chapter 2:
-            //   T4 {TB,TA,SA}, Y4 {YB,BA,YA}.
+            //   T4 {TB,TA,SA}, Y4 {YB,BA,YA} — Y4's book per owner spec
+            //   2026-10-21 18:03: mine YB once, return on the {YA,YB} pair point,
+            //   then cycle YA -> YB -> BA (book: YB, YA, YB, BA, repeat YA,YB,BA;
+            //   the one-time BA de-sync chapter is retired).
             //   T5/Y5 are swing miners: one trip on the far B mineral (SB/BB) returning
             //   via the {SA,SB}/{BA,BB} pair row, then the rotation {SA,TB,TA} /
             //   {BA,YA,YB} — four entries, with targets[0] consumed by the startup set.

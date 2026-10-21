@@ -211,11 +211,15 @@ namespace BabySharkBot.Setup
             {
                 if (Settings.IsMagannatha12WorkerOverride)
                 {
-                    // Magannatha custom role layout:
-                    // Teal: W3/T1, W4/T2, W2/T3
-                    // Salmon: W5/S1, W6/S2, W1/S3
-                    // Blue: W7/B1, W11/B2, W12/B3
-                    // Yellow: W9/Y1, W8/Y2, W10/Y3
+                    // Magannatha custom role layout (worker order corrected
+                    // 2026-10-20 per the owner's annotated screenshot; W12/W10
+                    // final roles swapped 2026-10-21 — ONLY workers 7/8/9/10/12
+                    // change; every other worker AND the team patch membership
+                    // stay exactly as before):
+                    // Teal: W3/T1, W4/T2, W2/T4
+                    // Salmon: W1/T5, W5/T3, W6/S2
+                    // Blue: W7/Y3, W11/Y4, W12/Y5
+                    // Yellow: W9/Y1, W8/Y2, W10/B2
                     AddTeamIfPossible(teams, minerals, workers, 0, 1, new[] { "W3", "W4", "W2" }, 1);
                     AddTeamIfPossible(teams, minerals, workers, 2, 3, new[] { "W5", "W6", "W1" }, 2);
                     AddTeamIfPossible(teams, minerals, workers, 4, 5, new[] { "W7", "W11", "W12" }, 3);
@@ -495,8 +499,12 @@ namespace BabySharkBot.Setup
             {
                 // 5x5 rotation layout, Version 2 ("5 by 5 starting teams Version 2").
                 // Team patch membership is unchanged (proximity-based groups of 3);
-                // only the role labels differ. The two rotating teams span patches:
-                // teal = T1-T5 + temp S2, yellow = Y1-Y5 + temp B2. Books (built in
+                // only the role labels differ. NEW WORKER ORDER 2026-10-20 per the
+                // owner's annotated screenshot ("Only these four changed"): W7->Y3,
+                // W8->Y2, W9->Y1, W10->Y5 — W1 (T5), W2 (T4) and every other worker
+                // keep their roles; no new assignments were invented. The two
+                // rotating teams span patches: teal = T1-T5 + temp S2, yellow =
+                // Y1-Y5 + temp B2. Books (built in
                 // BabySharkBuildManager.GetInstructionLabels), Version 2 orders:
                 //   T1: TA x2, then TB, TA once each, then SA -> TB -> TA
                 //                                       (owner spec 2026-10-13)
@@ -507,14 +515,22 @@ namespace BabySharkBot.Setup
                 //   Y1: YA x2, then YB -> BA -> YA        (A-miner)
                 //   Y2: YB x2, then BA -> YA -> YB        (owner spec 2026-10-13)
                 //   Y3: BA x2, then YA -> YB -> BA        (A-miner)
-                //   Y4: bump Y1, then YB (2nd miner), then BA -> YA -> YB
+                //   Y4: bump Y1, then YB once, YA-YB return, then YA -> YB -> BA
+                //                                       (owner spec 2026-10-21 18:03)
                 //   Y5: BB once (BA-BB return), then BA -> YA -> YB
                 //   S2: speed-mines SB forever; B2: speed-mines BB forever (no A trip).
-                // Harvest-frame test case (owner spec 2026-10-11): W1 and W6 SWAP
-                // roles — W1 is the new T5 ({SB,SA,TB,TA} with new-logic staging
-                // waits on every mineral) and W6 is the new S2 (speed-mines SB
-                // forever, staged on its repeat approaches so it tests the new
-                // logic while W1 is mining).
+                // W12/W10 SWITCH 2026-10-21 (owner spec "MagannathaAIE_v2 South W12
+                // W10 Switch Worker Order", owner clarification: "W12 becomes Y5
+                // and W10 becomes B2"): the two workers SWAP final roles — W12
+                // becomes Y5, W10 becomes B2 — while BOTH KEEP their first sets:
+                // W10 (next to Y1) keeps the frame-0-5 mineral walk to BB (the
+                // walk pushes Y1 — W10 remains the primary pusher) and now stays
+                // on BB forever with the B2 book (incl. the spawning pool); W12
+                // keeps the Y1 chase-bump first set (walk SB 0-5, chase Y1 6-18,
+                // SB walk 19, stage BB 25) and then mines BB once and takes the
+                // Y5 rotation (BB -> BA -> YA -> YB) — because W12 spends frames
+                // 0-25 pushing Y1 first, the Y5 no longer arrives too soon into
+                // the Yellow rotation.
                 var exactRoleByStartLabel5x5 = teamNumber switch
                 {
                     1 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -531,15 +547,15 @@ namespace BabySharkBot.Setup
                     },
                     3 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
-                        ["W7"] = "Y5",
+                        ["W7"] = "Y3",
                         ["W11"] = "Y4",
-                        ["W12"] = "B2"
+                        ["W12"] = "Y5"
                     },
                     4 => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     {
-                        ["W8"] = "Y3",
-                        ["W9"] = "Y2",
-                        ["W10"] = "Y1"
+                        ["W9"] = "Y1",
+                        ["W8"] = "Y2",
+                        ["W10"] = "B2"
                     },
                     _ => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 };

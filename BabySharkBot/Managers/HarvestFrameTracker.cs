@@ -24,15 +24,13 @@ namespace BabySharkBot.Managers
     ///
     /// The cycle length measured for a mineral is the frames from "stopped moving
     /// with 1183" to the 1183->1184 flip (e.g. stops at 22, flips at 68 => 46).
-    /// ShouldReleaseStagedWorker fires when the active harvester has reached
-    /// cycle - leadFrames harvest frames, i.e. the mineral will be free leadFrames
-    /// frames from now — per owner spec 2026-10-16 (worker collision pass) the
-    /// lead is 32 frames ("at 32 the staging worker should be given the Smart
-    /// command"), refined from the 31-frame lead of 2026-10-13: a staged worker
-    /// is released while the active harvester still has up to 32 harvest frames
-    /// left, and its ~20-frame walk-in lands it at the mineral with ~12 frames of
-    /// the previous harvest remaining — under the ~15-frame window after which
-    /// the game re-paths a waiting gatherer to an unrelated mineral.
+    /// STAGING RELEASE (owner spec 2026-10-20 20:09): a staged worker holds until
+    /// the active harvester has ACCUMULATED StagedReleaseHarvestFrames (32) harvest
+    /// frames — "All Workers needs to stage until the active mineral has 32 Harvest
+    /// frames" (Y4 was leaving YB too early). The older near-completion rule
+    /// (ShouldReleaseStagedWorker: release when cycle - ReleaseLeadFrames frames
+    /// are done, the 2026-10-16 "at 32 the staging worker should be given the Smart
+    /// command" spec) still drives only the collision/wait near-completion check.
     /// </summary>
     public sealed class HarvestFrameTracker
     {
@@ -46,9 +44,23 @@ namespace BabySharkBot.Managers
         /// mineral", so the release fires with 32 harvest frames still on the active
         /// harvester and the ~20-frame walk-in leaves ~12 — inside the ~15-frame window
         /// before the game re-paths a waiting gatherer away. Refines the 31-frame lead
-        /// of 2026-10-13. Applies to every worker and mineral: all staging gates and
-        /// the mining manager's gather-send gate share this window.</summary>
+        /// of 2026-10-13.
+        /// 2026-10-20 20:09 REFINEMENT (owner spec "All Workers needs to stage until
+        /// the active mineral has 32 Harvest frames"): the STAGING release no longer
+        /// uses this near-completion lead — it fires once the active harvester has
+        /// ACCUMULATED StagedReleaseHarvestFrames frames (Y4 was leaving YB too
+        /// early). This constant now drives only the near-completion check
+        /// (ShouldReleaseStagedWorker / IsGatheringNearCompletion).</summary>
         public const int ReleaseLeadFrames = 32;
+
+        /// <summary>Owner spec 2026-10-20 20:09 "All Workers needs to stage until the
+        /// active mineral has 32 Harvest frames": a staged worker is released once the
+        /// mineral's active harvester has ACCUMULATED this many harvest frames —
+        /// regardless of where that falls in the cycle. Replaces the 2026-10-16
+        /// near-completion lead for staging (Y4 left YB because it was told to harvest
+        /// too soon). The free-mineral immediate release stays: no active harvester
+        /// means the mineral is free right now.</summary>
+        public const int StagedReleaseHarvestFrames = 32;
 
         // A mining worker's position is essentially constant during the gather phase;
         // walking workers move ~0.2-0.4 units per frame. 0.05u squared is well inside
@@ -115,10 +127,11 @@ namespace BabySharkBot.Managers
             _workers.TryGetValue(workerTag, out var worker) && worker.IsActiveHarvester;
 
         /// <summary>
-        /// Release condition for a staged worker: the active harvester will flip to
-        /// 1184 within ReleaseLeadFrames frames, so a worker dispatched now arrives as
-        /// the mineral frees up. Uses the measured cycle per mineral, falling back to
-        /// DefaultCycleFrames before the first measurement.
+        /// Near-completion condition (collision/wait logic only, via
+        /// IsGatheringNearCompletion): the active harvester will flip to 1184 within
+        /// ReleaseLeadFrames frames. NOT the staging release — per owner spec
+        /// 2026-10-20 20:09 staging holds until the active harvester has ACCUMULATED
+        /// StagedReleaseHarvestFrames frames (see HasAccumulatedReleaseFrames).
         /// </summary>
         public bool ShouldReleaseStagedWorker(ulong mineralTag)
         {
@@ -132,6 +145,15 @@ namespace BabySharkBot.Managers
                 : DefaultCycleFrames;
             return GetActiveHarvestFrames(mineralTag) >= cycle - ReleaseLeadFrames;
         }
+
+        /// <summary>
+        /// STAGING release condition (owner spec 2026-10-20 20:09 "All Workers needs
+        /// to stage until the active mineral has 32 Harvest frames"): the active
+        /// harvester has accumulated StagedReleaseHarvestFrames harvest frames. The
+        /// caller combines this with HasActiveHarvester for the free-right-now case.
+        /// </summary>
+        public bool HasAccumulatedReleaseFrames(ulong mineralTag) =>
+            GetActiveHarvestFrames(mineralTag) >= StagedReleaseHarvestFrames;
 
         /// <summary>
         /// Advances the tracker one frame. workers: live observed workers with position,
