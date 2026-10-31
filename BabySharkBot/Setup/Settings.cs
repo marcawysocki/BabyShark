@@ -110,6 +110,111 @@ namespace BabySharkBot.Setup
         // BumpAngle is the retired stand-point rotation knob (now inert).
         public static int BumpTestMode = 0;
         public static float BumpAngleDegrees = 0f;
+        // T1 arrival test battery (owner spec 2026-10-24 18:16): --t1test=N (0-9)
+        // selects startup-book variants for T1/T4/T5 that measure T1's time to the
+        // TA SM Harvest position. Variant = N / 2: 0 = T4/T5 mineral-walk clear of
+        // T1, no bumping; 1 = control (current chase-bump book); 2 = T4/T5 move to
+        // SA then follow T1 from frame 6; 3 = T1 via the SM-line halfway Star +
+        // T4/T5 mineral-walk to SA then follow at star arrival; 4 = same with
+        // T4/T5 moving to SA instead of mineral walking. Spawn: even N = NW
+        // (seed 1), odd N = SE (seed 2). -1 = disabled (normal books).
+        public static int T1TestNumber = -1;
+        // T4 mineral-walk duration before the TB bump move (owner test suite
+        // 2026-10-27 15:24): --t4walk=N frames of SA mineral-walk, then the
+        // move to TB that crosses T1's SMH line. -1 = built-in default (6).
+        public static int T4WalkFrames = -1;
+        // --t4angle=D (owner test suite 2026-10-28 08:14): T4 STARTS with a
+        // plain MOVE (not a mineral walk) along its latched start -> SA-mineral
+        // heading rotated by D degrees (+ = counterclockwise in map coords,
+        // 0 = the old mineral-walk heading), switching to the TB bump move at
+        // frame 8. int.MinValue = disabled (normal mineral-walk book).
+        public static int T4AngleDegrees = int.MinValue;
+        // --gatelead=N (owner test suite 2026-10-28 08:51): fire T1's SMH Smart
+        // N frames BEFORE SMH arrival (threshold = 0.2u + N x 0.15u cruise) so
+        // the order-latency overlaps the last stretch of travel instead of
+        // starting at the stand. 0 = on-arrival (champion N=8 control).
+        public static int SmhSmartGateLeadFrames = 0;
+        // --t1trace: per-frame T1 position/ability/carrying dump, relative
+        // frames 5-80 (diagnoses the Smart -> pickup walk-in).
+        public static bool T1PositionTrace = false;
+        // Resolved once per run by the mining manager (role "T1" -> unit tag);
+        // the telemetry service matches this tag because T1's WorkerEntryDto
+        // Label arrives empty.
+        public static ulong T1TraceUnitTag = 0;
+        // Early-suicide trigger (owner spec 2026-10-28 08:14): --suicide-end
+        // now fires when the named role has RETURNED ITS FIRST CARGO (the
+        // optimization metric is time-to-first-return), instead of the
+        // 200-mineral bank. --suicide-200 selects the old bank trigger;
+        // --suicide-role=NAME moves the role (default T1; later Y1).
+        public static bool EarlySuicideOnRoleReturn = true;
+        public static string EarlySuicideRole = "T1";
+        // Bump choreography guide overlay (owner spec 2026-10-26 05:45): --bumpviz
+        // draws persistent per-frame debug geometry for both start locations —
+        // hatchery footprint circles (+0.4u), mineral harvest-distance circles in
+        // mineral colors (+0.4u), the TA SM Return -> SM Harvest line, frame-0
+        // worker cross hatches, and telemetry circles (T1/T4/T5 distances from
+        // their start at milestone frames). Ground-height lines/circles so nothing
+        // floats; re-sent every frame so the overlay persists.
+        public static bool BumpChoreographyViz = false;
+        // --naturaltest (owner spec 2026-10-28 14:13, "Test 1"): passive
+        // observation build. ALL worker mining commands are suppressed (the
+        // build manager seeds no instruction sets, so the mining manager has
+        // nothing to execute) and the engine's natural auto-mining picks the
+        // harvest/return stand points. Production only: drone to 13, overlord
+        // at 100 bank, drone to 14, overlord at the next 100, then drones to
+        // 32. No suicide, no buildings. Telemetry recording continues
+        // unchanged (worker_commands_*.jsonl WorkerObservation records carry
+        // per-frame positions/orders, now with the raw order target tag).
+        public static bool NaturalObservationMode = false;
+
+        // --smsweep (owner spec 2026-10-29 08:39): SM-harvest-point angular
+        // sweep measurement. Two workers per far mineral (SB, BB, BA, YB, YA)
+        // leapfrog Smart commands from approach points 1.87u out, sweeping the
+        // approach angle +5 deg until the stand point's distance to hatchery
+        // circle 1 (2.91u) worsens, back down in 2 deg steps to the best, then
+        // 1 deg fill. The SmSweepService owns ALL worker commands in this mode;
+        // books, collision detours, return interrupts and temp-drone onboarding
+        // are suppressed exactly like NaturalObservationMode.
+        public static bool SmSweepMode = false;
+
+        // --smstage (owner spec 2026-10-29 12:11): verify/tipping/staging test
+        // built on the --smsweep results. For each far mineral (SB, BB, BA, YB,
+        // YA): (1) verify the measured ideal stand point — Smart from the 1.87u
+        // approach at the sweep's best angle, worker must stand on the point and
+        // actually harvest (mineral contents drop); (2) tipping scan — approach
+        // at best+k deg (1 deg steps, interleaved +/-) until the stand misses
+        // the ideal point by > 0.15u, giving the greatest +/- angle that still
+        // hits; (3) staging area — place the worker at the ideal stand + r u
+        // toward the hatchery (r = 0.30..0.60, plus flanks), Stop, and watch
+        // whether it holds without wandering; from promising spots a Smart must
+        // still hit the ideal point. SmStageService owns ALL worker commands.
+        public static bool SmStageMode = false;
+        // Optional subset filter (e.g. --smminerals=SB,BB); empty = all five.
+        public static string SmStageMinerals = string.Empty;
+
+        // --smhandoff (owner spec 2026-10-29 16:37): staging with 2 workers per
+        // far mineral and harvest frames. Worker A harvests (MOVE to the 1.87u
+        // approach at the sweep best angle, then SMART); worker B holds at the
+        // staging spot (ideal stand + SmHandoffRadius u toward the hatchery,
+        // bearing 0) until A has ACCUMULATED 32 harvest frames (stationary +
+        // gather 1183 — same convention as HarvestFrameTracker), then B
+        // receives a SMART on the mineral. Measures the handoff: B stand vs
+        // ideal, the wait-to-harvest seam (mineral idle frames), and mutual
+        // drift/interference between the staged holder and the active
+        // harvester. SmHandoffService owns ALL worker commands.
+        public static bool SmHandoffMode = false;
+        // Optional subset filter (e.g. --smminerals=SB,BB); empty = all five.
+        public static string SmHandoffMinerals = string.Empty;
+        // Staging radius from the ideal stand toward the hatchery (default 0.40).
+        public static double SmHandoffRadius = 0.40;
+        // --smbearing= (owner spec 2026-10-29 18:09 follow-up): stage B at this
+        // offset (degrees) from the mineral's sweep best-angle corridor instead
+        // of dead on the hatchery line (0 = original behavior). The sign is
+        // auto-chosen per mineral — whichever side puts more distance between
+        // B's spot and A's 1.87u approach point. Motivation: at bearing 0 the
+        // staging spot sits on A's walk-in corridor (best angles are 2-16 deg),
+        // which shoved B (hold drifts up to 1.37u) and stalled A (SB NW gap 16).
+        public static double SmHandoffBearing = 0.0;
         // Spawn guard REMOVED 2026-10-20 (owner directive "Turn NW Start back
         // on"): NW games no longer exit; the flag and its only consumer are gone.
         // 13-B3 extractor trick (owner spec 2026-10-15): set by the mining manager's

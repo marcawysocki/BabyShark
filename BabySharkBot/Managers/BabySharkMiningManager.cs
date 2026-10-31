@@ -94,6 +94,11 @@ namespace BabySharkBot.Managers
         // cancel the spawning pool and send all drones to attack our own
         // hatchery so the test game resolves in seconds instead of minutes.
         private bool _suicideTestEndTriggered = false;
+        // Role-first-return trigger (owner spec 2026-10-28 08:14): latched
+        // once the role worker's IsCarrying has been observed true, so the
+        // first carrying -> not-carrying transition (the hatchery deposit)
+        // fires the suicide.
+        private bool _suicideRoleHasCarried = false;
         // Generic ATTACK ability id (protocol constant; the external Abilities
         // enum in use here has no ATTACK member).
         private const int SuicideAttackAbilityId = 3674;
@@ -127,6 +132,19 @@ namespace BabySharkBot.Managers
         // is not moving with 1183 at a mineral, and releases staged workers 15 frames
         // before the active harvester's 1184 flip. Source of truth for staging decisions.
         private readonly HarvestFrameTracker _harvestFrameTracker = new HarvestFrameTracker();
+
+        // Harvest-wait heal cooldown (owner report 2026-10-25 21:36, B2 stops
+        // mining): last frame a queued gather was re-armed for a worker parked
+        // orderless at a 1183->1184 harvest-completion wait. Bounds re-arms to
+        // one per HarvestWaitHealCooldownFrames even if the re-armed gather
+        // fizzles again.
+        private const int HarvestWaitHealCooldownFrames = 8;
+        private readonly Dictionary<ulong, int> _harvestWaitHealLastFrame = new Dictionary<ulong, int>();
+
+        private int GetHarvestWaitHealLastFrame(ulong workerTag)
+        {
+            return _harvestWaitHealLastFrame.TryGetValue(workerTag, out var frame) ? frame : -HarvestWaitHealCooldownFrames;
+        }
 
         private sealed class GatherCycleState
         {
@@ -184,7 +202,8 @@ namespace BabySharkBot.Managers
 
         private readonly object _instructionTraceLock = new object();
         private readonly JsonSerializerOptions _instructionTraceJsonOptions = new JsonSerializerOptions { WriteIndented = false };
-        private readonly string _instructionTraceFile;
+        private string _instructionTraceFile;
+        private bool _instructionTraceFileResolved;
         private readonly Dictionary<ulong, string> _lastInstructionTraceState = new Dictionary<ulong, string>();
         private long _miningCommandSequence;
         private readonly HashSet<ulong> _returnInterruptIssued = new HashSet<ulong>();
@@ -266,11 +285,23 @@ namespace BabySharkBot.Managers
             _ccaMiningService = ccaMiningService ?? new chrisCrossAppleSause();
             _extractorTrickService = extractorTrickService;
             _mapData = null;
+        }
+
+        // The trace file is named lazily on first write so the NW/SE start-location tag
+        // (resolved in OnStart, after this constructor runs) can be included in the name.
+        private void EnsureInstructionTraceFile()
+        {
+            if (_instructionTraceFileResolved)
+            {
+                return;
+            }
+            _instructionTraceFileResolved = true;
             try
             {
                 var folder = Path.Combine(Directory.GetCurrentDirectory(), "data", "mining_tests");
                 Directory.CreateDirectory(folder);
-                _instructionTraceFile = Path.Combine(folder, $"worker_instruction_lists_{DateTime.Now:yyyyMMddHHmmss}.jsonl");
+                var tag = MiningTestLogNaming.TagForFileName();
+                _instructionTraceFile = Path.Combine(folder, $"worker_instruction_lists{tag}_{DateTime.Now:yyyyMMddHHmmss}.jsonl");
             }
             catch
             {
@@ -871,11 +902,57 @@ namespace BabySharkBot.Managers
         // on … do not gate just remove the guard"): NW and SE games both run and
         // are measured now; only one start location runs per game.
 
+        // --smsweep (owner spec 2026-10-29 08:39): lazy singleton per manager
+        // instance — the service owns all worker commands while the flag is on.
+        private SmSweepService _smSweepService;
+        private SmSweepService GetSmSweepService()
+        {
+            if (_smSweepService == null)
+            {
+                _smSweepService = new SmSweepService(_mapData);
+                Console.WriteLine("[SMSWEEP] service created");
+            }
+            return _smSweepService;
+        }
+
+        // --smstage (owner spec 2026-10-29 12:11): same pattern — the stage
+        // service owns all worker commands while the flag is on.
+        private SmStageService _smStageService;
+        private SmStageService GetSmStageService()
+        {
+            if (_smStageService == null)
+            {
+                _smStageService = new SmStageService(_mapData);
+                Console.WriteLine("[SMSTAGE] service created");
+            }
+            return _smStageService;
+        }
+
+        // --smhandoff (owner spec 2026-10-29 16:37): same pattern — the handoff
+        // service owns all worker commands while the flag is on.
+        private SmHandoffService _smHandoffService;
+        private SmHandoffService GetSmHandoffService()
+        {
+            if (_smHandoffService == null)
+            {
+                _smHandoffService = new SmHandoffService(_mapData);
+                Console.WriteLine("[SMHANDOFF] service created");
+            }
+            return _smHandoffService;
+        }
+
         public IEnumerable<SC2Action> OnFrame(ResponseObservation observation)
         {
             _currentFrame = observation?.Observation == null ? 0 : (int)observation.Observation.GameLoop;
             _currentMinerals = observation?.Observation?.PlayerCommon == null ? 0 : (int)observation.Observation.PlayerCommon.Minerals;
-            if ((_currentFrame > 0 && _currentFrame % 5 == 0) || _anyWorkerRed)
+            // Owner request 2026-10-27 11:16: break EVERY frame 5..25 (was
+            // every 5th frame) for stepping the T1/T4 bump choreography.
+            // 2026-10-29 19:15 (owner "Can I step thru to see if you are thinking
+            // correct"): the handoff test's interesting events run to ~f105
+            // (32-harvest-frame Smart release, walk-ins, promotion), so in
+            // --smhandoff mode the break window extends to frame 120.
+            var stepBreakWindow = Settings.SmHandoffMode ? 120 : 25;
+            if ((_currentFrame >= 5 && _currentFrame <= stepBreakWindow) || _anyWorkerRed)
             {
                Debugger.Break();
             }
@@ -920,6 +997,36 @@ namespace BabySharkBot.Managers
                 // past the milestone; keep the success/failure banner on screen
                 // as a persistent annotation.
                 DrawB3MacroHatcheryBanner();
+            }
+
+            // --smsweep (owner spec 2026-10-29 08:39): the sweep service owns
+            // EVERY worker command this frame — skip the extractor trick driver,
+            // runtime books, return interrupts and all normal mining logic
+            // (ProcessFrameObservation above already ran label/tracking
+            // updates, which are command-free).
+            if (Settings.SmSweepMode)
+            {
+                var sweepActions = GetSmSweepService().OnFrame(observation, _currentFrame);
+                LogMiningCommands(sweepActions, new List<InstructionCommandContext>());
+                return sweepActions;
+            }
+
+            // --smstage (owner spec 2026-10-29 12:11): the stage service owns
+            // EVERY worker command this frame — same suppression as --smsweep.
+            if (Settings.SmStageMode)
+            {
+                var stageActions = GetSmStageService().OnFrame(observation, _currentFrame);
+                LogMiningCommands(stageActions, new List<InstructionCommandContext>());
+                return stageActions;
+            }
+
+            // --smhandoff (owner spec 2026-10-29 16:37): the handoff service
+            // owns EVERY worker command this frame — same suppression.
+            if (Settings.SmHandoffMode)
+            {
+                var handoffActions = GetSmHandoffService().OnFrame(observation, _currentFrame);
+                LogMiningCommands(handoffActions, new List<InstructionCommandContext>());
+                return handoffActions;
             }
 
             var actions = new List<SC2Action>();
@@ -971,12 +1078,29 @@ namespace BabySharkBot.Managers
         {
             if (!_suicideTestEndTriggered)
             {
-                if (_currentMinerals < 200 || _currentFrame <= 100)
+                if (Settings.EarlySuicideOnRoleReturn)
+                {
+                    // Owner spec 2026-10-28 08:14: fire when the named role
+                    // (default T1) has RETURNED ITS FIRST CARGO — the metric
+                    // is now time-to-first-return; the 200-mineral bank
+                    // trigger is kept behind --suicide-200 for later.
+                    if (!CheckEarlySuicideRoleReturnedCargo())
+                    {
+                        // Fail-safe: a broken test book can never park the
+                        // harness — past frame 900 end the run anyway.
+                        if (_currentFrame < 900)
+                        {
+                            return null;
+                        }
+                        Console.WriteLine($"[SUICIDE-END FAIL-OPEN] frame={_currentFrame} role={Settings.EarlySuicideRole} never returned first cargo — ending run anyway");
+                    }
+                }
+                else if (_currentMinerals < 200 || _currentFrame <= 100)
                 {
                     return null;
                 }
                 _suicideTestEndTriggered = true;
-                Console.WriteLine($"[SUICIDE-END] frame={_currentFrame} bank={_currentMinerals} — cancelling pool, all drones attacking own hatchery");
+                Console.WriteLine($"[SUICIDE-END] frame={_currentFrame} bank={_currentMinerals} trigger={(Settings.EarlySuicideOnRoleReturn ? Settings.EarlySuicideRole + " first-return" : "200-mineral bank")} — cancelling pool, all drones attacking own hatchery");
             }
 
             var actions = new List<SC2Action>();
@@ -1020,6 +1144,43 @@ namespace BabySharkBot.Managers
             return actions;
         }
 
+        // Owner spec 2026-10-28 08:14: the early-suicide trigger moves from the
+        // 200-mineral bank to "when the named role (default T1, later Y1 via
+        // --suicide-role=) has returned its FIRST CARGO". Carrying state comes
+        // from ObservationManager's live RuntimeWorkers update (mineral buff
+        // 271/272). True exactly once: the first carrying -> not-carrying
+        // transition after frame 40 (spawn-noise floor) — the deposit frame.
+        private bool CheckEarlySuicideRoleReturnedCargo()
+        {
+            var startIndex = Globals.CurrentStartIndex >= 0
+                ? Globals.CurrentStartIndex
+                : Settings.CurrentSpawnIndex;
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?? new List<AssignedWorkerDto>();
+            var roleWorker = assignedWorkers.FirstOrDefault(candidate =>
+                string.Equals(candidate?.Role, Settings.EarlySuicideRole, StringComparison.OrdinalIgnoreCase));
+            if (roleWorker == null)
+            {
+                return false;
+            }
+
+            var carrying = Settings.RuntimeWorkers.TryGetValue(roleWorker.UnitID, out var runtimeWorker)
+                && runtimeWorker.IsCarrying;
+            if (carrying)
+            {
+                _suicideRoleHasCarried = true;
+                return false;
+            }
+
+            if (_suicideRoleHasCarried && _currentFrame > 40)
+            {
+                Console.WriteLine($"[SUICIDE-END TRIGGER] frame={_currentFrame} role={Settings.EarlySuicideRole} tag={roleWorker.UnitID} first cargo returned");
+                return true;
+            }
+
+            return false;
+        }
+
         private void RegisterCurrentSpawnLabels(int startIndex, List<WorkerEntryDto> liveWorkers)
         {
             // BuildManager owns worker labels. MiningManager only consumes the
@@ -1058,7 +1219,493 @@ namespace BabySharkBot.Managers
             DrawVespeneLabels();
             DrawExpansionPoints();
             DrawSpawningPoolPlacement();
+            DrawBumpChoreographyGuides(observation);
             BreakWhenSpawnLabelsShouldBeVisible(observation);
+        }
+
+        // ── Bump choreography guide overlay (owner spec 2026-10-26 05:45) ──
+        // Persistent per-frame debug geometry, BOTH start locations, ground height
+        // (nothing floating), re-sent every frame so the overlay persists:
+        //   • two red circles per hatchery position (own + the other start): the
+        //     return-cargo footprint (hatchery unit radius 2.5) and +0.4u.
+        //   • per mineral: harvest-distance circle (mineral center -> SM Harvest
+        //     point) and +0.4u, in the mineral's own color.
+        //   • TA-colored line TA SM Return -> TA SM Harvest.
+        //   • 0.2-wide cross hatches on every worker's frame-0 start position.
+        //   • telemetry circles from THIS run: T1 (TA color, radii = T1 distance
+        //     from its start at frames 0/5/10/15/20), T4 (TB color) and T5 (SA
+        //     color) at frames 0/5/10/15 — run each seed to get both starts' sets.
+        // Hatchery circle 1 radius = MEASURED worker return-cargo stand distance
+        // (owner rule 1, 2026-10-29): mean deposit-stand distance from hatchery
+        // center in the natural-observation test — 966 deposits SE = 2.910u,
+        // 956 deposits NW = 2.909u (min 2.80 / max 3.06 on both starts). Replaces
+        // the old 2.75u hatchery unit-radius guess. Circle 2 = +0.4u.
+        private const float BumpVizHatcheryReturnRadius = 2.91f;
+        private const float BumpVizRingExtra = 0.4f;
+        private const float BumpVizCrossHalf = 0.1f;
+        private static readonly int[] BumpVizCaptureFrames = { 0, 5, 10, 15, 20 };
+        private static readonly int[] BumpVizDrawFrames = { 5, 10, 15 };
+        private readonly Dictionary<string, Dictionary<int, Vector2Dto>> _bumpVizSnapshots = new();
+
+        // Live move-target latches for the three choreo workers, written in
+        // LogMiningCommands on every issued command (owner request 2026-10-27
+        // 07:13 — the per-frame "current position -> move target" lines with a
+        // cross hatch on the move-to coordinate). IsWalk = the latched command
+        // is a mineral-walk gather (T4's line turns red; moves stay white).
+        private readonly Dictionary<string, (float X, float Y, bool IsWalk)> _bumpVizLiveTargets = new();
+
+        // T1 SM-line-extended roll state (owner spec 2026-10-27 11:16):
+        // 0 = rolling toward the extension target, 1 = confirmed ON the
+        // SM return->harvest line, 2 = knocked OFF the line (or reached its
+        // end) -> target the SM harvest point ("then target the mineral").
+        private readonly Dictionary<ulong, int> _choreoT1LineState = new();
+
+        private void DrawBumpChoreographyGuides(ResponseObservation observation)
+        {
+            if (!Settings.BumpChoreographyViz || _mapData == null || !ManagerDebugService.IsDebugEnabled) return;
+
+            // Snapshot live worker positions at the milestone frames (this run's
+            // telemetry); circles for every captured milestone redraw every frame.
+            // Workers are resolved from the PERSISTED patch assignment (FinalLabel
+            // + UnitTag + frame-0 Position) and matched to live observation BY TAG
+            // — live SelfUnits label fields are not reliably populated during the
+            // first frames, which silently killed the rings before.
+            var snapshot = Globals.CurrentObservation;
+            var observationFrame = observation?.Observation == null ? _currentFrame : (int)observation.Observation.GameLoop;
+            var relativeFrame = Settings.GetRelativeFrame(observationFrame);
+            var vizWorkers = ResolveBumpVizWorkers();
+            if (snapshot?.SelfUnits != null && vizWorkers.Count > 0)
+            {
+                foreach (var vizWorker in vizWorkers)
+                {
+                    if (Array.IndexOf(BumpVizCaptureFrames, relativeFrame) < 0) break;
+                    if (!_bumpVizSnapshots.TryGetValue(vizWorker.Label, out var snaps))
+                    {
+                        snaps = new Dictionary<int, Vector2Dto>();
+                        _bumpVizSnapshots[vizWorker.Label] = snaps;
+                    }
+                    if (snaps.ContainsKey(relativeFrame)) continue;
+                    if (!snapshot.SelfUnits.TryGetValue(vizWorker.Tag, out var live) || live?.Position == null) continue;
+                    snaps[relativeFrame] = live.Position;
+                    Console.WriteLine($"[BUMPVIZ] {vizWorker.Label} captured f{relativeFrame} pos=({live.Position.X:F2},{live.Position.Y:F2}) r={Math.Sqrt(DistanceSquared(vizWorker.Start, live.Position)):F2}");
+                }
+            }
+
+            var red = new Color { R = 255, G = 0, B = 0 };
+            var white = new Color { R = 255, G = 255, B = 255 };
+
+            // Hatchery footprint circles — where the hatchery IS and WOULD BE on the
+            // other start (both entries of StartingTownHall, every run).
+            if (_mapData.StartingTownHall != null)
+            {
+                for (var i = 0; i < _mapData.StartingTownHall.Length; i++)
+                {
+                    var townHall = _mapData.StartingTownHall[i];
+                    if (townHall == null) continue;
+                    var z = ResolveBumpVizGroundZ(i);
+                    DrawDebugCircle(townHall, BumpVizHatcheryReturnRadius, red, z);
+                    DrawDebugCircle(townHall, BumpVizHatcheryReturnRadius + BumpVizRingExtra, red, z);
+                }
+            }
+
+            // Mineral circles (harvest distance and +0.4u, mineral colors), the TA
+            // SM Return -> SM Harvest line, and worker start cross hatches — for
+            // BOTH start locations' patches.
+            if (_mapData.TeamPatchAssignments != null)
+            {
+                for (var start = 0; start < _mapData.TeamPatchAssignments.Count; start++)
+                {
+                    var assignments = _mapData.TeamPatchAssignments[start];
+                    if (assignments == null) continue;
+                    foreach (var assignment in assignments)
+                    {
+                        if (assignment == null) continue;
+
+                        OrderedMineral taMineral = null;
+                        OrderedMineral tbMineral = null;
+                        if (assignment.Minerals != null)
+                        {
+                            foreach (var mineral in assignment.Minerals)
+                            {
+                                if (mineral?.Position == null || mineral.HarvestPoint == null) continue;
+                                if (!HasNonZeroPoint(mineral.HarvestPoint)) continue;
+                                var color = ProcessVisableUnits.GetFinalLabelColor(
+                                    string.IsNullOrWhiteSpace(mineral.FinalLabel) ? mineral.Label : mineral.FinalLabel);
+                                // Circle 1 = the SM Harvest stand point — where the
+                                // worker stands still to harvest (owner rule 1,
+                                // 2026-10-29): radius = mineral center -> SmHarvestPoint,
+                                // HarvestPoint only as fallback. Circle 2 = the wait
+                                // zone, +0.4u beyond that.
+                                var standPoint = HasNonZeroPoint(mineral.SmHarvestPoint) ? mineral.SmHarvestPoint : mineral.HarvestPoint;
+                                var harvestRadius = (float)Math.Sqrt(DistanceSquared(mineral.Position, standPoint));
+                                DrawDebugCircle(mineral.Position, harvestRadius, color, mineral.Position.Z);
+                                DrawDebugCircle(mineral.Position, harvestRadius + BumpVizRingExtra, color, mineral.Position.Z);
+                                if (string.Equals(mineral.Label, "TA", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(mineral.FinalLabel, "TA", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    taMineral = mineral;
+                                }
+                                if (string.Equals(mineral.Label, "TB", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(mineral.FinalLabel, "TB", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    tbMineral = mineral;
+                                }
+                            }
+                        }
+
+                        // SM Return -> SM Harvest line in the mineral's own color
+                        // (TA per owner spec 2026-10-26 18:45; TB added per owner
+                        // rule 3, 2026-10-29 — the TB line must clear TA's bulge).
+                        foreach (var lineMineral in new[] { taMineral, tbMineral })
+                        {
+                            if (lineMineral?.SmReturnPoint == null || lineMineral.SmHarvestPoint == null) continue;
+                            var lineColor = ProcessVisableUnits.GetFinalLabelColor(
+                                string.IsNullOrWhiteSpace(lineMineral.FinalLabel) ? lineMineral.Label : lineMineral.FinalLabel);
+                            ManagerDebugService.DrawLine(
+                                new Point { X = lineMineral.SmReturnPoint.X, Y = lineMineral.SmReturnPoint.Y, Z = ResolveBumpVizGroundZ(start) },
+                                new Point { X = lineMineral.SmHarvestPoint.X, Y = lineMineral.SmHarvestPoint.Y, Z = lineMineral.Position.Z },
+                                lineColor);
+                        }
+
+                        // Choreography guide lines (owner spec 2026-10-26 18:45,
+                        // green line re-anchored on TA mineral per 20:47 Paint):
+                        // T1's green line (T1 start through the TA mineral, +2u) and
+                        // T5's SA-intersect move line — static, drawn against the
+                        // latched start positions. Current start only.
+                        var choreoStart = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+                        if (start == choreoStart && taMineral?.SmHarvestPoint != null && taMineral.SmReturnPoint != null)
+                        {
+                            Vector2Dto StartOf(string label) =>
+                                assignments
+                                    .SelectMany(a => a?.Workers ?? Enumerable.Empty<WorkerEntryDto>())
+                                    .FirstOrDefault(w => w != null
+                                        && (string.Equals(w.FinalLabel, label, StringComparison.OrdinalIgnoreCase)
+                                            || string.Equals(w.Label, label, StringComparison.OrdinalIgnoreCase)))
+                                    ?.Position;
+
+                            var t1Start = StartOf("T1");
+                            var t5Start = StartOf("T5");
+                            var saMineralViz = assignments
+                                .SelectMany(a => a?.Minerals ?? Enumerable.Empty<OrderedMineral>())
+                                .FirstOrDefault(m => m != null
+                                    && (string.Equals(m.FinalLabel, "SA", StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(m.Label, "SA", StringComparison.OrdinalIgnoreCase)));
+
+                            // T1's line: from the latched start THROUGH the
+                            // TA SM harvest point, extended 2u past it — the
+                            // direct SMH line T1 rides (owner test suite
+                            // 2026-10-27 15:24). The endpoint is computed
+                            // under the t1Start null check below (same guard
+                            // as the DrawLine).
+                            var z0 = ResolveBumpVizGroundZ(start);
+                            float endX = 0f;
+                            float endY = 0f;
+                            var haveEnd = false;
+                            if (t1Start != null)
+                            {
+                                var smhViz = taMineral.SmHarvestPoint;
+                                var gdx0 = smhViz.X - t1Start.X;
+                                var gdy0 = smhViz.Y - t1Start.Y;
+                                var glen0 = (float)Math.Sqrt(gdx0 * gdx0 + gdy0 * gdy0);
+                                if (glen0 > 0.0001f)
+                                {
+                                    endX = smhViz.X + gdx0 / glen0 * ChoreoExtendUnits;
+                                    endY = smhViz.Y + gdy0 / glen0 * ChoreoExtendUnits;
+                                    haveEnd = true;
+                                }
+                            }
+
+                            var green = new Color { R = 0, G = 255, B = 0 };
+                            var purple = new Color { R = 200, G = 0, B = 200 };
+
+                            if (t1Start != null && haveEnd)
+                            {
+                                ManagerDebugService.DrawLine(
+                                    new Point { X = t1Start.X, Y = t1Start.Y, Z = z0 },
+                                    new Point { X = endX, Y = endY, Z = z0 },
+                                    green);
+                            }
+
+                            if (t5Start != null && saMineralViz != null)
+                            {
+                                // T5's static purple line now matches its book:
+                                // a plain move TO Mineral SA (its SM point) —
+                                // owner spec 2026-10-27 09:18.
+                                var saPoint = HasNonZeroPoint(saMineralViz.SmHarvestPoint) ? saMineralViz.SmHarvestPoint
+                                    : HasNonZeroPoint(saMineralViz.HarvestPoint) ? saMineralViz.HarvestPoint
+                                    : saMineralViz.Position;
+                                if (saPoint != null)
+                                {
+                                    ManagerDebugService.DrawLine(
+                                        new Point { X = t5Start.X, Y = t5Start.Y, Z = z0 },
+                                        new Point { X = saPoint.X, Y = saPoint.Y, Z = z0 },
+                                        purple);
+                                }
+                            }
+                        }
+
+                        if (assignment.Workers != null)
+                        {
+                            foreach (var worker in assignment.Workers)
+                            {
+                                if (worker?.Position == null) continue;
+                                var z = worker.Position.Z;
+                                ManagerDebugService.DrawLine(
+                                    new Point { X = worker.Position.X - BumpVizCrossHalf, Y = worker.Position.Y, Z = z },
+                                    new Point { X = worker.Position.X + BumpVizCrossHalf, Y = worker.Position.Y, Z = z },
+                                    white);
+                                ManagerDebugService.DrawLine(
+                                    new Point { X = worker.Position.X, Y = worker.Position.Y - BumpVizCrossHalf, Z = z },
+                                    new Point { X = worker.Position.X, Y = worker.Position.Y + BumpVizCrossHalf, Z = z },
+                                    white);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Owner rules 2026-10-29, rules 2+3 verification overlay ──
+            // (a) WHITE cross hatches at the NATURAL-test SM Harvest centroids for
+            //     TA and SA (both starts) so the rule-2 check is visible at frame
+            //     0: does the dat SMH (circle 1 / SMH line) match where workers
+            //     actually stood? Measured: TA off by 0.46u (SE) / 0.58u (NW),
+            //     SA within 0.03u (SE) / 0.16u (NW).
+            // (b) PROPOSED rule-3 TB pair in TB color — NOT yet persisted to the
+            //     dat. Current dat TB segment clips TA's bulge (clearance 1.26u
+            //     vs bulge max 1.38u toward TB). Proposal rotates TB SMH ~8-9 deg
+            //     on the stand circle for 1.42u clearance; SMR = closest point on
+            //     the hatchery circle 1. Leg cost +0.04u vs the dat pair.
+            if (_mapData.TeamPatchAssignments != null)
+            {
+                for (var start = 0; start < _mapData.TeamPatchAssignments.Count; start++)
+                {
+                    var hatch = _mapData.StartingTownHall != null && start < _mapData.StartingTownHall.Length
+                        ? _mapData.StartingTownHall[start]
+                        : null;
+                    if (hatch == null) continue;
+                    var isSe = hatch.X > 100f;
+                    var gz = ResolveBumpVizGroundZ(start);
+                    float MineralZOf(string label)
+                    {
+                        var m = _mapData.TeamPatchAssignments[start]?
+                            .SelectMany(a => a?.Minerals ?? Enumerable.Empty<OrderedMineral>())
+                            .FirstOrDefault(mm => mm?.Position != null
+                                && (string.Equals(mm.FinalLabel, label, StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(mm.Label, label, StringComparison.OrdinalIgnoreCase)));
+                        return m?.Position?.Z ?? gz;
+                    }
+
+                    var natTa = isSe ? (127.476f, 19.167f) : (24.451f, 132.891f);
+                    var natSa = isSe ? (129.705f, 19.308f) : (22.398f, 132.750f);
+                    DrawBumpVizHatch(natTa.Item1, natTa.Item2, MineralZOf("TA"), white);
+                    DrawBumpVizHatch(natSa.Item1, natSa.Item2, MineralZOf("SA"), white);
+
+                    var propSmh = isSe ? (128.469f, 18.296f) : (23.529f, 133.706f);
+                    var propSmr = isSe ? (127.948f, 21.635f) : (24.052f, 130.365f);
+                    var tbColor = ProcessVisableUnits.GetFinalLabelColor("TB");
+                    ManagerDebugService.DrawLine(
+                        new Point { X = propSmr.Item1, Y = propSmr.Item2, Z = gz },
+                        new Point { X = propSmh.Item1, Y = propSmh.Item2, Z = MineralZOf("TB") },
+                        tbColor);
+                    DrawBumpVizHatch(propSmh.Item1, propSmh.Item2, MineralZOf("TB"), tbColor);
+                    DrawBumpVizHatch(propSmr.Item1, propSmr.Item2, gz, tbColor);
+                }
+            }
+
+            // Live "current position -> current move target" lines for the three
+            // choreo workers (owner request 2026-10-27 07:13): T1 TEAL, T4 WHITE
+            // when its latched command is a move / RED when mineral walking,
+            // T5 PURPLE. Each line is redrawn FROM the worker's live position
+            // every frame (the target latches in LogMiningCommands on every
+            // issued command), with a 0.2u cross hatch on the move-to
+            // coordinate. The static green/purple frame-0 lines above are
+            // unchanged.
+            var choreoStartIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var vizGroundZ = ResolveBumpVizGroundZ(choreoStartIndex);
+            var teal = new Color { R = 0, G = 200, B = 200 };
+            var vizPurple = new Color { R = 200, G = 0, B = 200 };
+            DrawBumpVizLiveTarget("T1", teal, vizGroundZ);
+            DrawBumpVizLiveTarget("T4", null, vizGroundZ);
+            DrawBumpVizLiveTarget("T5", vizPurple, vizGroundZ);
+
+            // Telemetry circles: radius 1 = distance from the worker's frame-0 start
+            // at frame 5, radius 2 = frame 10, radius 3 = frame 15 (owner spec
+            // 2026-10-26 06:24), centered on the FRAME-0 CAPTURED position. The
+            // persisted worker.Position is refreshed live by the label tracker,
+            // so it cannot be used as the center — snaps[0] is pinned at capture.
+            // T1 rings in TA teal, T4 rings in a darker teal (TB shares TA's teal
+            // in the label color table — darkened so the two ring sets never merge
+            // on screen), T5 rings in SA purple.
+            foreach (var vizWorker in vizWorkers)
+            {
+                var color = vizWorker.Label == "T1"
+                    ? new Color { R = 0, G = 255, B = 255 }
+                    : vizWorker.Label == "T4"
+                        ? new Color { R = 0, G = 140, B = 140 }
+                        : new Color { R = 128, G = 0, B = 128 };
+                if (!_bumpVizSnapshots.TryGetValue(vizWorker.Label, out var snaps)) continue;
+                if (!snaps.TryGetValue(0, out var startPos) || startPos == null) continue;
+                foreach (var milestone in BumpVizDrawFrames)
+                {
+                    if (!snaps.TryGetValue(milestone, out var pos) || pos == null) continue;
+                    DrawDebugCircle(startPos, (float)Math.Sqrt(DistanceSquared(startPos, pos)), color, startPos.Z);
+                }
+            }
+        }
+
+        // 0.2u axis-aligned cross hatch at a fixed map point (ground z — never
+        // floating), used for the natural-test SMH markers and the proposed
+        // rule-3 TB pair.
+        private void DrawBumpVizHatch(float x, float y, float z, Color color, float half = 0.1f)
+        {
+            ManagerDebugService.DrawLine(
+                new Point { X = x - half, Y = y, Z = z },
+                new Point { X = x + half, Y = y, Z = z },
+                color);
+            ManagerDebugService.DrawLine(
+                new Point { X = x, Y = y - half, Z = z },
+                new Point { X = x, Y = y + half, Z = z },
+                color);
+        }
+
+        // Owner request 2026-10-27 07:13 — one live line per choreo worker from
+        // its CURRENT position to its last-issued move/gather target, with a
+        // 0.2u cross hatch on the move-to coordinate. fixedColor null = T4's
+        // white-for-move / red-for-mineral-walk rule from the latched command.
+        private void DrawBumpVizLiveTarget(string role, Color? fixedColor, float z)
+        {
+            if (!_bumpVizLiveTargets.TryGetValue(role, out var latched))
+            {
+                return;
+            }
+
+            var live = LivePositionOfChoreoRole(role);
+            if (live == null)
+            {
+                return;
+            }
+
+            var color = fixedColor
+                ?? (latched.IsWalk
+                    ? new Color { R = 255, G = 0, B = 0 }
+                    : new Color { R = 255, G = 255, B = 255 });
+            ManagerDebugService.DrawLine(
+                new Point { X = live.X, Y = live.Y, Z = z },
+                new Point { X = latched.X, Y = latched.Y, Z = z },
+                color);
+            const float hatchHalf = 0.1f;
+            ManagerDebugService.DrawLine(
+                new Point { X = latched.X - hatchHalf, Y = latched.Y - hatchHalf, Z = z },
+                new Point { X = latched.X + hatchHalf, Y = latched.Y + hatchHalf, Z = z },
+                color);
+            ManagerDebugService.DrawLine(
+                new Point { X = latched.X - hatchHalf, Y = latched.Y + hatchHalf, Z = z },
+                new Point { X = latched.X + hatchHalf, Y = latched.Y - hatchHalf, Z = z },
+                color);
+        }
+
+        // Live position of any observed unit (mineral first, then own units) —
+        // used to latch gather/smart targets, which carry a unit tag and no
+        // world-space point.
+        private static Vector2Dto LivePositionOfUnitTag(ulong unitTag)
+        {
+            if (unitTag == 0)
+            {
+                return null;
+            }
+
+            var snapshot = Globals.CurrentObservation;
+            if (snapshot == null)
+            {
+                return null;
+            }
+
+            if (snapshot.Minerals != null && snapshot.Minerals.TryGetValue(unitTag, out var mineral) && mineral?.Position != null)
+            {
+                return mineral.Position;
+            }
+
+            if (snapshot.SelfUnits != null && snapshot.SelfUnits.TryGetValue(unitTag, out var unit) && unit?.Position != null)
+            {
+                return unit.Position;
+            }
+
+            return null;
+        }
+
+        // The LIVE position of the mineral unit nearest a persisted mineral
+        // position (search radius 2u). The persisted HarvestPoint/Position can
+        // sit ~0.9u off the real unit — the owner screenshot (2026-10-27)
+        // shows the green line anchored on the dat point running BETWEEN TA
+        // and the neighboring patch. Anchoring on the observed unit keeps the
+        // line through the mineral itself.
+        private static Vector2Dto LiveMineralPositionNear(Vector2Dto datPosition)
+        {
+            var minerals = Globals.CurrentObservation?.Minerals;
+            if (minerals == null || datPosition == null)
+            {
+                return null;
+            }
+
+            Vector2Dto best = null;
+            var bestDistanceSquared = 4f; // 2u search radius
+            foreach (var mineral in minerals.Values)
+            {
+                if (mineral?.Position == null)
+                {
+                    continue;
+                }
+
+                var d2 = DistanceSquared(mineral.Position, datPosition);
+                if (d2 < bestDistanceSquared)
+                {
+                    bestDistanceSquared = d2;
+                    best = mineral.Position;
+                }
+            }
+
+            return best;
+        }
+
+        // The three measured workers (T1/T4/T5) for the CURRENT start, resolved
+        // from the persisted patch assignment — FinalLabel for identity, UnitTag
+        // for live matching, Position as the frame-0 circle center.
+        private List<(string Label, ulong Tag, Vector2Dto Start)> ResolveBumpVizWorkers()
+        {
+            var result = new List<(string, ulong, Vector2Dto)>();
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var assignments = _mapData?.TeamPatchAssignments?.ElementAtOrDefault(startIndex);
+            if (assignments == null) return result;
+            foreach (var assignment in assignments)
+            {
+                foreach (var worker in assignment?.Workers ?? Enumerable.Empty<WorkerEntryDto>())
+                {
+                    if (worker?.Position == null || worker.UnitTag == 0) continue;
+                    var label = worker.FinalLabel ?? worker.Label ?? string.Empty;
+                    if (label == "T1" || label == "T4" || label == "T5")
+                    {
+                        result.Add((label, worker.UnitTag, worker.Position));
+                    }
+                }
+            }
+            return result;
+        }
+
+        private float ResolveBumpVizGroundZ(int startIndex)
+        {
+            var snapshot = Globals.CurrentObservation;
+            if (snapshot?.CurrentTownHalls != null)
+            {
+                foreach (var townHall in snapshot.CurrentTownHalls.Values)
+                {
+                    if (townHall?.Position != null) return townHall.Position.Z;
+                }
+            }
+            var mineral = _mapData?.TeamPatchAssignments?
+                .ElementAtOrDefault(startIndex)?
+                .SelectMany(assignment => assignment?.Minerals ?? Enumerable.Empty<OrderedMineral>())
+                .FirstOrDefault(m => m?.Position != null);
+            return mineral?.Position?.Z ?? 12f;
         }
 
         public void ProcessFrameObservation(ResponseObservation observation)
@@ -1371,6 +2018,7 @@ namespace BabySharkBot.Managers
 
         private void WriteInstructionTrace()
         {
+            EnsureInstructionTraceFile();
             if (string.IsNullOrEmpty(_instructionTraceFile))
             {
                 return;
@@ -1554,7 +2202,12 @@ namespace BabySharkBot.Managers
                 // frame the va set's BuildExtractor row arms the driver until the
                 // cancel restores the drone (phase 1 or 2), collision must not
                 // touch this worker at all.
+                // --naturaltest (owner spec 2026-10-28 14:28 "Do not give workers
+                // instructions for this test"): collision detours are worker
+                // instructions too — suppress the whole intervention so the
+                // engine resolves collisions naturally.
                 if (Settings.WorkerCollisionAvoidance
+                    && !Settings.NaturalObservationMode
                     && !IsGateHeldVaWalkRedirect(runtimeWorker)
                     && !IsB3TrickWorkerCommitted(runtimeWorker)
                     && !IsB3MacroHatcheryWalker(runtimeWorker))
@@ -1632,6 +2285,20 @@ namespace BabySharkBot.Managers
                         break;
                     }
 
+                    // Absolute frame floor (owner spec 2026-10-22, jitRMFineTune):
+                    // a command row carrying RequireFrame may not execute before the
+                    // ABSOLUTE game frame — frame 97 is the earliest the fine-tune
+                    // return may issue, not a trigger. Once the floor passes the
+                    // row's normal gates govern (the return stays position-gated).
+                    // Wait rows keep their existing RequireFrame handling in the
+                    // control-row pass.
+                    if (instruction.RequireFrame >= 0
+                        && instruction.Command != WorkerInstructionCommand.Wait
+                        && _currentFrame < instruction.RequireFrame)
+                    {
+                        break;
+                    }
+
                     var relativeFrame = Settings.GetRelativeFrame(_currentFrame) - runtimeWorker.InstructionStartFrame;
                     var frameSatisfied = instruction.RelativeFrame >= 0 && relativeFrame >= instruction.RelativeFrame;
                     var abilitySatisfied = instruction.TargetAbilityId >= 0
@@ -1704,6 +2371,102 @@ namespace BabySharkBot.Managers
                         }
                         else
                         {
+                            // Missed-pickup skip (v15 NW/SE diagnosis 2026-10-26): the
+                            // pickup flip (1183->1184) can happen while the book is
+                            // suspended mid collision-detour — T1's detour Smart on a
+                            // free TA turned into a real harvest (pickup f174) during
+                            // the f103-203 detour suspension; when the book resumed it
+                            // re-issued the gather row while the drone was already
+                            // CARRYING, the Smart fizzled into [16] and dropped, and
+                            // the drone sat orderless at this wait with the mineral
+                            // buff still on. The 1183->1184 flip it waits for can never
+                            // be observed again (CurrentAbilityId is -1, buff present =
+                            // the pickup demonstrably already happened), and the
+                            // !IsCarrying gate in the heal below can never pass. Skip
+                            // the wait exactly as a natural pass would (Mti advance +
+                            // index + start frame) so the return rows behind it issue
+                            // the deposit. Narrow gates: this exact wait shape, no
+                            // orders, carrying — a healthy harvesting drone always has
+                            // a 1183/1184 order, and the buff is gone by the deposit
+                            // frame, so this cannot fire mid-cycle.
+                            if (instruction.Command == WorkerInstructionCommand.Wait
+                                && instruction.PreviousAbilityId == (int)Abilities.HARVEST_GATHER_DRONE
+                                && instruction.TargetAbilityId == (int)Abilities.HARVEST_RETURN_DRONE
+                                && runtimeWorker.CurrentAbilityId < 0
+                                && runtimeWorker.IsCarrying
+                                && _currentFrame - GetHarvestWaitHealLastFrame(runtimeWorker.UnitTag) >= HarvestWaitHealCooldownFrames)
+                            {
+                                if (instruction.NextTargetIndex >= 0 && instruction.NextTargetIndex < assignedWorker.MiningTargets.Count)
+                                {
+                                    assignedWorker.Mti = instruction.NextTargetIndex;
+                                }
+                                Console.WriteLine($"[HARVEST WAIT MISSED-PICKUP SKIP] frame={_currentFrame} worker={runtimeWorker.UnitTag} role={assignedWorker.Role} idx={runtimeWorker.CurInstrIdx}");
+                                _harvestWaitHealLastFrame[runtimeWorker.UnitTag] = _currentFrame;
+                                runtimeWorker.CurInstrIdx++;
+                                runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
+                                break;
+                            }
+                            // Harvest-wait deadlock heal (owner report 2026-10-25
+                            // 21:36 "B2 stops mining"): an unqueued footprint Smart
+                            // can fizzle into a bare [16] move that completes AT the
+                            // CCA wait point and drops — v13-NW run, B2's f155 SMART
+                            // on free BB produced [16], the drone went orderless at
+                            // f163, and this 1183->1184 wait blocked forever (B2
+                            // never mined again, never built the pool). S2 survives
+                            // the same fizzles only because collision detours keep
+                            // re-firing its gather row until one Smart sticks. Heal:
+                            // while parked at the wait with no orders and no cargo,
+                            // re-arm the gather as a QUEUED HARVEST_GATHER (the
+                            // frame-22 startup shape that always engages on arrival),
+                            // gated on the mineral being ACTUALLY free so the healed
+                            // drone never becomes the standing 1183 waiter on a busy
+                            // footprint. The book stays on the wait row; the queued
+                            // gather engages 1183->1184 and the row passes normally.
+                            if (instruction.Command == WorkerInstructionCommand.Wait
+                                && instruction.PreviousAbilityId == (int)Abilities.HARVEST_GATHER_DRONE
+                                && instruction.TargetAbilityId == (int)Abilities.HARVEST_RETURN_DRONE
+                                && runtimeWorker.CurrentAbilityId < 0
+                                && !runtimeWorker.IsCarrying
+                                && _currentFrame - GetHarvestWaitHealLastFrame(runtimeWorker.UnitTag) >= HarvestWaitHealCooldownFrames)
+                            {
+                                var healMineralTag = 0ul;
+                                for (var back = runtimeWorker.CurInstrIdx - 1;
+                                     back >= 0 && back >= runtimeWorker.CurInstrIdx - 8;
+                                     back--)
+                                {
+                                    var backRow = runtimeWorker.Instructions[back];
+                                    if (backRow?.Command == WorkerInstructionCommand.Gather && backRow.TargetId != 0)
+                                    {
+                                        healMineralTag = backRow.TargetId;
+                                        break;
+                                    }
+                                }
+
+                                if (healMineralTag != 0
+                                    && IsHarvestReleaseReady(healMineralTag, freeOnly: true))
+                                {
+                                    var healAction = CreateInstructionGatherAction(
+                                        runtimeWorker.UnitTag,
+                                        healMineralTag,
+                                        queued: true,
+                                        (int)Abilities.HARVEST_GATHER);
+                                    if (healAction != null)
+                                    {
+                                        actions.Add(healAction);
+                                        contexts.Add(new InstructionCommandContext
+                                        {
+                                            WorkerTag = runtimeWorker.UnitTag,
+                                            InstructionSet = "heal",
+                                            InstructionIndex = runtimeWorker.CurInstrIdx,
+                                            InstructionCommand = "HarvestWaitHeal",
+                                            InstructionPoint = string.Empty,
+                                            TargetPointReference = string.Empty
+                                        });
+                                        _harvestWaitHealLastFrame[runtimeWorker.UnitTag] = _currentFrame;
+                                        Console.WriteLine($"[HARVEST WAIT HEAL] frame={_currentFrame} worker={runtimeWorker.UnitTag} role={assignedWorker.Role} mineral={healMineralTag} curInstrIdx={runtimeWorker.CurInstrIdx}");
+                                    }
+                                }
+                            }
                             break;
                         }
                     }
@@ -1735,7 +2498,7 @@ namespace BabySharkBot.Managers
                     {
                         Console.WriteLine($"[CCAW MOVE] frame={_currentFrame} worker={runtimeWorker.UnitTag} role={assignedWorker.Role} point=({targetPoint.X:F2},{targetPoint.Y:F2}) relative={relativeFrame} instruction={runtimeWorker.CurInstrIdx}");
                     }
-                    else if (string.Equals(instruction.InstructionSet, "jitRM", StringComparison.OrdinalIgnoreCase)
+                    else if (string.Equals(instruction.InstructionSet, "jitRMFineTune", StringComparison.OrdinalIgnoreCase)
                         && runtimeWorker.CurInstrIdx == 0
                         && relativeFrame >= 0)
                     {
@@ -2101,7 +2864,7 @@ namespace BabySharkBot.Managers
                 // its active harvester will flip to 1184 within the release lead window.
                 var harvestReleaseReady = instruction.Command == WorkerInstructionCommand.Wait
                     && instruction.HarvestReleaseGate
-                    && IsHarvestReleaseReady(instruction.TargetId);
+                    && IsHarvestReleaseReady(instruction.TargetId, instruction.HarvestReleaseFreeOnly, instruction.HarvestReleaseFramesOnly);
                 // Mineral gate (owner spec 2026-10-13, B2 pool build): a Wait row
                 // carrying RequireMinerals passes only when the mineral bank reaches
                 // the threshold. Mineral-gated rows ignore the cargo-handoff edge —
@@ -2142,6 +2905,43 @@ namespace BabySharkBot.Managers
                     runtimeWorker.CurInstrIdx++;
                     runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
                     continue;
+                }
+
+                // Transition-frame suppression (owner spec 2026-10-25 10:36, "issue
+                // a smart when it is close enough, not move it around the mineral
+                // ... not to keep issuing moves"): when the NEXT row is an
+                // InvertGate jump whose gate has RESOLVED, skip this row's
+                // execution — the jump passes through and the row after it fires
+                // alone, so the transition frame issues one command (the rolling
+                // book's Smart), not two (t1test10e f22: MOVE+SMART same frame,
+                // the move won arbitration and the smart never engaged). Scope is
+                // narrow: only a command row immediately followed by an
+                // InvertGate jump that loops back to it, and only on the frame
+                // the gate resolves — the pass advances past both rows, so the
+                // skip can never repeat. For the existing bump-walk/chase books
+                // the skipped row is the redundant last re-issue of the loop
+                // (one fewer duplicate command on the break frame — harmless).
+                if (runtimeWorker.CurInstrIdx + 1 < runtimeWorker.Instructions.Count)
+                {
+                    var nextRow = runtimeWorker.Instructions[runtimeWorker.CurInstrIdx + 1];
+                    if (nextRow != null
+                        && nextRow.Command == WorkerInstructionCommand.Jump
+                        && nextRow.InvertGate)
+                    {
+                        var nextJumpTarget = nextRow.JumpToPreviousRow
+                            ? runtimeWorker.CurInstrIdx + 1 - 1
+                            : nextRow.JumpToInstructionIndex;
+                        if (nextJumpTarget >= 0 && nextJumpTarget <= runtimeWorker.CurInstrIdx)
+                        {
+                            var gatePoint = ResolveInstructionPoint(runtimeWorker, assignedWorker, nextRow);
+                            if (gatePoint != null)
+                            {
+                                runtimeWorker.CurInstrIdx++;
+                                runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
+                                continue;
+                            }
+                        }
+                    }
                 }
 
                 if (instruction.Command != WorkerInstructionCommand.Jump)
@@ -2276,7 +3076,8 @@ namespace BabySharkBot.Managers
                 WorkerInstructionCommand.Gather when instruction.TargetId != 0 => CreateInstructionGatherAction(
                     runtimeWorker.UnitTag,
                     instruction.TargetId,
-                    instruction.Queue),
+                    instruction.Queue,
+                    instruction.AbilityIdOverride >= 0 ? instruction.AbilityIdOverride : (int)Abilities.HARVEST_GATHER),
                 WorkerInstructionCommand.BuildExtractor when instruction.TargetId != 0 => CreateInstructionBuildExtractorAction(
                     runtimeWorker.UnitTag,
                     instruction.TargetId,
@@ -2417,6 +3218,125 @@ namespace BabySharkBot.Managers
                 return ResolveBumpChasePartnerPoint(assignedWorker);
             }
 
+            // T1 arrival test battery (owner spec 2026-10-24 18:16, --t1test=N):
+            // the star-gated chase, the follow break-off gate, the clear-of-partner
+            // gate, and the star-proximity redirect all resolve from LIVE partner /
+            // worker state, never the row TargetId's stored mining target (same
+            // pattern as BumpChasePartner above).
+            if (instruction.Point == WorkerInstructionPoint.StarGatedChase)
+            {
+                return ResolveStarGatedChasePoint(runtimeWorker, assignedWorker);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ChaseBreakOffGate)
+            {
+                return ResolveChaseBreakOffGatePoint(runtimeWorker, assignedWorker);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ClearOfPartnerGate)
+            {
+                return ResolveClearOfPartnerGatePoint(runtimeWorker, assignedWorker);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.StarRedirect)
+            {
+                return ResolveStarRedirectPoint(runtimeWorker, assignedWorker, instruction);
+            }
+
+            // T1 rolling-line tests (owner spec 2026-10-25 09:24, --t1test=10+):
+            // the rolling waypoint and the harvest-range gate resolve from LIVE
+            // worker position and the row mineral's ResourcePosition — never the
+            // row TargetId's stored mining target alone (same pattern as
+            // StarRedirect above).
+            if (instruction.Point == WorkerInstructionPoint.RollingLine)
+            {
+                return ResolveRollingLinePoint(runtimeWorker, assignedWorker, instruction);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.HarvestRangeGate)
+            {
+                return ResolveHarvestRangeGatePoint(runtimeWorker, assignedWorker, instruction);
+            }
+
+            // Decel-bypass battery (owner spec 2026-10-25 16:17, --t1test=18/19,
+            // variant 9): the approach move and the projection-lead harvest gate
+            // resolve from LIVE worker position and the row mineral's
+            // HarvestPoint — same pattern as the rolling tests above.
+            if (instruction.Point == WorkerInstructionPoint.DecelPlan)
+            {
+                return ResolveDecelPlanPoint(runtimeWorker, assignedWorker, instruction);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.LeadHarvestGate)
+            {
+                return ResolveLeadHarvestGatePoint(runtimeWorker, assignedWorker, instruction);
+            }
+
+            // Variant 14 rolling return leg (owner question 2026-10-25 "can
+            // this technique be applied to the return trip"): the homing
+            // rolling waypoint and its gate resolve from LIVE worker position
+            // and the stored pair-table ReturnPoint — same pattern as the
+            // harvest legs above.
+            if (instruction.Point == WorkerInstructionPoint.RollingReturnPoint)
+            {
+                return ResolveRollingReturnPoint(runtimeWorker, assignedWorker, instruction);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ReturnRangeGate)
+            {
+                return ResolveReturnRangeGatePoint(runtimeWorker, assignedWorker, instruction);
+            }
+
+            // Bump choreography (owner spec 2026-10-26 18:45, variant 17): the
+            // green-line target, the label-keyed SM harvest / Circle 2 staging
+            // points, T5's SA-intersect move, and the T1-arrival / clear-of
+            // gates all resolve from persisted patch data and LIVE role
+            // positions — never the row TargetId's stored mining target.
+            if (instruction.Point == WorkerInstructionPoint.ChoreoGreenLine)
+            {
+                return ResolveChoreoGreenLinePoint(runtimeWorker, instruction);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ChoreoSmHarvestLabel)
+            {
+                return ResolveChoreoSmHarvestLabelPoint(instruction);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ChoreoSmLineExtend)
+            {
+                return ResolveChoreoSmLineExtendPoint(runtimeWorker);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ChoreoT4AngleStart)
+            {
+                return ResolveChoreoT4AngleStartPoint(runtimeWorker, instruction);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ChoreoConvergence)
+            {
+                return ResolveChoreoConvergencePoint(runtimeWorker);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ChoreoSaIntersect)
+            {
+                return ResolveChoreoSaIntersectPoint(runtimeWorker, instruction);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ChoreoWaitCircle2Label)
+            {
+                return ResolveChoreoWaitCircle2LabelPoint(instruction);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ChoreoT1ArrivalGate)
+            {
+                return ResolveChoreoT1ArrivalGatePoint(runtimeWorker, instruction);
+            }
+
+            if (instruction.Point == WorkerInstructionPoint.ChoreoClearOfGate)
+            {
+                return ResolveChoreoClearOfGatePoint(runtimeWorker, instruction);
+            }
+
             // B3 Macro Hatchery test (owner spec 2026-10-16 18:35): the site is
             // map data, not a mining target — resolve before the MiningTargets
             // lookup below (same pattern as PoolPlacement above).
@@ -2480,6 +3400,10 @@ namespace BabySharkBot.Managers
             return instruction.Point switch
             {
                 WorkerInstructionPoint.Harvest => _speedMiningActive && HasNonZeroPoint(target.SmHarvestPoint) ? target.SmHarvestPoint : target.HarvestPoint,
+                WorkerInstructionPoint.SmHarvestForce => HasNonZeroPoint(target.SmHarvestPoint) ? target.SmHarvestPoint : target.HarvestPoint,
+                WorkerInstructionPoint.SmMidpoint => ResolveSmMidpointPoint(target),
+                WorkerInstructionPoint.StarRedirect => ResolveStarRedirectPoint(runtimeWorker, assignedWorker, instruction),
+                WorkerInstructionPoint.HarvestThrough => ResolveHarvestThroughPoint(target),
                 WorkerInstructionPoint.Return => SpreadReturnPoint(assignedWorker, _speedMiningActive && HasNonZeroPoint(target.SmReturnPoint) ? target.SmReturnPoint : target.ReturnPoint),
                 WorkerInstructionPoint.StoredTarget when HasNonZeroPoint(runtimeWorker?.StoredTargetPoint) => runtimeWorker.StoredTargetPoint,
                 WorkerInstructionPoint.Staging when teamAssignment != null
@@ -2567,6 +3491,39 @@ namespace BabySharkBot.Managers
             }
 
             return SpreadPointAroundTownHall(assignedWorker, point, spread) ?? point;
+        }
+
+        // jitMHFineTune move-through point (owner spec 2026-10-22): the SM
+        // harvest point mirrored across the mineral center, so the frame-20
+        // walk passes THROUGH the mineral footprint at full speed instead of
+        // decelerating at the standoff (the telemetry sit point sat ~0.2u
+        // short of the stored point). Falls back to the plain harvest point
+        // when the mineral center is unknown so the row can never deadlock.
+        private Vector2Dto? ResolveHarvestThroughPoint(MiningTargetDto target)
+        {
+            if (target == null)
+            {
+                return null;
+            }
+
+            var harvest = _speedMiningActive && HasNonZeroPoint(target.SmHarvestPoint)
+                ? target.SmHarvestPoint
+                : target.HarvestPoint;
+            if (!HasNonZeroPoint(harvest))
+            {
+                return null;
+            }
+
+            var center = target.ResourcePosition;
+            if (!HasNonZeroPoint(center))
+            {
+                return harvest;
+            }
+
+            return new Vector2Dto(
+                2f * center.X - harvest.X,
+                2f * center.Y - harvest.Y,
+                center.Z);
         }
 
         // Rotates a point around the worker's town hall center by the given
@@ -3404,6 +4361,1398 @@ namespace BabySharkBot.Managers
             return partner.CurrentXY;
         }
 
+        // T1 arrival test battery (owner spec 2026-10-24 18:16, --t1test=N):
+        // shared plumbing for the star-gated chase / break-off / clear gates.
+        // The partner mapping mirrors ResolveBumpChasePartnerPoint (T4/T5 -> T1,
+        // Y4/Y5 -> Y1). The relative-frame deadline anchor is captured on FIRST
+        // evaluation per worker because control-row passes reset
+        // InstructionStartFrame (same reason _chaseBumpSetStartFrames exists).
+        private readonly System.Collections.Generic.Dictionary<ulong, int> _t1TestSetStartFrames = new();
+        private readonly System.Collections.Generic.HashSet<ulong> _t1TestStarPassed = new();
+        // Rolling-line tests (owner spec 2026-10-25 09:24): the worker's frame-0
+        // position, captured on first RollingLine resolve — the origin of the
+        // start->mineral line the rolling waypoint extends along.
+        private readonly System.Collections.Generic.Dictionary<ulong, Vector2Dto> _t1TestRollingOrigins = new();
+
+        private const float T1TestStarRadius = 0.2f;
+        private const float T1TestBreakOffRadius = 0.5f;
+        private const int T1TestStarFollowFailOpenFrame = 22;
+        private const int T1TestBreakOffFailOpenFrame = 26;
+        private const int T1TestClearFailOpenFrame = 19;
+        private const int T1TestStarRedirectFailOpenFrame = 24;
+        private const float T1TestRollingStep = 0.5f;
+        private const float T1TestHarvestRangeRadius = 0.45f;
+        private const int T1TestRollingHarvestFailOpenFrame = 40;
+
+        // Bump choreography (owner spec 2026-10-26 18:45, variant 17,
+        // --t1test=34/35). Starts latch on first resolve (frame 0); the T1
+        // speed tracker feeds the one-frame-arrival projection.
+        private readonly System.Collections.Generic.Dictionary<ulong, Vector2Dto> _choreoStartLatches = new();
+        private readonly System.Collections.Generic.Dictionary<ulong, Vector2Dto> _choreoT1LastPositions = new();
+        private float _choreoT1Speed = 0.1f;
+        private int _choreoT1SpeedFrame = -1;
+
+        private const float ChoreoExtendUnits = 2.0f;       // "extended out at least 2u" roll-through targets
+        private const float ChoreoWaitCircleExtra = 0.4f;   // Circle 2 = harvest radius + 0.4u
+        private const int ChoreoT1ArrivalEarliestFrame = 8; // roll-through passes the SM point ~f6-12; owner spec said 16 (star-dip plan)
+        private const int ChoreoT1ArrivalFailOpenFrame = 30;
+        private const float ChoreoClearRadius = 1.0f;       // "when T4 is clear" / "when T5 is clear of T3"
+        private const int ChoreoClearFailOpenFrame = 45;
+        private const float ChoreoArrivalMinSpeed = 0.15f;  // floor: one CRUISE frame (~0.15u), so a mid-approach bump can't starve the gate
+        private const float ChoreoSmHarvestGateRadius = 0.2f; // T1's SMART gate: fire the Smart once T1 is within 0.2u of the TA SM harvest point
+        private const float ChoreoArrivalMaxSpeed = 0.3f;
+
+        // Decel-bypass battery (owner spec 2026-10-25 16:17, variant 9): per-
+        // worker state for the DecelPlan approach. The origin is captured on
+        // the first resolve (frame 0 = the start position); the past point
+        // latches once (2u past the HarvestPoint at 0.7u proximity for the
+        // gated miners, 0.5u past at frame 0 for T2) and is cached so the gate
+        // row keeps evaluating; last position/frame feed the speed estimate
+        // for the projection-lead gate.
+        private readonly System.Collections.Generic.Dictionary<ulong, Vector2Dto> _decelPlanOrigins = new();
+        private readonly System.Collections.Generic.Dictionary<ulong, Vector2Dto> _decelPlanPastPoints = new();
+        private readonly System.Collections.Generic.Dictionary<ulong, Vector2Dto> _decelPlanLastPositions = new();
+        private readonly System.Collections.Generic.Dictionary<ulong, int> _decelPlanLastFrames = new();
+
+        private const float DecelPlanLatchRadius = 0.75f;  // ~1.5 frames before the observed ~0.58u decel onset (t12); 0.75 (not 0.7) so a lead-1 worker latches ~1 frame BEFORE the gate passes and gets the cruise (Y1 pattern, owner rerun 2026-10-25)
+        private const float DecelPlanPastExtension = 2.0f; // owner spec: move 2u extended past the Harvest point
+        private const float DecelPlanT2Extension = 0.5f;   // owner spec: T2's single frame-0 move is 0.5u past
+        private const float LeadHarvestRangeRadius = 0.45f;
+        private const int LeadHarvestFailOpenFrame = 40;
+        private const float DecelPlanMinSpeed = 0.05f;
+        private const float DecelPlanMaxSpeed = 0.2f;
+
+        // Owner-named projection leads (2026-10-25 16:17): T3 1 frame, Y2 2,
+        // Y3 3, S2 5; T1/Y1/B2 round out the 1-5 ladder so every lead is
+        // sampled in one run ("we can learn multiple things on each test").
+        private static int DecelPlanLeadForRole(string role)
+        {
+            if (role.Equals("T3", StringComparison.OrdinalIgnoreCase)
+                || role.Equals("Y1", StringComparison.OrdinalIgnoreCase))
+            {
+                return 1;
+            }
+            if (role.Equals("Y2", StringComparison.OrdinalIgnoreCase)
+                || role.Equals("B2", StringComparison.OrdinalIgnoreCase))
+            {
+                return 2;
+            }
+            if (role.Equals("Y3", StringComparison.OrdinalIgnoreCase))
+            {
+                return 3;
+            }
+            if (role.Equals("T1", StringComparison.OrdinalIgnoreCase))
+            {
+                return 4;
+            }
+            if (role.Equals("S2", StringComparison.OrdinalIgnoreCase))
+            {
+                return 5;
+            }
+            return 1;
+        }
+
+        private static Vector2Dto ExtendPointPast(Vector2Dto origin, Vector2Dto anchor, float extension)
+        {
+            var dx = anchor.X - origin.X;
+            var dy = anchor.Y - origin.Y;
+            var length = (float)Math.Sqrt(dx * dx + dy * dy);
+            if (length < 0.001f)
+            {
+                return anchor;
+            }
+
+            return new Vector2Dto(
+                anchor.X + dx / length * extension,
+                anchor.Y + dy / length * extension,
+                anchor.Z);
+        }
+
+        private int T1TestRelativeFrame(ulong unitTag)
+        {
+            if (!_t1TestSetStartFrames.TryGetValue(unitTag, out var start))
+            {
+                start = Settings.GetRelativeFrame(_currentFrame);
+                _t1TestSetStartFrames[unitTag] = start;
+            }
+
+            return Settings.GetRelativeFrame(_currentFrame) - start;
+        }
+
+        private AssignedWorkerDto FindT1TestPartner(AssignedWorkerDto assignedWorker)
+        {
+            var workerRole = assignedWorker?.Role ?? string.Empty;
+            string partnerRole;
+            if (workerRole.Equals("T4", StringComparison.OrdinalIgnoreCase)
+                || workerRole.Equals("T5", StringComparison.OrdinalIgnoreCase))
+            {
+                partnerRole = "T1";
+            }
+            else if (workerRole.Equals("Y4", StringComparison.OrdinalIgnoreCase)
+                || workerRole.Equals("Y5", StringComparison.OrdinalIgnoreCase))
+            {
+                partnerRole = "Y1";
+            }
+            else
+            {
+                return null;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0
+                ? Globals.CurrentStartIndex
+                : Settings.CurrentSpawnIndex;
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?? new List<AssignedWorkerDto>();
+            return assignedWorkers.FirstOrDefault(worker =>
+                string.Equals(worker?.Role, partnerRole, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static MiningTargetDto T1TestPartnerFirstTarget(AssignedWorkerDto partner)
+        {
+            return partner?.MiningTargets?.FirstOrDefault(candidate => candidate != null);
+        }
+
+        private static Vector2Dto T1TestSmMidpoint(MiningTargetDto target)
+        {
+            if (target == null
+                || !HasNonZeroPoint(target.SmHarvestPoint)
+                || !HasNonZeroPoint(target.SmReturnPoint))
+            {
+                return null;
+            }
+
+            return new Vector2Dto(
+                (target.SmHarvestPoint.X + target.SmReturnPoint.X) / 2f,
+                (target.SmHarvestPoint.Y + target.SmReturnPoint.Y) / 2f,
+                target.SmHarvestPoint.Z);
+        }
+
+        // StarGatedChase (variants 3/4): the chased partner's LIVE position, but
+        // null until T1 is within 0.2u of ITS OWN TA SmMidpoint (the Green Star)
+        // so T4/T5 keep mineral-walking to SA until T1 reaches the star; deadline
+        // fail-open at relative frame 22 so a missed star can never park the
+        // walker (the follow starts late instead of never).
+        private Vector2Dto? ResolveStarGatedChasePoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker)
+        {
+            var partner = FindT1TestPartner(assignedWorker);
+            var partnerTarget = T1TestPartnerFirstTarget(partner);
+            var star = T1TestSmMidpoint(partnerTarget);
+            if (star == null)
+            {
+                return null;
+            }
+
+            var relativeFrame = T1TestRelativeFrame(runtimeWorker.UnitTag);
+            var partnerPosition = HasNonZeroPoint(partner?.CurrentXY) ? partner.CurrentXY : null;
+            // One-shot latch: once T1 has reached the star the gate stays open —
+            // T1 immediately leaves the 0.2u zone toward the SM harvest and an
+            // unlatched gate would go null again and stall the walker.
+            if (_t1TestStarPassed.Contains(runtimeWorker.UnitTag))
+            {
+                return partnerPosition ?? (HasNonZeroPoint(partnerTarget.SmHarvestPoint) ? partnerTarget.SmHarvestPoint : null);
+            }
+
+            var starReached = partnerPosition != null
+                && DistanceSquared(partnerPosition, star) <= T1TestStarRadius * T1TestStarRadius;
+            if (starReached)
+            {
+                _t1TestStarPassed.Add(runtimeWorker.UnitTag);
+            }
+            if (!starReached && relativeFrame < T1TestStarFollowFailOpenFrame)
+            {
+                return null;
+            }
+
+            return partnerPosition ?? (HasNonZeroPoint(partnerTarget.SmHarvestPoint) ? partnerTarget.SmHarvestPoint : null);
+        }
+
+        // ChaseBreakOffGate (variants 2/3/4, on an InvertGate Jump): resolves
+        // (non-null) once the FOLLOWER is within 0.5u of the partner's SmHarvest
+        // point — following closer would shove the partner off the mineral (owner
+        // spec 2026-10-24 18:16) — OR at the relative frame 26 deadline; null
+        // while the follow should continue, so the jump keeps re-chasing.
+        private Vector2Dto? ResolveChaseBreakOffGatePoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker)
+        {
+            if (T1TestRelativeFrame(runtimeWorker.UnitTag) >= T1TestBreakOffFailOpenFrame)
+            {
+                return HasNonZeroPoint(runtimeWorker.Position) ? runtimeWorker.Position : new Vector2Dto(0.01f, 0.01f, 0f);
+            }
+
+            var partnerTarget = T1TestPartnerFirstTarget(FindT1TestPartner(assignedWorker));
+            if (partnerTarget == null || !HasNonZeroPoint(partnerTarget.SmHarvestPoint))
+            {
+                return null;
+            }
+
+            if (HasNonZeroPoint(runtimeWorker.Position)
+                && DistanceSquared(runtimeWorker.Position, partnerTarget.SmHarvestPoint) <= T1TestBreakOffRadius * T1TestBreakOffRadius)
+            {
+                return runtimeWorker.Position;
+            }
+
+            return null;
+        }
+
+        // ClearOfPartnerGate (variant 0, on an InvertGate Jump): resolves once
+        // the walker is >= 0.4u clear of the partner (T1) — "mineral walk until
+        // they are clear of T1's path, no bumping" — OR at the relative frame 19
+        // deadline; null while T1 is inside the radius, so the jump keeps
+        // re-issuing the mineral-walk gather.
+        private Vector2Dto? ResolveClearOfPartnerGatePoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker)
+        {
+            if (T1TestRelativeFrame(runtimeWorker.UnitTag) >= T1TestClearFailOpenFrame)
+            {
+                return HasNonZeroPoint(runtimeWorker.Position) ? runtimeWorker.Position : new Vector2Dto(0.01f, 0.01f, 0f);
+            }
+
+            var partner = FindT1TestPartner(assignedWorker);
+            var partnerPosition = HasNonZeroPoint(partner?.CurrentXY) ? partner.CurrentXY : null;
+            if (partnerPosition == null)
+            {
+                return null;
+            }
+
+            if (HasNonZeroPoint(runtimeWorker.Position)
+                && DistanceSquared(runtimeWorker.Position, partnerPosition) < BumpClearGateRadius * BumpClearGateRadius)
+            {
+                return null;
+            }
+
+            return HasNonZeroPoint(runtimeWorker.Position) ? runtimeWorker.Position : new Vector2Dto(0.01f, 0.01f, 0f);
+        }
+
+        // ---- Bump choreography resolvers (owner spec 2026-10-26 18:45, variant 17) ----
+
+        // The current start's patch mineral with the given FinalLabel/Label.
+        private OrderedMineral FindChoreoMineralByLabel(string label)
+        {
+            if (string.IsNullOrWhiteSpace(label))
+            {
+                return null;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0
+                ? Globals.CurrentStartIndex
+                : Settings.CurrentSpawnIndex;
+            var assignments = _mapData?.TeamPatchAssignments?.ElementAtOrDefault(startIndex);
+            if (assignments == null)
+            {
+                return null;
+            }
+
+            foreach (var assignment in assignments)
+            {
+                foreach (var mineral in assignment?.Minerals ?? Enumerable.Empty<OrderedMineral>())
+                {
+                    if (mineral != null
+                        && (string.Equals(mineral.FinalLabel, label, StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(mineral.Label, label, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return mineral;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        // The assigned worker with the given role at the current start, with a
+        // usable live position.
+        private Vector2Dto LivePositionOfChoreoRole(string role)
+        {
+            if (string.IsNullOrWhiteSpace(role))
+            {
+                return null;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0
+                ? Globals.CurrentStartIndex
+                : Settings.CurrentSpawnIndex;
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?? new List<AssignedWorkerDto>();
+            var worker = assignedWorkers.FirstOrDefault(candidate =>
+                string.Equals(candidate?.Role, role, StringComparison.OrdinalIgnoreCase));
+            return HasNonZeroPoint(worker?.CurrentXY) ? worker.CurrentXY : null;
+        }
+
+        // The assigned worker's unit tag for the given role (0 when unknown) —
+        // used by --t1trace, whose telemetry path sees an empty worker Label.
+        private ulong ChoreoRoleUnitTag(string role)
+        {
+            if (string.IsNullOrWhiteSpace(role))
+            {
+                return 0;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0
+                ? Globals.CurrentStartIndex
+                : Settings.CurrentSpawnIndex;
+            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?? new List<AssignedWorkerDto>();
+            var worker = assignedWorkers.FirstOrDefault(candidate =>
+                string.Equals(candidate?.Role, role, StringComparison.OrdinalIgnoreCase));
+            return worker?.UnitID ?? 0;
+        }
+
+        // The worker's latched frame-0 position (first resolve = the start).
+        private Vector2Dto ChoreoLatchedStart(RuntimeWorkerState runtimeWorker)
+        {
+            if (runtimeWorker == null)
+            {
+                return null;
+            }
+
+            if (_choreoStartLatches.TryGetValue(runtimeWorker.UnitTag, out var latched))
+            {
+                return latched;
+            }
+
+            if (!HasNonZeroPoint(runtimeWorker.Position))
+            {
+                return null;
+            }
+
+            _choreoStartLatches[runtimeWorker.UnitTag] = runtimeWorker.Position;
+            return runtimeWorker.Position;
+        }
+
+        // ChoreoGreenLine — T1's frame-0 target: latched start through the TA
+        // SM-line midpoint (the Green Star), extended 2u past the star.
+        private Vector2Dto ResolveChoreoGreenLinePoint(RuntimeWorkerState runtimeWorker, WorkerInstruction instruction)
+        {
+            var start = ChoreoLatchedStart(runtimeWorker);
+            var ta = FindChoreoMineralByLabel("TA");
+            if (start == null || ta?.Position == null)
+            {
+                return null;
+            }
+
+            // Owner spec (Paint, 2026-10-26 20:47): the green line is anchored on
+            // the TA mineral itself — T1 rolls THROUGH/PAST the mineral, 2u beyond
+            // it along T1-start -> mineral. The anchor is the LIVE mineral unit
+            // position (owner screenshot 2026-10-27: the dat HarvestPoint sits
+            // BETWEEN TA and the neighboring patch, sending the roll target
+            // ~0.7u off the real line); the persisted HarvestPoint/Position are
+            // only fallbacks, and ResourcePosition is ~0.9u off the unit
+            // (t1test10b diagnostic) so it never anchors the line.
+            Vector2Dto anchor = null;
+            var liveSeed = ta.Position != null ? ta.Position
+                : HasNonZeroPoint(ta.HarvestPoint) ? ta.HarvestPoint
+                : HasNonZeroPoint(ta.SmHarvestPoint) ? ta.SmHarvestPoint
+                : null;
+            if (liveSeed != null)
+            {
+                anchor = LiveMineralPositionNear(liveSeed);
+            }
+
+            if (anchor == null && HasNonZeroPoint(ta.HarvestPoint))
+            {
+                anchor = ta.HarvestPoint;
+            }
+
+            if (anchor == null && ta.Position != null && (ta.Position.X != 0f || ta.Position.Y != 0f))
+            {
+                anchor = ta.Position;
+            }
+
+            if (anchor == null && HasNonZeroPoint(ta.SmHarvestPoint))
+            {
+                anchor = ta.SmHarvestPoint;
+            }
+
+            if (anchor == null)
+            {
+                return null;
+            }
+
+            var dx = anchor.X - start.X;
+            var dy = anchor.Y - start.Y;
+            var len = (float)Math.Sqrt(dx * dx + dy * dy);
+            if (len < 0.0001f)
+            {
+                return null;
+            }
+
+            var target = new Vector2Dto(
+                anchor.X + dx / len * ChoreoExtendUnits,
+                anchor.Y + dy / len * ChoreoExtendUnits,
+                anchor.Z);
+            Console.WriteLine($"[CHOREO GREENLINE] worker={runtimeWorker.UnitTag} start=({start.X:F2},{start.Y:F2}) anchor=({anchor.X:F2},{anchor.Y:F2}) target=({target.X:F2},{target.Y:F2})");
+            return target;
+        }
+
+        // ChoreoSmHarvestLabel — the TargetPointReference-labeled mineral's
+        // SmHarvestPoint (fallback HarvestPoint).
+        private Vector2Dto ResolveChoreoSmHarvestLabelPoint(WorkerInstruction instruction)
+        {
+            var mineral = FindChoreoMineralByLabel(instruction?.TargetPointReference);
+            if (mineral == null)
+            {
+                return null;
+            }
+
+            if (HasNonZeroPoint(mineral.SmHarvestPoint))
+            {
+                return mineral.SmHarvestPoint;
+            }
+
+            return HasNonZeroPoint(mineral.HarvestPoint) ? mineral.HarvestPoint : null;
+        }
+
+        // ChoreoT4AngleStart — owner test suite 2026-10-28 08:14 ("Start T4
+        // with a move instead of a mineral Walk, then at frame 8 a move to TB"):
+        // the worker's latched frame-0 position, heading toward the row's
+        // labeled mineral ("SA") CENTER rotated by Settings.T4AngleDegrees
+        // (+ = counterclockwise in map coords, 0 = the old mineral-walk
+        // heading), target 4u out so T4 does not decelerate before the
+        // frame-8 TB switch. Resolved from the latched start, so both row
+        // copies (frames 0 and 1) resolve identically.
+        private const float ChoreoT4AngleMoveLength = 4f;
+
+        private Vector2Dto ResolveChoreoT4AngleStartPoint(RuntimeWorkerState runtimeWorker, WorkerInstruction instruction)
+        {
+            var start = ChoreoLatchedStart(runtimeWorker);
+            var headingMineral = FindChoreoMineralByLabel(
+                string.IsNullOrWhiteSpace(instruction?.TargetPointReference) ? "SA" : instruction.TargetPointReference);
+            if (start == null || headingMineral == null || !HasNonZeroPoint(headingMineral.Position))
+            {
+                return null;
+            }
+
+            var degrees = Settings.T4AngleDegrees == int.MinValue ? 0 : Settings.T4AngleDegrees;
+            var dx = headingMineral.Position.X - start.X;
+            var dy = headingMineral.Position.Y - start.Y;
+            var len = (float)Math.Sqrt(dx * dx + dy * dy);
+            if (len < 0.0001f)
+            {
+                return null;
+            }
+
+            var rad = degrees * Math.PI / 180.0;
+            var cos = Math.Cos(rad);
+            var sin = Math.Sin(rad);
+            var ux = dx / len;
+            var uy = dy / len;
+            var rx = (float)(ux * cos - uy * sin);
+            var ry = (float)(ux * sin + uy * cos);
+
+            var target = new Vector2Dto(
+                start.X + rx * ChoreoT4AngleMoveLength,
+                start.Y + ry * ChoreoT4AngleMoveLength,
+                start.Z);
+
+            var headingDeg = (float)(Math.Atan2(ry, rx) * 180.0 / Math.PI);
+            Console.WriteLine($"[CHOREO T4-ANGLE-START] worker={runtimeWorker.UnitTag} deg={degrees} heading={headingDeg:F1} start=({start.X:F2},{start.Y:F2}) target=({target.X:F2},{target.Y:F2})");
+            return target;
+        }
+
+        // ChoreoSmLineExtend — T1's frame-10 redirect target (owner spec
+        // 2026-10-27 11:16 "switch to the harvest line extended 2u
+        // intersecting SMH ... Let T4 bump T1 off that target line ... then
+        // target the mineral"): the TA SmHarvestPoint extended
+        // ChoreoExtendUnits along the SmReturn -> SmHarvest direction, so T1
+        // rolls THROUGH the SM point at cruise speed instead of decelerating.
+        // While T1 stays ON the line the extension target is re-issued every
+        // frame; the per-worker latch below watches T1's perpendicular
+        // distance to the SM line — once T4's bump knocks T1 off it (or T1
+        // reaches the end of the extension without a bump), the resolver
+        // switches to the SM harvest point itself and the arrival gate fires
+        // the Smart from there. On-line latch 0.18u, knocked-off 0.30u,
+        // end-of-line 0.4u from the extension target. Fallbacks for the line
+        // direction: SmReturnPoint -> HarvestPoint -> latched start.
+        private Vector2Dto ResolveChoreoSmLineExtendPoint(RuntimeWorkerState runtimeWorker)
+        {
+            var start = ChoreoLatchedStart(runtimeWorker);
+            var ta = FindChoreoMineralByLabel("TA");
+            if (start == null || ta == null)
+            {
+                return null;
+            }
+
+            var smHarvest = HasNonZeroPoint(ta.SmHarvestPoint) ? ta.SmHarvestPoint
+                : HasNonZeroPoint(ta.HarvestPoint) ? ta.HarvestPoint
+                : null;
+            if (smHarvest == null)
+            {
+                return null;
+            }
+
+            // T1's DIRECT line to the SM point (owner test suite 2026-10-27
+            // 15:24 "T1 stays on the SMH line"): the extension runs along
+            // latched-start -> SmHarvestPoint. Fallbacks: SmReturnPoint ->
+            // HarvestPoint (both near the hatchery side, so the direction is
+            // nearly identical).
+            Vector2Dto through;
+            if (start != null)
+            {
+                through = start;
+            }
+            else if (HasNonZeroPoint(ta.SmReturnPoint))
+            {
+                through = ta.SmReturnPoint;
+            }
+            else if (HasNonZeroPoint(ta.HarvestPoint))
+            {
+                through = ta.HarvestPoint;
+            }
+            else
+            {
+                return null;
+            }
+
+            var dx = smHarvest.X - through.X;
+            var dy = smHarvest.Y - through.Y;
+            var len = (float)Math.Sqrt(dx * dx + dy * dy);
+            if (len < 0.0001f)
+            {
+                dx = smHarvest.X - start.X;
+                dy = smHarvest.Y - start.Y;
+                len = (float)Math.Sqrt(dx * dx + dy * dy);
+                if (len < 0.0001f)
+                {
+                    return null;
+                }
+            }
+
+            var target = new Vector2Dto(
+                smHarvest.X + dx / len * ChoreoExtendUnits,
+                smHarvest.Y + dy / len * ChoreoExtendUnits,
+                smHarvest.Z);
+
+            if (!_choreoT1LineState.TryGetValue(runtimeWorker.UnitTag, out var lineState))
+            {
+                lineState = 0;
+            }
+
+            var livePos = LivePositionOfUnitTag(runtimeWorker.UnitTag);
+            if (livePos != null && lineState < 2)
+            {
+                // Perpendicular distance from T1 to the SM line through the
+                // SM harvest point: |cross(dir, pos - smh)| / len.
+                var perp = Math.Abs(dx * (livePos.Y - smHarvest.Y) - dy * (livePos.X - smHarvest.X)) / len;
+                var distToExtTarget = (float)Math.Sqrt(
+                    (livePos.X - target.X) * (livePos.X - target.X) +
+                    (livePos.Y - target.Y) * (livePos.Y - target.Y));
+
+                if (lineState == 0 && perp <= 0.18f)
+                {
+                    lineState = 1; // confirmed rolling on the line
+                }
+                if (lineState == 1 && perp >= 0.30f)
+                {
+                    lineState = 2; // T4's bump knocked T1 off the line
+                }
+                else if (distToExtTarget <= 0.4f)
+                {
+                    lineState = 2; // reached the extension end unbumped: circle back to the mineral
+                }
+
+                _choreoT1LineState[runtimeWorker.UnitTag] = lineState;
+                Console.WriteLine($"[CHOREO SM-LINE-EXTEND] worker={runtimeWorker.UnitTag} state={lineState} perp={perp:F2} distToExt={distToExtTarget:F2} smh=({smHarvest.X:F2},{smHarvest.Y:F2}) target=({target.X:F2},{target.Y:F2})");
+            }
+
+            if (lineState == 2)
+            {
+                // Bumped off the line (or end of it): target the mineral.
+                Console.WriteLine($"[CHOREO SM-LINE-EXTEND -> MINERAL] worker={runtimeWorker.UnitTag} targeting SMH ({smHarvest.X:F2},{smHarvest.Y:F2})");
+                return new Vector2Dto(smHarvest.X, smHarvest.Y, smHarvest.Z);
+            }
+
+            return target;
+        }
+
+        // ChoreoConvergence — T1's frame-0 target (owner spec 2026-10-27
+        // 09:18): the point on T1's latched start -> TA-mineral line closest
+        // to the TA SM harvest point — where T1, T4 (mineral walk toward SA)
+        // and T5 (move to SA) all arrive ~frame 5. Deliberately NOT extended:
+        // T1 MEETS the other two there, takes T4's frame-6 bump move, and the
+        // frame-6 row then redirects it to the TA SM harvest point.
+        private Vector2Dto ResolveChoreoConvergencePoint(RuntimeWorkerState runtimeWorker)
+        {
+            var start = ChoreoLatchedStart(runtimeWorker);
+            var ta = FindChoreoMineralByLabel("TA");
+            if (start == null || ta == null)
+            {
+                return null;
+            }
+
+            var anchor = ChoreoTaAnchor(ta);
+            var smHarvest = ChoreoSmHarvestOf(ta);
+            if (anchor == null || smHarvest == null)
+            {
+                return null;
+            }
+
+            var convergence = ClosestPointOnLineTo(start, anchor, smHarvest);
+            Console.WriteLine($"[CHOREO CONVERGENCE] worker={runtimeWorker.UnitTag} start=({start.X:F2},{start.Y:F2}) anchor=({anchor.X:F2},{anchor.Y:F2}) smh=({smHarvest.X:F2},{smHarvest.Y:F2}) target=({convergence?.X:F2},{convergence?.Y:F2})");
+            return convergence ?? anchor;
+        }
+
+        // The TA mineral's anchor for the green line / convergence: the LIVE
+        // unit position (the persisted HarvestPoint/Position can sit ~0.9u
+        // off the real unit), falling back to HarvestPoint -> Position ->
+        // SmHarvestPoint.
+        private static Vector2Dto ChoreoTaAnchor(OrderedMineral ta)
+        {
+            if (ta == null)
+            {
+                return null;
+            }
+
+            var seed = ta.Position != null ? ta.Position
+                : HasNonZeroPoint(ta.HarvestPoint) ? ta.HarvestPoint
+                : HasNonZeroPoint(ta.SmHarvestPoint) ? ta.SmHarvestPoint
+                : null;
+            var live = seed != null ? LiveMineralPositionNear(seed) : null;
+            if (live != null)
+            {
+                return live;
+            }
+
+            if (HasNonZeroPoint(ta.HarvestPoint))
+            {
+                return ta.HarvestPoint;
+            }
+
+            if (ta.Position != null && (ta.Position.X != 0f || ta.Position.Y != 0f))
+            {
+                return ta.Position;
+            }
+
+            return HasNonZeroPoint(ta.SmHarvestPoint) ? ta.SmHarvestPoint : null;
+        }
+
+        // The mineral's SM harvest point (fallback HarvestPoint) — the
+        // convergence reference and the frame-6 T1 target.
+        private static Vector2Dto ChoreoSmHarvestOf(OrderedMineral mineral)
+        {
+            if (mineral == null)
+            {
+                return null;
+            }
+
+            return HasNonZeroPoint(mineral.SmHarvestPoint) ? mineral.SmHarvestPoint
+                : HasNonZeroPoint(mineral.HarvestPoint) ? mineral.HarvestPoint
+                : null;
+        }
+
+        // The closest point on the segment a->b to point p.
+        private static Vector2Dto ClosestPointOnLineTo(Vector2Dto a, Vector2Dto b, Vector2Dto p)
+        {
+            if (a == null || b == null || p == null)
+            {
+                return null;
+            }
+
+            var dx = b.X - a.X;
+            var dy = b.Y - a.Y;
+            var lengthSquared = dx * dx + dy * dy;
+            if (lengthSquared < 0.0001f)
+            {
+                return null;
+            }
+
+            var t = ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lengthSquared;
+            t = Math.Max(0f, Math.Min(1f, t));
+            return new Vector2Dto(a.X + dx * t, a.Y + dy * t, a.Z);
+        }
+
+        // ChoreoSaIntersect — T5's frame-0 move: the ray from T5's latched
+        // start toward SA's SmHarvestPoint, extended 2u past its crossing with
+        // the TA SM (SmReturn->SmHarvest) line. Falls back to 2u past SA's
+        // SmHarvestPoint when the ray misses the SM line.
+        private Vector2Dto ResolveChoreoSaIntersectPoint(RuntimeWorkerState runtimeWorker, WorkerInstruction instruction)
+        {
+            var start = ChoreoLatchedStart(runtimeWorker);
+            var sa = FindChoreoMineralByLabel("SA");
+            var ta = FindChoreoMineralByLabel("TA");
+            if (start == null || sa?.Position == null || ta?.Position == null)
+            {
+                return null;
+            }
+
+            var saPoint = HasNonZeroPoint(sa.SmHarvestPoint) ? sa.SmHarvestPoint
+                : HasNonZeroPoint(sa.HarvestPoint) ? sa.HarvestPoint
+                : sa.Position;
+            var dx = saPoint.X - start.X;
+            var dy = saPoint.Y - start.Y;
+            var len = (float)Math.Sqrt(dx * dx + dy * dy);
+            if (len < 0.0001f)
+            {
+                return null;
+            }
+
+            var dirX = dx / len;
+            var dirY = dy / len;
+
+            // Ray (start, dir) x segment (SmReturn -> SmHarvest) crossing.
+            Vector2Dto target = null;
+            if (HasNonZeroPoint(ta.SmReturnPoint) && HasNonZeroPoint(ta.SmHarvestPoint))
+            {
+                var ax = ta.SmReturnPoint.X;
+                var ay = ta.SmReturnPoint.Y;
+                var bx = ta.SmHarvestPoint.X;
+                var by = ta.SmHarvestPoint.Y;
+                var segX = bx - ax;
+                var segY = by - ay;
+                var denom = dirX * segY - dirY * segX;
+                if (Math.Abs(denom) > 0.0001f)
+                {
+                    var s = (start.X - ax) * segY - (start.Y - ay) * segX;
+                    s = -s / denom;
+                    var t = Math.Abs(segX) > Math.Abs(segY)
+                        ? (ax + s * segX - start.X) / dirX
+                        : (ay + s * segY - start.Y) / dirY;
+                    if (t > 0f && s >= 0f && s <= 1f)
+                    {
+                        var crossX = start.X + t * dirX;
+                        var crossY = start.Y + t * dirY;
+                        target = new Vector2Dto(
+                            crossX + dirX * ChoreoExtendUnits,
+                            crossY + dirY * ChoreoExtendUnits,
+                            saPoint.Z);
+                        Console.WriteLine($"[CHOREO SA-INTERSECT] worker={runtimeWorker.UnitTag} start=({start.X:F2},{start.Y:F2}) crossing=({crossX:F2},{crossY:F2}) t={t:F2} s={s:F2} target=({target.X:F2},{target.Y:F2})");
+                    }
+                }
+            }
+
+            if (target == null)
+            {
+                target = new Vector2Dto(
+                    saPoint.X + dirX * ChoreoExtendUnits,
+                    saPoint.Y + dirY * ChoreoExtendUnits,
+                    saPoint.Z);
+                Console.WriteLine($"[CHOREO SA-INTERSECT FALLBACK] worker={runtimeWorker.UnitTag} start=({start.X:F2},{start.Y:F2}) target=({target.X:F2},{target.Y:F2})");
+            }
+
+            return target;
+        }
+
+        // ChoreoWaitCircle2Label — the labeled mineral's OUTER-circle stand
+        // point: from the mineral center through the HarvestPoint direction at
+        // (harvest radius + 0.4u) — Circle 2, where a worker waits for a busy
+        // mineral.
+        private Vector2Dto ResolveChoreoWaitCircle2LabelPoint(WorkerInstruction instruction)
+        {
+            var mineral = FindChoreoMineralByLabel(instruction?.TargetPointReference);
+            if (mineral?.Position == null || !HasNonZeroPoint(mineral.HarvestPoint))
+            {
+                return null;
+            }
+
+            var dx = mineral.HarvestPoint.X - mineral.Position.X;
+            var dy = mineral.HarvestPoint.Y - mineral.Position.Y;
+            var len = (float)Math.Sqrt(dx * dx + dy * dy);
+            if (len < 0.0001f)
+            {
+                return null;
+            }
+
+            var radius = len + ChoreoWaitCircleExtra;
+            return new Vector2Dto(
+                mineral.Position.X + dx / len * radius,
+                mineral.Position.Y + dy / len * radius,
+                mineral.Position.Z);
+        }
+
+        // ChoreoT1ArrivalGate (on an InvertGate Jump) — TWO anchors, selected
+        // by the row's TargetPointReference (owner spec 2026-10-27 09:18):
+        //   "SMH" (T1's own book): null while T1 is NOT within
+        //       ChoreoSmHarvestGateRadius of the TA SmHarvestPoint — T1's
+        //       frame-6 target — with a fixed threshold (the speed-based one
+        //       starved over the deceleration crawl, NW run 20:56). Non-null
+        //       fires T1's Smart ON TA FROM the SM point.
+        //   null/other (T4/T5's books): null while T1 is NOT within one
+        //       frame's travel of the TA mineral STAND — where "will reach SM
+        //       Harvest on the next frame" happens. Non-null releases T4/T5's
+        //       SB mineral-walk.
+        // Frame floor and the frame-30 fail-open apply to both.
+        private Vector2Dto ResolveChoreoT1ArrivalGatePoint(RuntimeWorkerState runtimeWorker, WorkerInstruction instruction)
+        {
+            // GAME-relative frame (the owner's "from frame 16" is the run-relative
+            // frame, not the per-row one — InstructionStartFrame resets on every
+            // row advance).
+            var gameRelativeFrame = Settings.GetRelativeFrame(_currentFrame);
+            var t1Position = LivePositionOfChoreoRole("T1");
+            if (Settings.T1PositionTrace && Settings.T1TraceUnitTag == 0)
+            {
+                var traceTag = ChoreoRoleUnitTag("T1");
+                if (traceTag != 0)
+                {
+                    Settings.T1TraceUnitTag = traceTag;
+                }
+            }
+            var fallback = t1Position ?? (HasNonZeroPoint(runtimeWorker.Position) ? runtimeWorker.Position : new Vector2Dto(0.01f, 0.01f, 0f));
+
+            if (gameRelativeFrame >= ChoreoT1ArrivalFailOpenFrame)
+            {
+                Console.WriteLine($"[CHOREO T1-ARRIVAL FAIL-OPEN] frame={gameRelativeFrame} worker={runtimeWorker.UnitTag}");
+                return fallback;
+            }
+
+            if (gameRelativeFrame < ChoreoT1ArrivalEarliestFrame || t1Position == null)
+            {
+                return null;
+            }
+
+            var ta = FindChoreoMineralByLabel("TA");
+            if (ta == null)
+            {
+                return null;
+            }
+
+            var gateToSmh = string.Equals(instruction?.TargetPointReference, "SMH", StringComparison.OrdinalIgnoreCase);
+            var anchor = gateToSmh
+                ? ChoreoSmHarvestOf(ta)
+                : HasNonZeroPoint(ta.HarvestPoint) ? ta.HarvestPoint
+                : HasNonZeroPoint(ta.SmHarvestPoint) ? ta.SmHarvestPoint
+                : null;
+            if (anchor == null)
+            {
+                return null;
+            }
+
+            if (gateToSmh)
+            {
+                // Owner spec 2026-10-27 11:16: the Smart is the END of the
+                // sequence — "Let T4 bump T1 off that target line ... then
+                // target the mineral". While T1 is still rolling the SM line
+                // (line state 0/1) the gate stays NULL even as T1 passes
+                // through the SM point — the 2026-10-27 14:35 runs fired the
+                // Smart at f10/f11 with T1 ~1.7u from the stand and still
+                // accelerating (order dropped; standard mining re-gathered at
+                // f25). Only the knock-off (state 2) arms it.
+                if (!_choreoT1LineState.TryGetValue(runtimeWorker.UnitTag, out var lineState) || lineState < 2)
+                {
+                    return null;
+                }
+            }
+
+            float threshold;
+            var speed = _choreoT1Speed;
+            if (gateToSmh)
+            {
+                // Fixed corridor radius plus the owner's --gatelead=N frames of
+                // cruise (owner test suite 2026-10-28 08:51): fire the Smart N
+                // frames BEFORE SMH arrival so order-latency overlaps travel.
+                var lead = Math.Max(0, Settings.SmhSmartGateLeadFrames);
+                threshold = ChoreoSmHarvestGateRadius + lead * 0.15f;
+            }
+            else
+            {
+                // T1's per-frame travel from its own live deltas (pushed workers
+                // move faster than cruise, so a fixed threshold would fire early).
+                // Updated once per game frame no matter how many gate rows ask.
+                if (_choreoT1SpeedFrame != _currentFrame)
+                {
+                    _choreoT1SpeedFrame = _currentFrame;
+                    if (_choreoT1LastPositions.TryGetValue(0ul, out var last))
+                    {
+                        var moved = (float)Math.Sqrt(DistanceSquared(last, t1Position));
+                        if (moved > 0.001f)
+                        {
+                            _choreoT1Speed = moved;
+                        }
+                    }
+                    _choreoT1LastPositions[0ul] = t1Position;
+                }
+
+                speed = _choreoT1Speed;
+
+                // Floor at one CRUISE frame (0.15u): the speed-based estimate is
+                // only trustworthy while T1 rolls at speed; if a bump slows it at
+                // the wrong moment the old floor (0.08) left the gate unable to
+                // fire over the last 0.13u (NW run 2026-10-26 20:56 — T1 crawled
+                // 0.03 u/frame toward a point-move target and the gate starved).
+                threshold = Math.Min(ChoreoArrivalMaxSpeed, Math.Max(ChoreoArrivalMinSpeed, speed * 1.3f));
+            }
+
+            var distance = (float)Math.Sqrt(DistanceSquared(t1Position, anchor));
+            if (distance > threshold)
+            {
+                return null;
+            }
+
+            Console.WriteLine($"[CHOREO T1-ARRIVAL] mode={(gateToSmh ? "SMH" : "STAND")} frame={gameRelativeFrame} worker={runtimeWorker.UnitTag} t1=({t1Position.X:F2},{t1Position.Y:F2}) dist={distance:F2} speed={speed:F2} lead={Settings.SmhSmartGateLeadFrames} threshold={threshold:F2}");
+            return t1Position;
+        }
+
+        // ChoreoClearOfGate (on an InvertGate Jump): null while the WORKER is
+        // within 1.0u of the live role named in TargetPointReference ("T1" for
+        // T4's exit walk, "T3" for T5's), non-null once clear; fail-open frame
+        // 45 so the book can never park.
+        private Vector2Dto ResolveChoreoClearOfGatePoint(RuntimeWorkerState runtimeWorker, WorkerInstruction instruction)
+        {
+            var gameRelativeFrame = Settings.GetRelativeFrame(_currentFrame);
+            var fallback = HasNonZeroPoint(runtimeWorker.Position) ? runtimeWorker.Position : new Vector2Dto(0.01f, 0.01f, 0f);
+            if (gameRelativeFrame >= ChoreoClearFailOpenFrame)
+            {
+                return fallback;
+            }
+
+            var other = LivePositionOfChoreoRole(instruction?.TargetPointReference);
+            if (other == null)
+            {
+                return null;
+            }
+
+            if (HasNonZeroPoint(runtimeWorker.Position)
+                && DistanceSquared(runtimeWorker.Position, other) < ChoreoClearRadius * ChoreoClearRadius)
+            {
+                return null;
+            }
+
+            Console.WriteLine($"[CHOREO CLEAR] frame={gameRelativeFrame} worker={runtimeWorker.UnitTag} clearOf={instruction?.TargetPointReference}");
+            return fallback;
+        }
+
+        // StarRedirect (variants 3/4, T1's own book): the row TargetId mineral's
+        // SmHarvestPoint while the worker is within 0.2u of the mineral's
+        // SmMidpoint (the Green Star), null while still approaching — so a
+        // frame-gated Move row carrying this point redirects T1 from the star to
+        // the SM harvest only at star proximity; relative-frame-24 deadline
+        // fail-open returns the SM harvest unconditionally so the book can never
+        // stall.
+        private Vector2Dto? ResolveStarRedirectPoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            var target = assignedWorker.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId)
+                ?? T1TestPartnerFirstTarget(assignedWorker);
+            if (target == null || !HasNonZeroPoint(target.SmHarvestPoint))
+            {
+                return null;
+            }
+
+            // One-shot latch: once the redirect has fired it stays fired — T1
+            // immediately leaves the 0.2u star zone toward the SM harvest and an
+            // unlatched gate would go null again and stall the rows behind it.
+            if (_t1TestStarPassed.Contains(runtimeWorker.UnitTag))
+            {
+                return target.SmHarvestPoint;
+            }
+
+            if (T1TestRelativeFrame(runtimeWorker.UnitTag) >= T1TestStarRedirectFailOpenFrame)
+            {
+                _t1TestStarPassed.Add(runtimeWorker.UnitTag);
+                return target.SmHarvestPoint;
+            }
+
+            var star = T1TestSmMidpoint(target);
+            if (star == null)
+            {
+                _t1TestStarPassed.Add(runtimeWorker.UnitTag);
+                return target.SmHarvestPoint;
+            }
+
+            if (HasNonZeroPoint(runtimeWorker.Position)
+                && DistanceSquared(runtimeWorker.Position, star) <= T1TestStarRadius * T1TestStarRadius)
+            {
+                _t1TestStarPassed.Add(runtimeWorker.UnitTag);
+                return target.SmHarvestPoint;
+            }
+
+            return null;
+        }
+
+        // The anchor for "close enough to harvest" and the rolling line's
+        // direction: the mineral's HarvestPoint — the persisted gather spot,
+        // which matches the mineral unit's actual position (observed stand
+        // within 0.1u). ResourcePosition is NOT usable for this: for TA it is
+        // (25.00,133.50), ~0.9u off the unit's real position (diagnostic run
+        // t1test10b 2026-10-25), which parked the rolling waypoint past the
+        // mineral and made the range gate unreachable.
+        private static Vector2Dto T1TestMineralAnchor(MiningTargetDto target)
+        {
+            if (target == null)
+            {
+                return null;
+            }
+
+            return HasNonZeroPoint(target.HarvestPoint) ? target.HarvestPoint : target.ResourcePosition;
+        }
+
+        // RollingLine (owner spec 2026-10-25 09:24, tests 10/11): the worker's
+        // current position + 0.5u along the unit direction from the worker's
+        // frame-0 position (captured once on first resolve) through the row
+        // mineral's ResourcePosition — the start->mineral line extended through
+        // the mineral. Because the row re-resolves every frame the waypoint is
+        // always 0.5u ahead, so the worker is permanently in transit and never
+        // executes the arrival deceleration a fixed move target causes.
+        private Vector2Dto ResolveRollingLinePoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            var target = assignedWorker.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId);
+            var anchor = T1TestMineralAnchor(target);
+            if (anchor == null || !HasNonZeroPoint(runtimeWorker.Position))
+            {
+                return null;
+            }
+
+            // NOTE: no stand-down here — a null point on a Move row makes the
+            // row wait (caller break) BEFORE the gate row evaluates, deadlocking
+            // the book with the worker parked on the mineral (t1test10c). The
+            // gate handles the in-range transition; 0.45u puts the transition
+            // move's target within 0.1u of the anchor so the handoff is clean.
+
+            // Variant 7/8 (owner spec 2026-10-25 12:09): 2u rolling step — a
+            // 0.5u target holds the worker in the game's close-approach speed
+            // band (0.10-0.12 u/frame) and it never reaches the 0.15 cruise a
+            // distant target gets. Variant 8 additionally sends the move ONLY
+            // every 5th frame, separating target distance from command
+            // frequency as the limiter. A null (waiting) row on off-cadence
+            // frames is safe here: firing frames recur every 5, so the gate is
+            // always re-evaluated; the in-range transition on a firing frame is
+            // handled by the transition-frame suppression (the move is skipped,
+            // the Smart fires alone).
+            var relativeFrame = T1TestRelativeFrame(runtimeWorker.UnitTag);
+            var step = T1TestRollingStep;
+            if (Settings.T1TestNumber / 2 >= 7)
+            {
+                step = 2.0f;
+                if (Settings.T1TestNumber / 2 == 8 && relativeFrame % 5 != 0)
+                {
+                    return null;
+                }
+            }
+
+            // Variant 12+ (owner rerun 2026-10-25, "homing rolling" after T3's
+            // tests 22/23 sail-past; rolled out to all 8 miners as variant 13
+            // and to the return leg as variant 14): the waypoint is 2u toward
+            // the mineral FROM THE WORKER'S CURRENT POSITION (direction
+            // re-computed every frame), not 2u along the fixed frame-0-origin
+            // line. The fixed line never converges after a perpendicular bump
+            // — T4/T5's SA mineral walk repelled T3 off its line and the
+            // rolling waypoint ran parallel to it at ~1u out until the gate
+            // fail-open at frame 40 (Smart 3.15u out, pickup 146). Homing keeps
+            // the anti-decel receding target but self-heals any deflection.
+            float dirX;
+            float dirY;
+            if (Settings.T1TestNumber / 2 >= 12)
+            {
+                dirX = anchor.X - runtimeWorker.Position.X;
+                dirY = anchor.Y - runtimeWorker.Position.Y;
+            }
+            else
+            {
+                if (!_t1TestRollingOrigins.TryGetValue(runtimeWorker.UnitTag, out var origin))
+                {
+                    origin = runtimeWorker.Position;
+                    _t1TestRollingOrigins[runtimeWorker.UnitTag] = origin;
+                }
+
+                dirX = anchor.X - origin.X;
+                dirY = anchor.Y - origin.Y;
+            }
+
+            var length = (float)Math.Sqrt(dirX * dirX + dirY * dirY);
+            if (length < 0.001f)
+            {
+                return null;
+            }
+
+            return new Vector2Dto(
+                runtimeWorker.Position.X + dirX / length * step,
+                runtimeWorker.Position.Y + dirY / length * step,
+                runtimeWorker.Position.Z);
+        }
+
+        // HarvestRangeGate (owner spec 2026-10-25 09:24, on an InvertGate Jump in
+        // the rolling book): resolves (non-null) once the worker is within 0.35u
+        // of the row mineral's ResourcePosition — close enough for the harvest
+        // command to engage immediately — OR at the relative frame 40 deadline;
+        // null while still approaching, so the jump keeps re-issuing the rolling
+        // move and the book can never stall.
+        // Per-frame cache (owner rerun 2026-10-25, same fix as LeadHarvestGate):
+        // the control loop can evaluate this gate twice in one frame; without
+        // the cache a borderline frame issued the rolling MOVE and the Smart
+        // together, and the move won arbitration.
+        private readonly System.Collections.Generic.Dictionary<ulong, (int Frame, Vector2Dto? Result)> _harvestRangeGateFrameCache = new();
+
+        private Vector2Dto? ResolveHarvestRangeGatePoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            if (_harvestRangeGateFrameCache.TryGetValue(runtimeWorker.UnitTag, out var cached) && cached.Frame == _currentFrame)
+            {
+                return cached.Result;
+            }
+
+            var result = EvaluateHarvestRangeGate(runtimeWorker, assignedWorker, instruction);
+            _harvestRangeGateFrameCache[runtimeWorker.UnitTag] = (_currentFrame, result);
+            return result;
+        }
+
+        private Vector2Dto? EvaluateHarvestRangeGate(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            if (T1TestRelativeFrame(runtimeWorker.UnitTag) >= T1TestRollingHarvestFailOpenFrame)
+            {
+                return HasNonZeroPoint(runtimeWorker.Position) ? runtimeWorker.Position : new Vector2Dto(0.01f, 0.01f, 0f);
+            }
+
+            var target = assignedWorker.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId);
+            var anchor = T1TestMineralAnchor(target);
+            if (anchor == null || !HasNonZeroPoint(runtimeWorker.Position))
+            {
+                return null;
+            }
+
+            var distSquared = DistanceSquared(runtimeWorker.Position, anchor);
+            if (distSquared <= T1TestHarvestRangeRadius * T1TestHarvestRangeRadius)
+            {
+                return runtimeWorker.Position;
+            }
+
+            return null;
+        }
+
+        // DecelPlan (owner spec 2026-10-25 16:17, variant 9): the anti-
+        // deceleration approach move. Until the worker is DecelPlanLatchRadius
+        // (0.7u — ~1 frame before the observed ~0.58u decel onset) from the row
+        // mineral's HarvestPoint the row resolves that anchor, the worker's
+        // normal destination. At the latch the target switches to a FIXED point
+        // DecelPlanPastExtension (2u) beyond the HarvestPoint along the captured
+        // frame-0-origin -> HarvestPoint line and stays latched (the cache is
+        // returned on every later resolve — re-issuing a fixed move target does
+        // not restart the game's move), so the worker cruises through the
+        // footprint at full speed and the LeadHarvestGate row below keeps
+        // evaluating. T2 is the owner-spec special: ONE move at frame 0, 0.5u
+        // past the HarvestPoint (latched on the first resolve, before the
+        // proximity test), and no gate — its Smart is a plain queued frame row.
+        private Vector2Dto ResolveDecelPlanPoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            var target = assignedWorker.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId);
+            var anchor = T1TestMineralAnchor(target);
+            if (anchor == null || !HasNonZeroPoint(runtimeWorker.Position))
+            {
+                return null;
+            }
+
+            var unitTag = runtimeWorker.UnitTag;
+            var isT2 = (assignedWorker.Role ?? string.Empty).Equals("T2", StringComparison.OrdinalIgnoreCase);
+
+            if (isT2)
+            {
+                if (_decelPlanPastPoints.TryGetValue(unitTag, out var cachedT2))
+                {
+                    return cachedT2;
+                }
+
+                var pastT2 = ExtendPointPast(runtimeWorker.Position, anchor, DecelPlanT2Extension);
+                _decelPlanPastPoints[unitTag] = pastT2;
+                return pastT2;
+            }
+
+            if (_decelPlanPastPoints.TryGetValue(unitTag, out var cached))
+            {
+                return cached;
+            }
+
+            if (!_decelPlanOrigins.TryGetValue(unitTag, out var origin))
+            {
+                origin = runtimeWorker.Position;
+                _decelPlanOrigins[unitTag] = origin;
+            }
+
+            var latchRadiusSquared = DecelPlanLatchRadius * DecelPlanLatchRadius;
+            if (DistanceSquared(runtimeWorker.Position, anchor) <= latchRadiusSquared)
+            {
+                var past = ExtendPointPast(origin, anchor, DecelPlanPastExtension);
+                _decelPlanPastPoints[unitTag] = past;
+                return past;
+            }
+
+            return anchor;
+        }
+
+        // LeadHarvestGate (owner spec 2026-10-25 16:17, variant 9): an
+        // InvertGate-jump gate on the DecelPlan book. Resolves (non-null) once
+        // the worker is within 0.45u of the row mineral's HarvestPoint OR is
+        // projected to be within 0.45u in `lead` frames (lead by role, see
+        // DecelPlanLeadForRole) — "issue a Smart k frames away" — or at the
+        // relative-frame-40 deadline; null while still approaching, so the jump
+        // keeps re-issuing the DecelPlan move. The projection uses a per-worker
+        // speed estimate from the last two resolves, clamped to the observed
+        // 0.05-0.2 u/frame band.
+        // Per-frame cache (owner rerun 2026-10-25 "try the test on T3 Y1"):
+        // the control loop can evaluate this gate twice in one frame (the
+        // pre-command suppression check and the jump pass-through). On a
+        // borderline frame the first check approved the DecelPlan move and the
+        // second passed the gate, so MOVE+SMART went out together — the move
+        // won in-game arbitration and the Smart never engaged (T3's sail-past,
+        // tests 18/19). The cache makes every evaluation in a frame agree:
+        // pass -> the move was already skipped, Smart alone; null -> the move
+        // rides and the gate re-checks next frame. The speed-estimate dicts
+        // update on the first evaluation only.
+        private readonly System.Collections.Generic.Dictionary<ulong, (int Frame, Vector2Dto? Result)> _leadHarvestGateFrameCache = new();
+
+        private Vector2Dto? ResolveLeadHarvestGatePoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            if (_leadHarvestGateFrameCache.TryGetValue(runtimeWorker.UnitTag, out var cached) && cached.Frame == _currentFrame)
+            {
+                return cached.Result;
+            }
+
+            var result = EvaluateLeadHarvestGate(runtimeWorker, assignedWorker, instruction);
+            _leadHarvestGateFrameCache[runtimeWorker.UnitTag] = (_currentFrame, result);
+            return result;
+        }
+
+        private Vector2Dto? EvaluateLeadHarvestGate(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            var relativeFrame = T1TestRelativeFrame(runtimeWorker.UnitTag);
+            if (relativeFrame >= LeadHarvestFailOpenFrame)
+            {
+                return HasNonZeroPoint(runtimeWorker.Position) ? runtimeWorker.Position : new Vector2Dto(0.01f, 0.01f, 0f);
+            }
+
+            var target = assignedWorker.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId);
+            var anchor = T1TestMineralAnchor(target);
+            if (anchor == null || !HasNonZeroPoint(runtimeWorker.Position))
+            {
+                return null;
+            }
+
+            var unitTag = runtimeWorker.UnitTag;
+            var distance = (float)Math.Sqrt(DistanceSquared(runtimeWorker.Position, anchor));
+            if (distance <= LeadHarvestRangeRadius)
+            {
+                return runtimeWorker.Position;
+            }
+
+            var speed = 0.15f; // base cruise fallback for the first evaluation
+            if (_decelPlanLastPositions.TryGetValue(unitTag, out var lastPosition)
+                && _decelPlanLastFrames.TryGetValue(unitTag, out var lastFrame))
+            {
+                var frameDelta = Settings.GetRelativeFrame(_currentFrame) - lastFrame;
+                if (frameDelta > 0 && HasNonZeroPoint(lastPosition))
+                {
+                    var measured = (float)Math.Sqrt(
+                        (runtimeWorker.Position.X - lastPosition.X) * (runtimeWorker.Position.X - lastPosition.X)
+                        + (runtimeWorker.Position.Y - lastPosition.Y) * (runtimeWorker.Position.Y - lastPosition.Y))
+                        / frameDelta;
+                    speed = Math.Max(DecelPlanMinSpeed, Math.Min(DecelPlanMaxSpeed, measured));
+                }
+            }
+
+            _decelPlanLastPositions[unitTag] = runtimeWorker.Position;
+            _decelPlanLastFrames[unitTag] = Settings.GetRelativeFrame(_currentFrame);
+
+            var lead = DecelPlanLeadForRole(assignedWorker.Role ?? string.Empty);
+            if (distance - lead * speed <= LeadHarvestRangeRadius)
+            {
+                return runtimeWorker.Position;
+            }
+
+            return null;
+        }
+
+        // RollingReturnPoint (variant 14, owner question 2026-10-25 "can this
+        // technique be applied to the return trip going back to the hatchery"):
+        // the homing 2u rolling waypoint toward the return anchor — the worker's
+        // StoredTargetPoint (the {X,X} self-pair ReturnPoint the setup row just
+        // stored), falling back to the row mineral's SmReturnPoint/ReturnPoint
+        // if the store never ran. Identical anti-deceleration geometry to the
+        // variant-12 homing harvest leg: the direction re-computes from the
+        // live position every frame, so a bump deflection self-heals and the
+        // drone reaches the hatchery footprint at full 0.176 cruise.
+        private Vector2Dto ResolveRollingReturnPoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            var anchor = ResolveReturnAnchor(runtimeWorker, assignedWorker, instruction);
+            if (anchor == null || !HasNonZeroPoint(runtimeWorker.Position))
+            {
+                return null;
+            }
+
+            var dx = anchor.X - runtimeWorker.Position.X;
+            var dy = anchor.Y - runtimeWorker.Position.Y;
+            var length = (float)Math.Sqrt(dx * dx + dy * dy);
+            if (length < 0.001f)
+            {
+                return null;
+            }
+
+            return new Vector2Dto(
+                runtimeWorker.Position.X + dx / length * DecelPlanPastExtension,
+                runtimeWorker.Position.Y + dy / length * DecelPlanPastExtension,
+                runtimeWorker.Position.Z);
+        }
+
+        private Vector2Dto ResolveReturnAnchor(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            if (HasNonZeroPoint(runtimeWorker.StoredTargetPoint))
+            {
+                return runtimeWorker.StoredTargetPoint;
+            }
+
+            var target = assignedWorker.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId);
+            if (target == null)
+            {
+                return null;
+            }
+
+            return HasNonZeroPoint(target.SmReturnPoint) ? target.SmReturnPoint : target.ReturnPoint;
+        }
+
+        // ReturnRangeGate (variant 14): an InvertGate-jump gate on the rolling
+        // return book. Resolves (non-null) once the worker is within 0.45u of
+        // the return anchor, or 40 frames after the return leg BEGAN — the leg
+        // starts ~100 frames into the game, so the harvest gates' frame-0
+        // relative anchor cannot be reused; the per-worker start frame is
+        // captured on this gate's first evaluation. Per-frame cached (same
+        // MOVE+SMART arbitration fix as the harvest gates).
+        private readonly System.Collections.Generic.Dictionary<ulong, (int Frame, Vector2Dto? Result)> _returnRangeGateFrameCache = new();
+        private readonly System.Collections.Generic.Dictionary<ulong, int> _returnGateStartFrames = new();
+
+        private Vector2Dto? ResolveReturnRangeGatePoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            if (_returnRangeGateFrameCache.TryGetValue(runtimeWorker.UnitTag, out var cached) && cached.Frame == _currentFrame)
+            {
+                return cached.Result;
+            }
+
+            var result = EvaluateReturnRangeGate(runtimeWorker, assignedWorker, instruction);
+            _returnRangeGateFrameCache[runtimeWorker.UnitTag] = (_currentFrame, result);
+            return result;
+        }
+
+        private Vector2Dto? EvaluateReturnRangeGate(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
+        {
+            var anchor = ResolveReturnAnchor(runtimeWorker, assignedWorker, instruction);
+            if (anchor == null || !HasNonZeroPoint(runtimeWorker.Position))
+            {
+                return null;
+            }
+
+            var unitTag = runtimeWorker.UnitTag;
+            if (!_returnGateStartFrames.TryGetValue(unitTag, out var start))
+            {
+                start = Settings.GetRelativeFrame(_currentFrame);
+                _returnGateStartFrames[unitTag] = start;
+            }
+
+            if (Settings.GetRelativeFrame(_currentFrame) - start >= LeadHarvestFailOpenFrame)
+            {
+                return runtimeWorker.Position;
+            }
+
+            var distanceSquared = DistanceSquared(runtimeWorker.Position, anchor);
+            if (distanceSquared <= LeadHarvestRangeRadius * LeadHarvestRangeRadius)
+            {
+                return runtimeWorker.Position;
+            }
+
+            return null;
+        }
+
+        // SmMidpoint resolution for the final switch: the Green Star — halfway
+        // between the mineral's SM harvest and SM return points.
+        private static Vector2Dto ResolveSmMidpointPoint(MiningTargetDto target)
+        {
+            var midpoint = T1TestSmMidpoint(target);
+            if (midpoint != null)
+            {
+                return midpoint;
+            }
+
+            return HasNonZeroPoint(target?.SmHarvestPoint) ? target.SmHarvestPoint : target?.HarvestPoint;
+        }
+
         // Shared "clear of the miners' corridors" test (owner spec 2026-10-20):
         // true when NO role-1/2/3 worker (T1/T2/T3/Y1/Y2/Y3) is within
         // BumpClearGateRadius (0.4u) of the walker. The chase-bump walkers
@@ -4101,11 +6450,32 @@ namespace BabySharkBot.Managers
             timing.CycleFrames = endFrame - startFrame;
         }
 
-        private bool IsHarvestReleaseReady(ulong mineralTag)
+        private bool IsHarvestReleaseReady(ulong mineralTag, bool freeOnly = false, bool framesOnly = false)
         {
             if (mineralTag == 0)
             {
                 return true;
+            }
+
+            // Frames-only rows (owner spec 2026-10-26 18:45, the T4->TB / T5->SB
+            // staging handoffs): pass ONLY when an active harvester has
+            // accumulated StagedReleaseHarvestFrames — never on a free mineral.
+            // The free-clause would release the stager the moment it arrives at
+            // the stage point, long before T2/S2 start mining.
+            if (framesOnly)
+            {
+                return _harvestFrameTracker.HasActiveHarvester(mineralTag)
+                    && _harvestFrameTracker.HasAccumulatedReleaseFrames(mineralTag);
+            }
+
+            // Free right now -> send immediately. Free-only rows (B2's staging,
+            // owner report 2026-10-25 21:36) stop there: an occupied mineral must
+            // be ACTUALLY free, not merely past 32 accumulated frames — B2's
+            // one-shot Smart bounces off a harvester that is still standing on
+            // the mineral and the book deadlocks without cargo.
+            if (freeOnly)
+            {
+                return !_harvestFrameTracker.HasActiveHarvester(mineralTag);
             }
 
             // Free right now -> send immediately; otherwise stage until the active
@@ -4393,6 +6763,14 @@ namespace BabySharkBot.Managers
         {
             var interrupts = new List<SC2Action>();
             if (observation == null)
+            {
+                return interrupts;
+            }
+
+            // --naturaltest (owner spec 2026-10-28 14:28 "Do not give workers
+            // instructions for this test"): the T1 return-cargo interrupt is a
+            // worker instruction — suppressed along with everything else.
+            if (Settings.NaturalObservationMode)
             {
                 return interrupts;
             }
@@ -5221,6 +7599,25 @@ namespace BabySharkBot.Managers
                 foreach (var workerTag in command.UnitTags)
                 {
                     var workerLabel = ResolveWorkerRole(null, workerTag);
+                    // Bump-viz live target latch (owner request 2026-10-27): the
+                    // last move/gather target per choreo worker, drawn as a
+                    // current-position line + cross hatch every frame.
+                    if (workerLabel == "T1" || workerLabel == "T4" || workerLabel == "T5")
+                    {
+                        if (command.AbilityId == (int)Abilities.MOVE && command.TargetWorldSpacePos != null)
+                        {
+                            _bumpVizLiveTargets[workerLabel] = (command.TargetWorldSpacePos.X, command.TargetWorldSpacePos.Y, false);
+                        }
+                        else if ((command.AbilityId == (int)Abilities.HARVEST_GATHER || command.AbilityId == (int)Abilities.SMART)
+                            && command.TargetUnitTag != 0)
+                        {
+                            var unitTargetPos = LivePositionOfUnitTag(command.TargetUnitTag);
+                            if (unitTargetPos != null)
+                            {
+                                _bumpVizLiveTargets[workerLabel] = (unitTargetPos.X, unitTargetPos.Y, command.AbilityId == (int)Abilities.HARVEST_GATHER);
+                            }
+                        }
+                    }
                     var commandTraceId = System.Threading.Interlocked.Increment(ref _miningCommandSequence);
                     // The bracket token names the REAL command context — "{pair}.{phase}.{row
                     // index}" from the instruction row's pair reference (e.g.

@@ -43,6 +43,7 @@ namespace BabySharkBot.Builds
         private int _initialFrame;
         private bool _initialRecordWritten;
         private string _logFile;
+        private bool _logFileResolved;
         private readonly object _logLock = new object();
         private bool _frameZeroContentsCaptured;
         private int _frameZeroWorkerCount;
@@ -56,12 +57,23 @@ namespace BabySharkBot.Builds
             _buildOptions = defaultBot.BuildOptions;
             _droneMorph = new DroneMorphService(defaultBot) { DesiredDroneCount = 12 };
             _spawningPoolPlacement = new SpawningPoolPlacementService(defaultBot.DebugService);
+        }
 
+        // The CSV is named lazily on first write so the NW/SE start-location tag
+        // (resolved in OnStart, after this constructor runs) can be included in the name.
+        private void EnsureLogFile()
+        {
+            if (_logFileResolved)
+            {
+                return;
+            }
+            _logFileResolved = true;
             try
             {
                 var folder = Path.Combine(Directory.GetCurrentDirectory(), "data", "mining_tests");
                 Directory.CreateDirectory(folder);
-                _logFile = Path.Combine(folder, $"mining_test_{TestNumber}_{DateTime.Now:yyyyMMddHHmmss}.csv");
+                var tag = MiningTestLogNaming.TagForFileName();
+                _logFile = Path.Combine(folder, $"mining_test_{TestNumber}{tag}_{DateTime.Now:yyyyMMddHHmmss}.csv");
 
                 if (!File.Exists(_logFile))
                 {
@@ -423,6 +435,7 @@ namespace BabySharkBot.Builds
 
         private void AppendMineralRecord(int minerals, int frame, bool useFrameZeroContents)
         {
+            EnsureLogFile();
             if (string.IsNullOrEmpty(_logFile)) return;
 
             double gameSeconds = frame / 22.4;

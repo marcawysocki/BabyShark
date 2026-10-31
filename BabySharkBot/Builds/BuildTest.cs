@@ -4,6 +4,7 @@ using System.Linq;
 using System;
 using System.IO;
 using System.Collections.Generic;
+using BabySharkBot.Services;
 using BabySharkBot.Setup;
 
 namespace Sharky.Builds.Zerg
@@ -34,6 +35,7 @@ namespace Sharky.Builds.Zerg
         private int _initialFrame;
         private bool _initialRecordWritten;
         string _logFile;
+        bool _logFileResolved;
         readonly object _logLock = new object();
         private bool _frameZeroContentsCaptured;
         private int _frameZeroWorkerCount;
@@ -53,13 +55,23 @@ namespace Sharky.Builds.Zerg
 
             _stopTriggered = false;
             _step5Target = null;
+        }
 
-            // initialize logging (minimal, local CSV)
+        // The CSV is named lazily on first write so the NW/SE start-location tag
+        // (resolved in OnStart, after this constructor runs) can be included in the name.
+        private void EnsureLogFile()
+        {
+            if (_logFileResolved)
+            {
+                return;
+            }
+            _logFileResolved = true;
             try
             {
                 var folder = Path.Combine(Directory.GetCurrentDirectory(), "data", "mining_tests");
                 Directory.CreateDirectory(folder);
-                _logFile = Path.Combine(folder, $"mining_test_{TestNumber}_{DateTime.Now:yyyyMMddHHmmss}.csv");
+                var tag = MiningTestLogNaming.TagForFileName();
+                _logFile = Path.Combine(folder, $"mining_test_{TestNumber}{tag}_{DateTime.Now:yyyyMMddHHmmss}.csv");
 
                 if (!File.Exists(_logFile))
                 {
@@ -257,6 +269,7 @@ namespace Sharky.Builds.Zerg
 
         private void AppendMineralRecord(int minerals, int frame)
         {
+            EnsureLogFile();
             if (string.IsNullOrEmpty(_logFile)) return;
 
             // Compute game-time seconds with millisecond precision

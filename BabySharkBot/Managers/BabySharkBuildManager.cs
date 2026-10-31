@@ -558,6 +558,26 @@ namespace BabySharkBot.Managers
 
         private void SeedRuntimeWorkerInstructions(int frame)
         {
+            // --naturaltest (owner spec 2026-10-28 14:13, "Test 1"): suppress
+            // ALL worker mining commands — no instruction sets are seeded, so
+            // the mining manager has nothing to execute and the engine's
+            // natural auto-mining picks the harvest/return stand points.
+            // --smsweep (owner spec 2026-10-29 08:39): same suppression — the
+            // SmSweepService owns every worker command in sweep mode.
+            // --smstage (owner spec 2026-10-29 12:11): same — the
+            // SmStageService owns every worker command in stage mode.
+            // --smhandoff (owner spec 2026-10-29 16:37): same — the
+            // SmHandoffService owns every worker command in handoff mode.
+            if (Settings.NaturalObservationMode || Settings.SmSweepMode || Settings.SmStageMode || Settings.SmHandoffMode)
+            {
+                if (frame < 5 || frame % 500 == 0)
+                {
+                    var modeTag = Settings.NaturalObservationMode ? "NATURAL" : Settings.SmHandoffMode ? "SMHANDOFF" : Settings.SmSweepMode ? "SMSWEEP" : "SMSTAGE";
+                    Console.WriteLine($"[{modeTag}] SeedRuntimeWorkerInstructions suppressed at frame {frame} — zero worker mining commands by design");
+                }
+                return;
+            }
+
             var snapshot = Globals.CurrentObservation;
             if (snapshot?.SelfUnits == null || Globals.CurrentMapData == null)
             {
@@ -648,22 +668,134 @@ namespace BabySharkBot.Managers
                             || normalizedRole5x5 == "Y5" || normalizedRole5x5 == "T5";
                         var helpersWalkAtFrameZero = bumpTestMode == 1 && is5x5HelperRole;
                         var is5x5WalkStageRole = Is5x5MineralWalkStageRole(role);
-                        // 5x5 A-miners (owner spec 2026-10-09): every worker whose first
-                        // mining target is an A mineral (TA/SA/BA/YA — in the full
-                        // rotation T1/B1/S1/Y1, in the 12-worker test T1/Y1/T3/Y3) opens
-                        // with the same set shape: store a first-trip approach point,
-                        // walk to it (frames 0/+1), then a frame-22 Smart Harvest
-                        // (owner spec 2026-10-17 20:46) on the mineral. The stored point
-                        // is the computed optimal first-harvest point for every A-miner
-                        // EXCEPT T1/Y1, which walk straight to the (speed-mining)
-                        // Harvest point on the hatchery->mineral line — owner request
-                        // 2026-10-13: the optimal circle sample angled the T1/Y1 walk
-                        // toward T5/Y5's side instead of the direct straight line.
+                        // 5x5 A-miners (owner spec 2026-10-09, fine-tuned 2026-10-22):
+                        // every worker whose first mining target is an A mineral
+                        // (TA/SA/BA/YA — in the full rotation T1/B1/S1/Y1, in the
+                        // 12-worker test T1/Y1/T3/Y3) opens with the jitMHFineTune
+                        // set: store a first-trip approach point, then unqueued
+                        // moves to it at frames 0/1/15/19/20, ONE move past the
+                        // mineral at frame 21 and ONE Smart on the mineral at
+                        // frame 22 — the frame before the walk would bump around
+                        // the mineral (owner spec 2026-10-22, arrival ~= 23). The
+                        // stored point is the computed optimal first-harvest
+                        // point for every A-miner EXCEPT T1/Y1, which walk
+                        // straight to the (speed-mining) Harvest point on the
+                        // hatchery->mineral line — owner request 2026-10-13: the
+                        // optimal circle sample angled the T1/Y1 walk toward
+                        // T5/Y5's side instead of the direct straight line.
                         var is5x5AMiner = !is5x5WalkStageRole && !is5x5BumpTestRole
                             && IsAMineralLabel(initialTarget.ResourceLabel);
+
+                        // Decel-bypass battery (owner spec 2026-10-25 16:17,
+                        // --t1test=18/19, variant 9): ALL eight first-set miners
+                        // (T1/T2/T3/Y1/Y2/Y3/B2/S2 — "the 8, not the Pushers")
+                        // get the DecelPlan book: a frame-0 move to the normal
+                        // Harvest point, a latched 2u-past redirect ~1 frame
+                        // before the arrival deceleration, and a Smart issued by
+                        // projection lead (T2: one 0.5u-past move at frame 0,
+                        // then its usual queued smart frame). Variants 10-14
+                        // (reruns 19:28/21:15) use the homing rolling book
+                        // instead: variant 10 = T3/Y1 with the per-frame gate
+                        // cache (T3's sail-past fix), 11/12 = T3/Y1 fixed-line
+                        // vs homing rolling, 13 = homing rolling for all eight
+                        // first-set miners (owner "Yes" 21:15), 14 = T3/Y1
+                        // homing rolling PLUS the rolling-homing FIRST RETURN
+                        // leg (owner question "can this technique be applied to
+                        // the return trip"). Everyone else runs their NORMAL
+                        // books; the pushers keep their normal chase-bump books
+                        // (the chaser hook's variant >= 5 forcing excludes
+                        // variants 9+) — bumping is a separate problem.
+                        var decelVariant = Settings.T1TestNumber / 2;
+                        var isRollingBookVariant = decelVariant >= 11;
+                        // Variant 15 (owner "yes" 2026-10-25 22:35, the full-8
+                        // battery): every first-set miner's homing rolling startup
+                        // (variant 13's coverage) PLUS the rolling-homing first
+                        // return on ALL of them (variant 14's leg, no longer
+                        // T3/Y1-only).
+                        var isDecelBatteryRole = decelVariant == 9
+                            ? IsDecelTestRole(normalizedRole5x5)
+                            : decelVariant == 13 || decelVariant == 15 || decelVariant == 16
+                                ? IsDecelTestRole(normalizedRole5x5)
+                                : decelVariant == 17
+                                    // Bump choreography (owner spec 2026-10-26 18:45):
+                                    // the eight first-set miners keep the v15
+                                    // rolling battery EXCEPT T1, whose book is
+                                    // the green-line push choreography below.
+                                    ? IsDecelTestRole(normalizedRole5x5)
+                                        && !string.Equals(normalizedRole5x5, "T1", StringComparison.OrdinalIgnoreCase)
+                                    : (decelVariant == 10 || decelVariant == 11 || decelVariant == 12 || decelVariant == 14)
+                                        && IsLeadOneDecelRole(normalizedRole5x5);
+                        if (Settings.T1TestNumber >= 0
+                            && isDecelBatteryRole)
+                        {
+                            var instructionSetDecel = isRollingBookVariant
+                                ? $"rolling{normalizedRole5x5}"
+                                : $"decel{normalizedRole5x5}";
+                            var startupDecel = isRollingBookVariant
+                                ? BuildRollingLineStartupInstructions(instructionSetDecel, initialTarget.ResourceUnitId)
+                                : BuildDecelPlanStartupInstructions(instructionSetDecel, initialTarget.ResourceUnitId, role);
+                            var listDecel = BuildMineralInstructionList(startIndex, assignedWorker, instructionSetDecel, startupDecel);
+                            var dephaseDecel = FirstTripDephaseFrames(role);
+                            runtimeWorker.LoadInstructions(instructionSetDecel, listDecel, Settings.GetRelativeFrame(frame) + dephaseDecel);
+                            Settings.RuntimeWorkers[assignedWorker.UnitTag] = runtimeWorker;
+                            _jitMhStartupLogs.Add(assignedWorker.UnitTag);
+                            Console.WriteLine($"[BUILD START 5X5 DECEL LOADED] worker={assignedWorker.UnitTag} role={role} set={instructionSetDecel} target={initialTarget.ResourceUnitId}");
+                            continue;
+                        }
+
                         string instructionSet5x5;
                         IReadOnlyList<WorkerInstruction> startup5x5;
-                        if (is5x5BumpTestRole)
+                        // Variant 16 radii-measurement run (owner spec 2026-10-26
+                        // 06:24): T1 runs its current-best rolling startup (variant
+                        // 16 is in the rolling battery gate above) while T4/T5
+                        // mineral-walk TO SA for 20 frames — the --bumpviz overlay
+                        // draws each worker's distance-from-start circles at
+                        // frames 5/10/15 from this run's telemetry. Overrides the
+                        // default chase set for T4/T5 only; Y4/Y5 unchanged.
+                        // Bump choreography (owner spec 2026-10-26 18:45, variant
+                        // 17, --t1test=34/35): T1 opens on the green line (start
+                        // through the TA SM-line midpoint, +2u), redirects to the
+                        // TA SM harvest at frame 6 with a Smart on the one-frame
+                        // arrival frame; T4 mineral-walks SA 0-6, moves toward TB
+                        // at 6, to the TA SM harvest at 10; T5 moves (not
+                        // mineral-walks) the SA-intersect line at 0, to the TA SM
+                        // harvest at 10. All three then: SB mineral-walk the
+                        // frame T1 will reach the SM harvest, walk until clear
+                        // (T4 of T1, T5 of T3), stage at the TB/SB Circle 2 outer
+                        // ring, and Smart the mineral when its active harvester
+                        // (T2/S2) accumulates 32 harvest frames.
+                        var isBumpChoreoRole = decelVariant == 17
+                            && (normalizedRole5x5 == "T1" || normalizedRole5x5 == "T4" || normalizedRole5x5 == "T5");
+                        var isVariant16SaWalker = decelVariant == 16
+                            && (normalizedRole5x5 == "T4" || normalizedRole5x5 == "T5");
+                        if (isBumpChoreoRole)
+                        {
+                            instructionSet5x5 = $"choreo{role}";
+                            startup5x5 = BuildBumpChoreoStartup(
+                                instructionSet5x5, normalizedRole5x5, initialTarget.ResourceUnitId, assignments);
+                        }
+                        else if (isVariant16SaWalker)
+                        {
+                            var saMineral = assignments?
+                                .SelectMany(assignment => assignment?.Minerals ?? Enumerable.Empty<OrderedMineral>())
+                                .FirstOrDefault(mineral =>
+                                    string.Equals(mineral?.FinalLabel ?? mineral?.Label, "SA", StringComparison.OrdinalIgnoreCase));
+                            var saTag = saMineral?.Position != null ? ResolveLiveMineralTagByPosition(saMineral.Position) : 0;
+                            if (saTag != 0)
+                            {
+                                instructionSet5x5 = $"mwsa20{role}";
+                                startup5x5 = Build5x5MineralWalkStageStartup(instructionSet5x5, saTag, 20, 0);
+                                Console.WriteLine($"[BUILD START 5X5 VARIANT16] worker={assignedWorker.UnitTag} role={role} saWalk={saTag} frames=0-20");
+                            }
+                            else
+                            {
+                                isVariant16SaWalker = false;
+                                instructionSet5x5 = $"bump{role}";
+                                startup5x5 = Build5x5ChaseBumpInstructions(
+                                    instructionSet5x5, role, initialTarget.ResourceUnitId, initialTarget.ResourceLabel, startIndex, assignments);
+                            }
+                        }
+                        else if (is5x5BumpTestRole)
                         {
                             instructionSet5x5 = $"bump{role}";
                             startup5x5 = Build5x5ChaseBumpInstructions(
@@ -689,7 +821,7 @@ namespace BabySharkBot.Managers
                             var is5x5B2Role = normalizedRole5x5 == "B2";
                             instructionSet5x5 = is5x5B2Role ? "bbwalkB2"
                                 : is5x5WalkStageRole ? $"mwstage5x5{role}"
-                                : is5x5AMiner ? "jitSM5x5A"
+                                : is5x5AMiner ? "jitMHFineTune"
                                 : "jitMH5x5";
                             startup5x5 = is5x5B2Role
                                 ? Build5x5BbWalkStartup(instructionSet5x5, initialTarget.ResourceUnitId, startIndex, assignments)
@@ -699,7 +831,7 @@ namespace BabySharkBot.Managers
                                         initialTarget.ResourceUnitId,
                                         40)
                                     : is5x5AMiner
-                                        ? Build5x5AMinerStartupInstructions(instructionSet5x5, initialTarget.ResourceUnitId, role)
+                                        ? Build5x5AMinerFineTuneStartupInstructions(instructionSet5x5, initialTarget.ResourceUnitId, role)
                                         : NormalizeRole(role) == "T5"
                                             // Harvest-frame test case: the new T5 (W1) stages at
                                             // SB's CCA wait point and waits on the harvest-release
@@ -977,14 +1109,29 @@ namespace BabySharkBot.Managers
             // 13-B3 is the one exception (owner spec 2026-10-15 22:20): its book
             // carries the extractor-trick chapter after the first BB harvest +
             // return — see Build5x5Book's B3 gate. S3/B4 get the plain loop.
-            var startup = BuildStandardStartupInstructions("jitMH5x5", WorkerInstructionPoint.Harvest, target.ResourceUnitId, -1);
-            var book = BuildMineralInstructionList(startIndex, entry, "jitMH5x5", startup);
+            // --naturaltest (owner spec 2026-10-28 14:28 "Do not give workers
+            // instructions for this test"): temp drones onboard WITHOUT a book
+            // so the morphed drones join the natural auto-mining like the
+            // original twelve. --smsweep: same — the sweep service owns all
+            // worker commands (no production runs in sweep mode anyway).
+            // --smstage: same. --smhandoff: same.
+            var bookRows = 0;
+            if (!Settings.NaturalObservationMode && !Settings.SmSweepMode && !Settings.SmStageMode && !Settings.SmHandoffMode)
+            {
+                var startup = BuildStandardStartupInstructions("jitMH5x5", WorkerInstructionPoint.Harvest, target.ResourceUnitId, -1);
+                var book = BuildMineralInstructionList(startIndex, entry, "jitMH5x5", startup);
+                bookRows = book?.Count ?? 0;
 
-            var runtimeWorker = new RuntimeWorkerState { UnitTag = tag };
-            runtimeWorker.LoadInstructions("jitMH5x5", book, Settings.GetRelativeFrame(frame));
-            Settings.RuntimeWorkers[tag] = runtimeWorker;
+                var runtimeWorker = new RuntimeWorkerState { UnitTag = tag };
+                runtimeWorker.LoadInstructions("jitMH5x5", book, Settings.GetRelativeFrame(frame));
+                Settings.RuntimeWorkers[tag] = runtimeWorker;
+            }
+            else
+            {
+                Console.WriteLine($"[NATURAL] temp drone onboarded without book — zero worker commands tag={tag}");
+            }
 
-            Console.WriteLine($"[TEMP DRONE ONBOARDED] frame={frame} tag={tag} label={label} mineral={target.ResourceLabel} bookRows={book.Count}");
+            Console.WriteLine($"[TEMP DRONE ONBOARDED] frame={frame} tag={tag} label={label} mineral={target.ResourceLabel} bookRows={bookRows}");
         }
 
 
@@ -1016,7 +1163,7 @@ namespace BabySharkBot.Managers
             {
                 var folder = Path.Combine(Directory.GetCurrentDirectory(), "data", "mining_tests");
                 Directory.CreateDirectory(folder);
-                var filePath = Path.Combine(folder, $"worker_instruction_lists_frame0_{DateTime.Now:yyyyMMddHHmmss}.json");
+                var filePath = Path.Combine(folder, $"worker_instruction_lists_frame0{MiningTestLogNaming.TagForFileName()}_{DateTime.Now:yyyyMMddHHmmss}.json");
                 var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
                 var workers = Globals.CurrentMapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
                     ?? new List<AssignedWorkerDto>();
@@ -1360,6 +1507,243 @@ namespace BabySharkBot.Managers
         //          InstructionStartFrame, so the standard startup rows appended
         //          behind it (stored-point moves + the +16 queued gather — the
         //          exact T5 staging-startup tail) count from the gate pass.
+        // Resolves the live unit tag of the observed mineral nearest a persisted
+        // map-data position (OrderedMineral carries no tag — the dat is
+        // position-keyed). Used by the variant-16 SA walk (owner spec
+        // 2026-10-26 06:24) to aim T4/T5's mineral walk at the SA labeled in the
+        // persisted patch assignment.
+        private static ulong ResolveLiveMineralTagByPosition(Vector2Dto position)
+        {
+            var minerals = Globals.CurrentObservation?.Minerals;
+            if (minerals == null || position == null)
+            {
+                return 0;
+            }
+            ulong bestTag = 0;
+            var bestDistance = float.MaxValue;
+            foreach (var mineral in minerals.Values)
+            {
+                if (mineral?.Position == null || mineral.UnitTag == 0) continue;
+                var distance = DistanceSquared(mineral.Position, position);
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    bestTag = mineral.UnitTag;
+                }
+            }
+            return bestDistance <= 0.01f ? bestTag : 0;
+        }
+
+        // Bump choreography set (owner spec 2026-10-27 09:18, variant 17,
+        // --t1test=34/35) — the simplified CONVERGENCE dance, NW and SE:
+        //   T1: f0 move to the CONVERGENCE point (the spot on T1's
+        //       start->TA-mineral line closest to the TA SM harvest point —
+        //       where all three workers arrive ~frame 5); f6 move to the TA
+        //       SM HARVEST POINT itself; an InvertGate loop re-issues that
+        //       move until T1 is within 0.2u of the SM point (the gate's
+        //       "SMH" mode), then a SMART on TA fires FROM the SM point.
+        //   T4: f0 mineral-walk (1183) toward SA through the convergence;
+        //       f6 switch to a MOVE toward TB — that move crosses T1's
+        //       convergence->SM path and is the FAVORABLE BUMP; then the
+        //       book holds on the T1-arrival gate (STAND mode: T1 one frame
+        //       from touching TA) before the SB mineral walk — "from frame
+        //       16, if T1 will reach SM Harvest on the next frame, issue a
+        //       mineral Walk to SB".
+        //   T5: f0 MOVE to Mineral SA (its SM point, through the
+        //       convergence); the same T1-arrival hold; SB mineral-walk;
+        //       walk until clear of T3; stage at SB's Circle 2; frames-only
+        //       release on S2's 32 harvest frames; SMART on SB.
+        // Minerals resolve BY LABEL across all assignments (live tags by
+        // position); unresolved minerals fall back to the plain standard
+        // startup rather than a book that can never fire.
+        private static IReadOnlyList<WorkerInstruction> BuildBumpChoreoStartup(
+            string instructionSet,
+            string normalizedRole,
+            ulong targetId,
+            List<TeamPatchAssignmentDto> allAssignments)
+        {
+            var allMinerals = (allAssignments ?? new List<TeamPatchAssignmentDto>())
+                .SelectMany(assignment => assignment?.Minerals ?? new List<OrderedMineral>())
+                .ToList();
+
+            OrderedMineral FindMineralByLabel(string label) =>
+                allMinerals.FirstOrDefault(mineral =>
+                    mineral != null
+                    && (string.Equals(mineral.FinalLabel, label, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(mineral.Label, label, StringComparison.OrdinalIgnoreCase)));
+
+            ulong LiveTag(OrderedMineral mineral) =>
+                mineral?.Position != null ? ResolveLiveMineralTagByPosition(mineral.Position) : 0;
+
+            var taMineral = FindMineralByLabel("TA");
+            var saMineral = FindMineralByLabel("SA");
+            var sbMineral = FindMineralByLabel("SB");
+            var tbMineral = FindMineralByLabel("TB");
+            var taTag = LiveTag(taMineral);
+            var saTag = LiveTag(saMineral);
+            var sbTag = LiveTag(sbMineral);
+            var tbTag = LiveTag(tbMineral);
+
+            if (taTag == 0 || saTag == 0 || sbTag == 0)
+            {
+                Console.WriteLine($"[BUILD START 5X5 CHOREO FALLBACK] role={normalizedRole} set={instructionSet} ta={taTag} sa={saTag} sb={sbTag}");
+                return BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1);
+            }
+
+            Console.WriteLine($"[BUILD START 5X5 CHOREO SET] role={normalizedRole} set={instructionSet} ta={taTag} sa={saTag} sb={sbTag} tb={tbTag}");
+
+            WorkerInstruction MoveRow(WorkerInstructionPoint point, string label, ulong tag, int frame) =>
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Move,
+                    Point = point,
+                    TargetPointReference = label ?? string.Empty,
+                    TargetId = tag,
+                    RelativeFrame = frame,
+                    PositionTolerance = 0f,
+                    Queue = false
+                };
+
+            WorkerInstruction WalkRow(ulong tag) =>
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = tag,
+                    NoCondition = true,
+                    Queue = false
+                };
+
+            WorkerInstruction GateJump(WorkerInstructionPoint gate, string label, ulong tag) =>
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Jump,
+                    Point = gate,
+                    TargetPointReference = label ?? string.Empty,
+                    TargetId = tag,
+                    InvertGate = true,
+                    JumpToPreviousRow = true
+                };
+
+            WorkerInstruction SmartRow(ulong tag) =>
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = tag,
+                    NoCondition = true,
+                    Queue = false,
+                    AbilityIdOverride = (int)Abilities.SMART
+                };
+
+            if (string.Equals(normalizedRole, "T1", StringComparison.OrdinalIgnoreCase))
+            {
+                // Owner test suite 2026-10-27 15:24: "T1 stays on the SMH line"
+                // — T1's DIRECT line to the TA SM harvest point, extended 2u,
+                // from frame 0 with no switch. T4 mineral-walks N frames
+                // (--t4walk=N) then moves to TB, crossing this line; the bump
+                // knocks T1 off it (latch), T1 targets the SM point, the
+                // armed gate fires the Smart, T1 harvests.
+                return new List<WorkerInstruction>
+                {
+                    MoveRow(WorkerInstructionPoint.ChoreoSmLineExtend, "TA", taTag, 0),
+                    MoveRow(WorkerInstructionPoint.ChoreoSmLineExtend, "TA", taTag, 0),
+                    GateJump(WorkerInstructionPoint.ChoreoT1ArrivalGate, "SMH", taTag),
+                    SmartRow(taTag)
+                };
+            }
+
+            if (string.Equals(normalizedRole, "T4", StringComparison.OrdinalIgnoreCase))
+            {
+                if (tbTag == 0)
+                {
+                    Console.WriteLine($"[BUILD START 5X5 CHOREO FALLBACK] role={normalizedRole} set={instructionSet} reason=missing-TB");
+                    return BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1);
+                }
+
+                // Owner test suite 2026-10-27 15:24: T4 mineral-walks toward SA
+                // for --t4walk=N frames (default 6), then the MOVE toward TB —
+                // that move crosses T1's direct SMH line and is the favorable
+                // bump ("slightly after T1 crossed T4's red line... a bump
+                // will propel it ahead"). The book then holds on the
+                // T1-arrival gate (STAND mode) before the SB mineral walk.
+                //
+                // Owner test suite 2026-10-28 08:14 (--t4angle=D): T4 STARTS
+                // with a plain MOVE along its start -> SA heading rotated by
+                // D degrees (two frame-0 copies, the T1 row pattern) instead
+                // of the mineral walk, and switches to the TB move at frame 8.
+                var t4AngleTest = Settings.T4AngleDegrees != int.MinValue;
+                var t4WalkFrames = t4AngleTest ? 8 : Settings.T4WalkFrames >= 0 ? Settings.T4WalkFrames : 6;
+                var t4 = new List<WorkerInstruction>
+                {
+                    t4AngleTest
+                        ? MoveRow(WorkerInstructionPoint.ChoreoT4AngleStart, "SA", saTag, 0)
+                        : WalkRow(saTag),
+                };
+                if (t4AngleTest)
+                {
+                    // Second frame-0 copy (the T1 row pattern): each row issues
+                    // once and advances, so this re-issues the move on frame 1.
+                    t4.Add(MoveRow(WorkerInstructionPoint.ChoreoT4AngleStart, "SA", saTag, 0));
+                }
+                t4.AddRange(new List<WorkerInstruction>
+                {
+                    MoveRow(WorkerInstructionPoint.ChoreoSmHarvestLabel, "TB", tbTag, t4WalkFrames),
+                    GateJump(WorkerInstructionPoint.ChoreoT1ArrivalGate, null, tbTag),
+                    WalkRow(sbTag),
+                    WalkRow(sbTag),
+                    GateJump(WorkerInstructionPoint.ChoreoClearOfGate, "T1", sbTag),
+                    MoveRow(WorkerInstructionPoint.ChoreoWaitCircle2Label, "TB", tbTag, -1),
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Wait,
+                        TargetId = tbTag,
+                        HarvestReleaseGate = true,
+                        HarvestReleaseFramesOnly = true
+                    },
+                    SmartRow(tbTag)
+                });
+                t4.AddRange(BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1));
+                return t4;
+            }
+
+            if (string.Equals(normalizedRole, "T5", StringComparison.OrdinalIgnoreCase))
+            {
+                // Owner spec 2026-10-27 09:18: f0 MOVE to Mineral SA (its SM
+                // point — the SA corridor through the convergence), then the
+                // same T1-arrival hold, SB walk, clear-of-T3, Circle 2 staging
+                // and frames-only release as T4.
+                var t5 = new List<WorkerInstruction>
+                {
+                    MoveRow(WorkerInstructionPoint.ChoreoSmHarvestLabel, "SA", saTag, 0),
+                    GateJump(WorkerInstructionPoint.ChoreoT1ArrivalGate, null, sbTag),
+                    WalkRow(sbTag),
+                    WalkRow(sbTag),
+                    GateJump(WorkerInstructionPoint.ChoreoClearOfGate, "T3", sbTag),
+                    MoveRow(WorkerInstructionPoint.ChoreoWaitCircle2Label, "SB", sbTag, -1),
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Wait,
+                        TargetId = sbTag,
+                        HarvestReleaseGate = true,
+                        HarvestReleaseFramesOnly = true
+                    },
+                    SmartRow(sbTag)
+                };
+                t5.AddRange(BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1));
+                return t5;
+            }
+
+            Console.WriteLine($"[BUILD START 5X5 CHOREO FALLBACK] role={normalizedRole} set={instructionSet} reason=unknown-role");
+            return BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1);
+        }
+
         private static IReadOnlyList<WorkerInstruction> Build5x5MineralWalkStageStartup(
             string instructionSet,
             ulong mineralTag,
@@ -1515,6 +1899,38 @@ namespace BabySharkBot.Managers
             }
 
             Console.WriteLine($"[BUILD START 5X5 CHASE BUMP SET] role={normalizedRole} set={instructionSet} walk=[{walkMineral.Index}]{walkMineral.FinalLabel} tag={walkMineral.UnitTag} frame19Walk=[{frame19WalkMineral.Index}]{frame19WalkMineral.FinalLabel} tag={frame19WalkMineral.UnitTag} partnerA={partnerALabel} aTag={partnerAMineral?.UnitTag ?? 0} stage={targetLabel} tag={targetId}");
+
+            // T1 arrival test battery (owner spec 2026-10-24 18:16, --t1test=N):
+            // T4/T5's startup book is replaced by the variant book (variant 1 is
+            // the control — it falls through to the normal book below). Y4/Y5 are
+            // untouched.
+            if (Settings.T1TestNumber >= 0
+                && (string.Equals(normalizedRole, "T4", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(normalizedRole, "T5", StringComparison.OrdinalIgnoreCase)))
+            {
+                // Tests 10-13 (owner spec 2026-10-25 09:24) isolate T1's approach:
+                // T4/T5 run the no-bump book (variant 0) in all of them. Variants 9
+                // and 10 (owner specs 2026-10-25 16:17 / rerun 19:28) are the
+                // decel-bypass batteries on the NON-bumped miners: the pushers
+                // keep their NORMAL chase-bump books — bumping is a separate
+                // problem.
+                var variant = Settings.T1TestNumber / 2;
+                if (variant >= 5 && variant <= 8)
+                {
+                    variant = 0;
+                }
+                if (variant != 1 && variant <= 8)
+                {
+                    return BuildT1TestChaserBook(
+                        instructionSet,
+                        normalizedRole,
+                        targetId,
+                        variant,
+                        walkMineral,
+                        frame19WalkMineral,
+                        partnerAMineral?.UnitTag != 0 ? partnerAMineral.UnitTag : targetId);
+                }
+            }
 
             var instructions = new List<WorkerInstruction>();
 
@@ -1761,6 +2177,449 @@ namespace BabySharkBot.Managers
                 // point). The mineral-walk stage opens (Y4/B2/T4) stay.
                 new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = -1, PositionTolerance = 0.5f, Queue = true }
             };
+        }
+
+        // jitMHFineTune startup (owner spec 2026-10-22, T1 fine-tuning — replaces
+        // the jitSM5x5A shape for the 5x5 A-miners): same stored first-trip point
+        // (role-dependent, see Build5x5AMinerStartupInstructions). Owner schedule:
+        //   frames 0/1/15/19/20: unqueued Moves to the stored Harvest point (the
+        //             walk re-issues; the worker is aimed at the orange-circle
+        //             standoff the whole way in).
+        //   Smart row (owner spec 2026-10-23 16:01 experiment): QUEUED, sent FOUR
+        //             frames before the measured mineral-arrival frame (telemetry
+        //             2026-10-23, patched coordinates). Queued so it appends behind
+        //             the in-flight move instead of replacing it; it activates the
+        //             moment the move completes, starting the channel at contact
+        //             like the old 10-20 queued gather (T1 pickup was 68 then,
+        //             70 with the unqueued arrival-1 Smart). Being sent ~4 frames
+        //             early, the worker is still ~0.5u short when the row fires,
+        //             matching the old 0.5u position-gate timing.
+        private static readonly Dictionary<string, int> FirstTripSmartFrameByRole = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["T1"] = 20, // measured arrival 24
+            ["Y1"] = 21, // measured arrival 25
+            ["T3"] = 20, // measured arrival 24
+            ["Y3"] = 20, // measured arrival 24
+        };
+
+        private static int FirstTripSmartFrame(string role)
+        {
+            return FirstTripSmartFrameByRole.TryGetValue(NormalizeRole(role) ?? string.Empty, out var frame)
+                ? frame
+                : 20; // 4 before the typical ~24-frame arrival for any role without a measurement
+        }
+
+        // Decel-bypass battery (owner spec 2026-10-25 16:17, --t1test=18/19,
+        // variant 9): the eight first-set miners' startup book.
+        // Gated miners (T1/T3/Y1/Y2/Y3/B2/S2): [Move DecelPlan @0] — the normal
+        // Harvest point until 0.7u out, then the latched 2u-past point — looped
+        // by an InvertGate Jump carrying LeadHarvestGate (projection lead by
+        // role: T3/Y1 = 1, Y2/B2 = 2, Y3 = 3, T1 = 4, S2 = 5), then an unqueued
+        // SMART gather that fires alone on the gate-pass frame (transition
+        // suppression skips the move). T2 (owner spec): ONE move at frame 0,
+        // 0.5u past the Harvest point, then the SAME queued smart frame it gets
+        // today (default 20 — not in FirstTripSmartFrameByRole).
+        private static bool IsDecelTestRole(string normalizedRole)
+        {
+            return string.Equals(normalizedRole, "T1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedRole, "T2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedRole, "T3", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedRole, "Y1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedRole, "Y2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedRole, "Y3", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedRole, "B2", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedRole, "S2", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Variant 10 (owner rerun 2026-10-25 19:28 "try the test on T3 Y1"):
+        // only the two lead-1 roles carry the DecelPlan book.
+        private static bool IsLeadOneDecelRole(string normalizedRole)
+        {
+            return string.Equals(normalizedRole, "T3", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedRole, "Y1", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Rolling-line champion book (owner rerun 2026-10-25 "apply the rolling
+        // 2u champion to T3 and Y1", variant 11, tests 22/23): the tests 16/17
+        // T1 book — a 2u rolling waypoint along the start->mineral line EVERY
+        // frame (the worker never executes an arrival deceleration) until the
+        // HarvestRangeGate says it is within range, then an unqueued SMART that
+        // fires alone on the gate-pass frame (transition suppression + the
+        // per-frame gate cache).
+        private static IReadOnlyList<WorkerInstruction> BuildRollingLineStartupInstructions(
+            string instructionSet,
+            ulong targetId)
+        {
+            return new List<WorkerInstruction>
+            {
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.RollingLine, TargetId = targetId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false },
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Jump,
+                    Point = WorkerInstructionPoint.HarvestRangeGate,
+                    TargetId = targetId,
+                    InvertGate = true,
+                    JumpToPreviousRow = true
+                },
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = targetId,
+                    NoCondition = true,
+                    Queue = false,
+                    AbilityIdOverride = (int)Abilities.SMART
+                }
+            };
+        }
+
+        private static IReadOnlyList<WorkerInstruction> BuildDecelPlanStartupInstructions(
+            string instructionSet,
+            ulong targetId,
+            string role)
+        {
+            if (string.Equals(NormalizeRole(role), "T2", StringComparison.OrdinalIgnoreCase))
+            {
+                return new List<WorkerInstruction>
+                {
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.DecelPlan, TargetId = targetId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Gather,
+                        Point = WorkerInstructionPoint.None,
+                        TargetId = targetId,
+                        RelativeFrame = 20,
+                        NoCondition = true,
+                        Queue = true,
+                        AbilityIdOverride = (int)Abilities.SMART
+                    }
+                };
+            }
+
+            return new List<WorkerInstruction>
+            {
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.DecelPlan, TargetId = targetId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false },
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Jump,
+                    Point = WorkerInstructionPoint.LeadHarvestGate,
+                    TargetId = targetId,
+                    InvertGate = true,
+                    JumpToPreviousRow = true
+                },
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = targetId,
+                    NoCondition = true,
+                    Queue = false,
+                    AbilityIdOverride = (int)Abilities.SMART
+                }
+            };
+        }
+
+        private static IReadOnlyList<WorkerInstruction> Build5x5AMinerFineTuneStartupInstructions(
+            string instructionSet,
+            ulong targetId,
+            string role)
+        {
+            // T1 arrival test battery (owner spec 2026-10-24 18:16, --t1test=N):
+            // T1's startup book is replaced by the test book (direct to the TA SM
+            // harvest point, or via the SM-line halfway Star for variants 3/4),
+            // with a move to the SM harvest point EVERY frame 19-23 in ALL tests
+            // (owner fairness rule). Y1/T3/Y3 are untouched.
+            if (Settings.T1TestNumber >= 0 && string.Equals(NormalizeRole(role), "T1", StringComparison.OrdinalIgnoreCase))
+            {
+                return BuildT1TestStartupInstructions(instructionSet, targetId);
+            }
+
+            var normalizedRole = NormalizeRole(role);
+            var firstTripPoint = normalizedRole == "T1" || normalizedRole == "Y1" || normalizedRole == "T3" || normalizedRole == "Y3"
+                ? WorkerInstructionPoint.Harvest
+                : WorkerInstructionPoint.OptimalFirstHarvest;
+            return new List<WorkerInstruction>
+            {
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.StoreTargetPoint,
+                    Point = firstTripPoint,
+                    TargetId = targetId,
+                    NoCondition = true,
+                    StoreTargetPoint = true
+                },
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 0, Queue = false },
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 1, Queue = false },
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 15, Queue = false },
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 19, Queue = false },
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 20, Queue = false },
+                new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = targetId,
+                    RelativeFrame = FirstTripSmartFrame(role),
+                    NoCondition = true,
+                    Queue = true,
+                    AbilityIdOverride = (int)Abilities.SMART
+                }
+            };
+        }
+
+        // ---- T1 arrival test battery (owner spec 2026-10-24 18:16, --t1test=N) ----
+
+        // T1's test book. Direct variants (0-2): unqueued moves to the TA SM
+        // harvest point at frames 0/1/15, then a move to the SM harvest point
+        // EVERY frame 19-23 (the owner fairness rule — all tests issue the
+        // frame-19+ moves). Star variants (3/4): the same shape but the early
+        // moves target the SM-line halfway point (the Green Star), and the
+        // frame-19+ moves carry StarRedirect — they resolve only once T1 is
+        // within 0.2u of the star, so T1 redirects star -> SM harvest at star
+        // proximity (owner testing rule), with the resolver's frame-24 fail-open
+        // guaranteeing progress. A queued Smart rides the queue from frame 19 so
+        // T1 actually begins harvesting on arrival.
+        private static IReadOnlyList<WorkerInstruction> BuildT1TestStartupInstructions(string instructionSet, ulong targetId)
+        {
+            var variant = Settings.T1TestNumber / 2;
+
+            // Rolling-line / corrected-straight books (owner specs 2026-10-25):
+            // variant 5 (tests 10/11) — T1 gets a rolling waypoint 0.5u ahead
+            // along the start->mineral line EVERY frame (never decelerates into
+            // an arrival) until the HarvestRangeGate says it is within range of
+            // the mineral, then a Smart harvest. Variants 7/8 (tests 14-17,
+            // owner spec 2026-10-25 12:09) — same book but the rolling step is
+            // 2u: every frame (7) or every 5th frame (8) to separate target
+            // distance from command frequency as the speed limiter.
+            // Variant 6 (tests 12/13) — the corrected no-bump control: moves to
+            // the plain HarvestPoint at 0/1/15/19-23 with the queued frame-19
+            // Smart, no SMH stand-still. T4/T5 are the no-bump chasers in all
+            // of them (forced to variant 0 at the hook).
+            if (variant == 5 || variant == 7 || variant == 8)
+            {
+                return new List<WorkerInstruction>
+                {
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.RollingLine, TargetId = targetId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Jump,
+                        Point = WorkerInstructionPoint.HarvestRangeGate,
+                        TargetId = targetId,
+                        InvertGate = true,
+                        JumpToPreviousRow = true
+                    },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Gather,
+                        Point = WorkerInstructionPoint.None,
+                        TargetId = targetId,
+                        NoCondition = true,
+                        Queue = false,
+                        AbilityIdOverride = (int)Abilities.SMART
+                    }
+                };
+            }
+
+            if (variant == 6)
+            {
+                var straight = new List<WorkerInstruction>
+                {
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.Harvest, TargetId = targetId, RelativeFrame = 0, Queue = false },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.Harvest, TargetId = targetId, RelativeFrame = 1, Queue = false },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.Harvest, TargetId = targetId, RelativeFrame = 15, Queue = false }
+                };
+                for (var frame = 19; frame <= 23; frame++)
+                {
+                    straight.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.Harvest, TargetId = targetId, RelativeFrame = frame, Queue = false });
+                }
+                straight.Add(new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = targetId,
+                    RelativeFrame = 19,
+                    NoCondition = true,
+                    Queue = true,
+                    AbilityIdOverride = (int)Abilities.SMART
+                });
+                return straight;
+            }
+
+            var viaStar = variant >= 3;
+            var approachPoint = viaStar ? WorkerInstructionPoint.SmMidpoint : WorkerInstructionPoint.SmHarvestForce;
+            var redirectPoint = viaStar ? WorkerInstructionPoint.StarRedirect : WorkerInstructionPoint.SmHarvestForce;
+            var instructions = new List<WorkerInstruction>
+            {
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = approachPoint, TargetId = targetId, RelativeFrame = 0, Queue = false },
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = approachPoint, TargetId = targetId, RelativeFrame = 1, Queue = false },
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = approachPoint, TargetId = targetId, RelativeFrame = 15, Queue = false }
+            };
+            for (var frame = 19; frame <= 23; frame++)
+            {
+                instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = redirectPoint, TargetId = targetId, RelativeFrame = frame, Queue = false });
+            }
+
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = targetId,
+                RelativeFrame = 19,
+                NoCondition = true,
+                Queue = true,
+                AbilityIdOverride = (int)Abilities.SMART
+            });
+            return instructions;
+        }
+
+        // T4/T5's test book by variant (owner spec 2026-10-24 18:16):
+        //   0 — no bumping: mineral-walk SA until clear of T1 (0.4u), then the
+        //       standard frame-19 SB walk / frame-25 stage / release gate / tail.
+        //   2 — Move to SA at frame 0 (a plain move, not a mineral walk), then
+        //       follow T1's live position from frame 6 until the break-off gate
+        //       (follower within 0.5u of T1's SM harvest point) or the frame-26
+        //       deadline, then the standard rows.
+        //   3 — mineral-walk SA until T1 reaches the Green Star (0.2u), then the
+        //       same follow/break-off, then the standard rows.
+        //   4 — Move to SA at frame 0, then the star-gated follow (same as 3 but
+        //       the SA approach is a plain move).
+        // (Variant 1 is the control: the caller falls through to the normal
+        // chase-bump book.) The follow is one open chase row + an InvertGate
+        // break-off jump (loop-back) so exactly one follow move issues per frame.
+        private static IReadOnlyList<WorkerInstruction> BuildT1TestChaserBook(
+            string instructionSet,
+            string normalizedRole,
+            ulong targetId,
+            int variant,
+            OrderedMineral walkMineral,
+            OrderedMineral frame19WalkMineral,
+            ulong partnerTag)
+        {
+            var chasePoint = variant == 3 || variant == 4
+                ? WorkerInstructionPoint.StarGatedChase
+                : WorkerInstructionPoint.BumpChasePartner;
+            var instructions = new List<WorkerInstruction>();
+
+            if (variant == 2 || variant == 4)
+            {
+                // Move to SA at frame 0 (plain move, unqueued).
+                instructions.Add(new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Move,
+                    Point = WorkerInstructionPoint.Harvest,
+                    TargetId = walkMineral.UnitTag,
+                    RelativeFrame = 0,
+                    Queue = false
+                });
+            }
+            else
+            {
+                // Mineral-walk SA from frame 0 (the walk keeps running while the
+                // star gate holds the chase row silent).
+                instructions.Add(new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = walkMineral.UnitTag,
+                    NoCondition = true,
+                    Queue = false
+                });
+            }
+
+            if (variant == 0)
+            {
+                // No-bump: loop the mineral-walk gather until clear of T1 (0.4u)
+                // or the frame-19 deadline, then fall through to the book.
+                instructions.Add(new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Jump,
+                    Point = WorkerInstructionPoint.ClearOfPartnerGate,
+                    TargetId = partnerTag,
+                    InvertGate = true,
+                    JumpToPreviousRow = true
+                });
+            }
+            else
+            {
+                // Follow from frame 6 until the break-off gate (or frame-26
+                // deadline): the open chase row fires, the InvertGate jump loops
+                // back to it every frame while the gate is null, and passes
+                // through to the book once the follower is within 0.5u of T1's
+                // SM harvest point.
+                instructions.Add(new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Move,
+                    Point = chasePoint,
+                    TargetId = partnerTag,
+                    RelativeFrame = 6,
+                    PositionTolerance = 0f,
+                    Queue = false
+                });
+                instructions.Add(new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Jump,
+                    Point = WorkerInstructionPoint.ChaseBreakOffGate,
+                    TargetId = partnerTag,
+                    InvertGate = true,
+                    JumpToPreviousRow = true
+                });
+            }
+
+            AddT1TestChaserTail(instructions, instructionSet, targetId, frame19WalkMineral);
+            Console.WriteLine($"[T1TEST CHASER BOOK] role={normalizedRole} variant={variant} chase={chasePoint}");
+            return instructions;
+        }
+
+        // The shared post-follow tail (owner spec 2026-10-24): frame-19 SB mineral
+        // walk, frame-25 stage to the CCA wait point, the 32-frame harvest-release
+        // gate, then the standard startup rows — identical to the normal
+        // chase-bump book's tail so every variant lands in the same book after
+        // the test window.
+        private static void AddT1TestChaserTail(List<WorkerInstruction> instructions, string instructionSet, ulong targetId, OrderedMineral frame19WalkMineral)
+        {
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = frame19WalkMineral.UnitTag,
+                RelativeFrame = 19,
+                NoCondition = true,
+                Queue = false
+            });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Move,
+                Point = WorkerInstructionPoint.CcaWait,
+                TargetId = targetId,
+                RelativeFrame = 25,
+                PositionTolerance = 0f,
+                Queue = false
+            });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Wait,
+                TargetId = targetId,
+                HarvestReleaseGate = true
+            });
+            instructions.AddRange(BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1));
         }
 
         // Experiment 1 (Magannatha) S3/B3 first trip: open with the 1183 Smart Harvest on
@@ -2092,7 +2951,20 @@ namespace BabySharkBot.Managers
                     PreviousAbilityId = firstGatherAbility,
                     TargetAbilityId = returnAbility
                 });
-                AddSelfPairReturnInstructions(instructions, startIndex, onlyTarget);
+                // Variant 15 full-8 battery: S2's FIRST return rides the rolling-
+                // homing book too. B2/S3/B4 keep the normal self-pair return —
+                // B2's second return is the pool-preposition pair row and its
+                // timing feeds the pool gate; the rolling leg is only proven on
+                // plain hatchery returns.
+                if (Settings.T1TestNumber / 2 == 15
+                    && string.Equals(NormalizeRole(workerRole), "S2", StringComparison.OrdinalIgnoreCase))
+                {
+                    AddRollingReturnInstructions(instructions, startIndex, onlyTarget);
+                }
+                else
+                {
+                    AddSelfPairReturnInstructions(instructions, startIndex, onlyTarget);
+                }
                 instructions.Add(CreateHandoffWait());
 
                 // 13-B3 extractor trick (owner spec 2026-10-15, settled spec 16:13):
@@ -2132,7 +3004,13 @@ namespace BabySharkBot.Managers
                 // time while W1 is mining". The staging rows sit inside the jump loop
                 // so every cycle re-stages; the self-pair harvest behind the gate
                 // still mines the {SB,SB} speed-mining point.
-                AddHarvestReleaseStagingInstructions(instructions, onlyTarget.ResourceUnitId);
+                // Free-only gate for B2 (owner report 2026-10-25 21:36): Y5 parks on
+                // BB for 120+ frames, so the 32-frame clause released B2 onto an
+                // occupied mineral; the Smart bounced and the pool book deadlocked.
+                AddHarvestReleaseStagingInstructions(
+                    instructions,
+                    onlyTarget.ResourceUnitId,
+                    freeOnly: string.Equals(NormalizeRole(workerRole), "B2", StringComparison.OrdinalIgnoreCase));
                 var selfHarvestIndex = instructions.Count;
                 AddSelfPairHarvestInstructions(instructions, startIndex, "jitMH", onlyTarget);
                 instructions.Add(new WorkerInstruction
@@ -2210,7 +3088,25 @@ namespace BabySharkBot.Managers
                     PreviousAbilityId = firstGatherAbility,
                     TargetAbilityId = returnAbility
                 });
-                AddSelfPairReturnInstructions(instructions, startIndex, targets[0]);
+                // Variant 14 (owner question 2026-10-25 "can this technique be
+                // applied to the return trip"): T3/Y1's FIRST return rides the
+                // rolling-homing book instead of the fixed re-moves + queued
+                // frame-97 return. Later self-pair returns stay normal.
+                // Variant 15 extends the rolling first return to EVERY first-set
+                // miner reaching this prologue (T1/T3/Y1/Y3 A-miners + T2/Y2
+                // double-first) — the full-8 battery.
+                var rollingReturnVariant = Settings.T1TestNumber / 2;
+                if ((rollingReturnVariant == 14
+                        && (string.Equals(NormalizeRole(workerRole), "T3", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(NormalizeRole(workerRole), "Y1", StringComparison.OrdinalIgnoreCase)))
+                    || (rollingReturnVariant == 15 && IsDecelTestRole(NormalizeRole(workerRole))))
+                {
+                    AddRollingReturnInstructions(instructions, startIndex, targets[0]);
+                }
+                else
+                {
+                    AddSelfPairReturnInstructions(instructions, startIndex, targets[0]);
+                }
                 instructions.Add(CreateHandoffWait());
                 // Harvest-release staging (owner spec 2026-10-12, all workers): stage at
                 // the mineral's CCA wait point and gate on the harvest-release window
@@ -2922,7 +3818,7 @@ namespace BabySharkBot.Managers
         // frames. When the gate passes, the Wait row resets InstructionStartFrame,
         // so the harvest rows behind it count their relative frames from the
         // release frame.
-        private static void AddHarvestReleaseStagingInstructions(List<WorkerInstruction> instructions, ulong mineralTag)
+        private static void AddHarvestReleaseStagingInstructions(List<WorkerInstruction> instructions, ulong mineralTag, bool freeOnly = false)
         {
             instructions.Add(new WorkerInstruction
             {
@@ -2938,23 +3834,57 @@ namespace BabySharkBot.Managers
                 InstructionSet = "stage",
                 Command = WorkerInstructionCommand.Wait,
                 TargetId = mineralTag,
-                HarvestReleaseGate = true
+                HarvestReleaseGate = true,
+                HarvestReleaseFreeOnly = freeOnly
             });
         }
 
-        // Same row shape as AddReturnInstructions, but the stored point is the {X}-{X}
-        // self-pair ReturnPoint — on the hatchery footprint circle straight toward X —
-        // so a worker returning to the mineral it just mined takes the direct line
-        // instead of converging on the shared pair return point with its teammate.
+        // Same stored point as before (the {X}-{X} self-pair ReturnPoint — the
+        // direct line home), but the set is now jitRMFineTune (owner spec
+        // 2026-10-22): the Return carries an absolute earliest-execution
+        // floor of frame 97 — it may not issue before game frame 97, and
+        // once past the floor it still waits for the 0.5u position gate.
+        // QUEUED again (owner spec 2026-10-23 16:19, telemetry showed the
+        // unqueued return fires 0.5u early, REPLACES the walk move, and the
+        // drone decelerates and crawls the last stretch to the hatchery —
+        // a 5-frame handoff vs 1 frame when the return rides queued behind
+        // the move and executes at the touch point).
         private static void AddSelfPairReturnInstructions(List<WorkerInstruction> instructions, int startIndex, MiningTargetDto target)
         {
-            AddSelfPairSetupInstruction(instructions, startIndex, "jitRM", target, WorkerInstructionCommand.UseTargetPoint, WorkerInstructionPoint.JitReturnPoint, "ReturnPoint");
+            AddSelfPairSetupInstruction(instructions, startIndex, "jitRMFineTune", target, WorkerInstructionCommand.UseTargetPoint, WorkerInstructionPoint.JitReturnPoint, "ReturnPoint");
             AddJitRmStopAndReturnMoveInstructions(instructions, target.ResourceUnitId);
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 14 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = -1, PositionTolerance = 0.5f, Queue = true });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 14 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = -1, PositionTolerance = 0.5f, Queue = true, RequireFrame = 97 });
+        }
+
+        // Variant 14 rolling return leg (owner question 2026-10-25 "can this
+        // technique be applied to the return trip going back to the hatchery"):
+        // the same setup row (stores the {X,X} self-pair ReturnPoint), then
+        // instead of the fixed 0/1/14/15 re-moves + queued frame-97 return, a
+        // homing 2u rolling waypoint that never decelerates, a return-range
+        // gate, and the Return row UNQUEUED so it replaces the rolling move at
+        // the gate-pass frame (a queued row would wait forever behind a rolling
+        // move that never completes). NOTE: the queued frame-97 return exists
+        // because an unqueued return once showed a 5-frame hatchery crawl
+        // (2026-10-23 16:19) — this test measures whether arriving at cruise
+        // avoids that crawl.
+        private static void AddRollingReturnInstructions(List<WorkerInstruction> instructions, int startIndex, MiningTargetDto target)
+        {
+            AddSelfPairSetupInstruction(instructions, startIndex, "jitRMFineTune", target, WorkerInstructionCommand.UseTargetPoint, WorkerInstructionPoint.JitReturnPoint, "ReturnPoint");
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.RollingReturnPoint, TargetId = target.ResourceUnitId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "jitRMFineTune",
+                Command = WorkerInstructionCommand.Jump,
+                Point = WorkerInstructionPoint.ReturnRangeGate,
+                TargetId = target.ResourceUnitId,
+                InvertGate = true,
+                JumpToPreviousRow = true
+            });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = -1, PositionTolerance = 0.5f, NoCondition = true, Queue = false });
         }
 
         // Owner spec 2026-10-13 (B2 pool): same row shape as AddSelfPairReturnInstructions,
@@ -2965,7 +3895,7 @@ namespace BabySharkBot.Managers
         {
             instructions.Add(new WorkerInstruction
             {
-                InstructionSet = "jitRM",
+                InstructionSet = "jitRMFineTune",
                 Command = WorkerInstructionCommand.UseTargetPoint,
                 Point = WorkerInstructionPoint.JitReturnPoint,
                 TargetId = target.ResourceUnitId,
@@ -2974,27 +3904,39 @@ namespace BabySharkBot.Managers
                 TargetPointReference = BuildPairReference(startIndex, target.ResourceLabel, "Pool", "ReturnPoint")
             });
             AddJitRmStopAndReturnMoveInstructions(instructions, target.ResourceUnitId);
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 14 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = -1, PositionTolerance = 0.5f, Queue = true });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 14 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = -1, PositionTolerance = 0.5f, Queue = true, RequireFrame = 97 });
         }
 
-        // Repeat harvest of the same mineral: same row shape as AddHarvestInstructions,
-        // but the stored point is the {X}-{X} self-pair HarvestA — the direct walk back
-        // out to X on the mineral line.
+        // Repeat harvest of the same mineral, jitMHFineTune shape (owner spec
+        // 2026-10-22, move-through removed 2026-10-23): same stored {X}-{X}
+        // self-pair HarvestA as before, with the fine-tune schedule repeated
+        // relative to the set start — unqueued Moves to the stored Harvest point
+        // at relative frames 0/1/15/19/20 and ONE unqueued Smart on the mineral
+        // at +22 (the frame before the walk would bump around the mineral). No
+        // queued rows, and no move-past-the-mineral row.
         private static void AddSelfPairHarvestInstructions(List<WorkerInstruction> instructions, int startIndex, string instructionSet, MiningTargetDto target)
         {
-            AddSelfPairSetupInstruction(instructions, startIndex, instructionSet, target, WorkerInstructionCommand.StoreTargetPoint, WorkerInstructionPoint.JitHarvestA, "HarvestA");
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0 });
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1 });
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 14 });
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15 });
-            // Version 2 experiment (owner request): the harvest command is QUEUED at
-            // +16 behind the walk — it rides the order queue and begins the moment the
-            // walk completes, instead of waiting for the 0.5u poll to see the arrival.
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 16, PositionTolerance = 0.5f, Queue = true });
+            AddSelfPairSetupInstruction(instructions, startIndex, "jitMHFineTune", target, WorkerInstructionCommand.StoreTargetPoint, WorkerInstructionPoint.JitHarvestA, "HarvestA");
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitMHFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0, Queue = false });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitMHFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1, Queue = false });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitMHFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15, Queue = false });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitMHFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 19, Queue = false });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitMHFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 20, Queue = false });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "jitMHFineTune",
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = target.ResourceUnitId,
+                RelativeFrame = 22,
+                NoCondition = true,
+                Queue = false,
+                AbilityIdOverride = (int)Abilities.SMART
+            });
         }
 
         // Reference form matches BuildPairReference with identical labels; the pair
@@ -3021,6 +3963,12 @@ namespace BabySharkBot.Managers
             });
         }
 
+        // Pair harvest, jitMHFineTune shape (owner spec 2026-10-22, move-through
+        // removed 2026-10-23): same stored pair point as before, with the
+        // fine-tune schedule repeated relative to the set start — unqueued Moves
+        // to the stored Harvest point at relative frames 0/1/15/19/20 and ONE
+        // unqueued Smart on the mineral at +22. No queued rows, no
+        // move-past-the-mineral row.
         private static void AddHarvestInstructions(
             List<WorkerInstruction> instructions,
             int startIndex,
@@ -3029,35 +3977,40 @@ namespace BabySharkBot.Managers
             MiningTargetDto pairedTarget,
             WorkerInstructionPoint point)
         {
-            AddJitPairSetupInstruction(instructions, startIndex, instructionSet, target, pairedTarget, point, WorkerInstructionCommand.StoreTargetPoint, true);
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0 });
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1 });
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 14 });
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15 });
-            // Version 2 experiment (owner request): the harvest command is QUEUED at
-            // +16 behind the walk — the same anti-coalescing shape as before (an
-            // unqueued gather fired in one batch with a move got discarded by the
-            // engine, and the following wait row froze), but instead of waiting for
-            // the 0.5u position poll to NOTICE the arrival, the queued gather rides
-            // the order queue and begins harvesting the moment the walk completes
-            // (Sharky-style zero-latency walk->mine). The 0.5u tolerance is kept as
-            // a belt-and-braces gate for the frame the row fires; if a lost tread
-            // idles the worker the queued gather still walks it in.
-            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 16, PositionTolerance = 0.5f, Queue = true });
+            AddJitPairSetupInstruction(instructions, startIndex, "jitMHFineTune", target, pairedTarget, point, WorkerInstructionCommand.StoreTargetPoint, true);
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitMHFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0, Queue = false });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitMHFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1, Queue = false });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitMHFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15, Queue = false });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitMHFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 19, Queue = false });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitMHFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 20, Queue = false });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "jitMHFineTune",
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = target.ResourceUnitId,
+                RelativeFrame = 22,
+                NoCondition = true,
+                Queue = false,
+                AbilityIdOverride = (int)Abilities.SMART
+            });
         }
 
         private static void AddReturnInstructions(List<WorkerInstruction> instructions, int startIndex, MiningTargetDto target, MiningTargetDto pairedTarget)
         {
-            AddJitPairSetupInstruction(instructions, startIndex, "jitRM", target, pairedTarget, WorkerInstructionPoint.JitReturnPoint, WorkerInstructionCommand.UseTargetPoint, true);
+            AddJitPairSetupInstruction(instructions, startIndex, "jitRMFineTune", target, pairedTarget, WorkerInstructionPoint.JitReturnPoint, WorkerInstructionCommand.UseTargetPoint, true);
             AddJitRmStopAndReturnMoveInstructions(instructions, target.ResourceUnitId);
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 14 });
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15 });
-            // Position-gated return: fires when the worker is within 0.5u of the pair return
-            // point (0.1u is unreachable — unit radii), so cargo is handed off as soon as
-            // the worker arrives at the hatchery.
-            instructions.Add(new WorkerInstruction { InstructionSet = "jitRM", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = -1, PositionTolerance = 0.5f, Queue = true });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 0 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 1 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 14 });
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = 15 });
+            // Position-gated return (fires when the worker is within 0.5u of the pair return
+            // point, 0.1u is unreachable — unit radii), jitRMFineTune shape: QUEUED with
+            // an absolute earliest-execution floor of frame 97 (owner spec 2026-10-22;
+            // queue restored 2026-10-23 16:19 after telemetry showed the unqueued
+            // return's 5-frame hatchery crawl) — cargo is handed off as soon as the
+            // worker arrives at the hatchery, and never before frame 97.
+            instructions.Add(new WorkerInstruction { InstructionSet = "jitRMFineTune", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.StoredTarget, TargetId = target.ResourceUnitId, RelativeFrame = -1, PositionTolerance = 0.5f, Queue = true, RequireFrame = 97 });
         }
 
         // EXPERIMENT (owner request, 2026-10-03): the STOP row is REMOVED from every
@@ -3080,7 +4033,7 @@ namespace BabySharkBot.Managers
         {
             instructions.Add(new WorkerInstruction
             {
-                InstructionSet = "jitRM",
+                InstructionSet = "jitRMFineTune",
                 Command = WorkerInstructionCommand.Move,
                 Point = WorkerInstructionPoint.StoredTarget,
                 TargetId = targetId,

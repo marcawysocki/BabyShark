@@ -12,7 +12,8 @@ namespace BabySharkBot.Services
     public sealed class WorkerCommandTelemetry
     {
         private readonly object _lock = new object();
-        private readonly string _logFile;
+        private string _logFile;
+        private bool _logFileResolved;
         private readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions { WriteIndented = false };
         private long _commandTraceSequence;
         private readonly Dictionary<ulong, List<int>> _lastObservedOrderAbilityIds = new Dictionary<ulong, List<int>>();
@@ -24,11 +25,23 @@ namespace BabySharkBot.Services
 
         public WorkerCommandTelemetry()
         {
+        }
+
+        // The log file is named lazily on first write so the NW/SE start-location tag
+        // (resolved in OnStart, after this constructor runs) can be included in the name.
+        private void EnsureLogFile()
+        {
+            if (_logFileResolved)
+            {
+                return;
+            }
+            _logFileResolved = true;
             try
             {
                 var folder = Path.Combine(Directory.GetCurrentDirectory(), "data", "mining_tests");
                 Directory.CreateDirectory(folder);
-                _logFile = Path.Combine(folder, $"worker_commands_BabyShark_{DateTime.Now:yyyyMMddHHmmss}.jsonl");
+                var tag = MiningTestLogNaming.TagForFileName();
+                _logFile = Path.Combine(folder, $"worker_commands_BabyShark{tag}_{DateTime.Now:yyyyMMddHHmmss}.jsonl");
             }
             catch
             {
@@ -41,6 +54,7 @@ namespace BabySharkBot.Services
             IEnumerable<WorkerEntryDto> workers,
             string sourceManager)
         {
+            EnsureLogFile();
             if (string.IsNullOrEmpty(_logFile)
                 || observation?.Observation?.RawData?.Units == null
                 || workers == null)
@@ -120,6 +134,25 @@ namespace BabySharkBot.Services
                     _workerAbilityHistory[worker.UnitTag] = history;
                 }
 
+                // --t1trace (owner test suite 2026-10-28 08:51): per-frame T1
+                // position/ability/carrying dump over relative frames 5-80 —
+                // diagnoses the Smart -> 1183 -> pickup walk-in curve.
+                if (Settings.T1PositionTrace)
+                {
+                    var relativeTraceFrame = Settings.GetRelativeFrame(frame);
+                    var isTraceWorker = Settings.T1TraceUnitTag != 0
+                        ? worker.UnitTag == Settings.T1TraceUnitTag
+                        : string.Equals(worker.FinalLabel ?? worker.Label ?? worker.StartLabel ?? string.Empty, "T1", StringComparison.OrdinalIgnoreCase);
+                    if (isTraceWorker
+                        && relativeTraceFrame >= 5
+                        && relativeTraceFrame <= 160)
+                    {
+                        var traceCarrying = rawWorker.BuffIds != null
+                            && rawWorker.BuffIds.Any(b => b == 271 || b == 272);
+                        Console.WriteLine($"[T1TRACE] frame={relativeTraceFrame} pos=({rawWorker.Pos.X:F3},{rawWorker.Pos.Y:F3}) ability={currentAbility} carrying={traceCarrying}");
+                    }
+                }
+
                 var hasLast = history.Count > 0;
                 var last = hasLast ? history[history.Count - 1] : 0;
                 if (hasLast && last == currentAbility)
@@ -158,6 +191,7 @@ namespace BabySharkBot.Services
             IEnumerable<AssignedWorkerDto> assignedWorkers,
             string sourceManager)
         {
+            EnsureLogFile();
             if (string.IsNullOrEmpty(_logFile)
                 || observation?.Observation?.RawData?.Units == null
                 || workers == null)
@@ -218,9 +252,165 @@ namespace BabySharkBot.Services
                     // lone current order) — updated by LogWorkerAbilityChanges, which
                     // must run before this method each frame.
                     CurrentOrderAbilityIds = GetAbilityHistory(worker.UnitTag),
-                    TargetUnitTag = ResolveObservationTargetDescriptor(worker, rawWorker, assignment, target)
+                    TargetUnitTag = ResolveObservationTargetDescriptor(worker, rawWorker, assignment, target),
+                    // Raw first-order target unit tag straight from the
+                    // observation (the mineral being gathered / hatchery being
+                    // returned to). Independent of assignments/books — the
+                    // natural-observation test relies on this to attribute
+                    // engine-chosen stand points to minerals.
+                    OrderTargetUnitTag = rawWorker.Orders?.Count > 0
+                        ? rawWorker.Orders[0].TargetUnitTag
+                        : (ulong?)null
                 });
             }
+        }
+
+        // --smsweep (owner spec 2026-10-29 08:39): one record per angular sweep
+        // sample — the stand-still point a Smart command produced from a 1.87u
+        // approach at the test angle, and its distance to hatchery circle 1.
+        public void LogSmSweepSample(
+            int frame,
+            string startSide,
+            string mineralLabel,
+            ulong workerTag,
+            double angleDeg,
+            float approachX,
+            float approachY,
+            float standX,
+            float standY,
+            double distToHatcheryCircle1,
+            bool valid,
+            int stillFrames,
+            int ordinal)
+        {
+            EnsureLogFile();
+            if (string.IsNullOrEmpty(_logFile))
+            {
+                return;
+            }
+            Append(new SmSweepSampleRecord
+            {
+                RecordType = "SmSweepSample",
+                Bot = "BabyShark",
+                TimestampUtc = DateTime.UtcNow,
+                GameFrame = frame,
+                GameSeconds = frame / 22.4,
+                StartSide = startSide ?? string.Empty,
+                MineralLabel = mineralLabel ?? string.Empty,
+                WorkerTag = workerTag,
+                AngleDeg = angleDeg,
+                ApproachX = approachX,
+                ApproachY = approachY,
+                StandX = standX,
+                StandY = standY,
+                DistToHatcheryCircle1 = distToHatcheryCircle1,
+                Valid = valid,
+                StillFrames = stillFrames,
+                Ordinal = ordinal,
+            });
+        }
+
+        // --smstage (owner spec 2026-10-29 12:11): one record per verify /
+        // tipping / staging probe — where the worker was sent, where it stood,
+        // whether it hit the ideal stand, held position, or harvested.
+        public void LogSmStageSample(
+            int frame,
+            string startSide,
+            string mineralLabel,
+            ulong workerTag,
+            string phase,
+            double angleDeg,
+            double radius,
+            double bearingDeg,
+            double targetX,
+            double targetY,
+            double standX,
+            double standY,
+            double distToIdeal,
+            bool held,
+            bool harvested,
+            int mineralContentsBefore,
+            int mineralContentsAfter,
+            bool valid,
+            string note,
+            int ordinal)
+        {
+            EnsureLogFile();
+            if (string.IsNullOrEmpty(_logFile))
+            {
+                return;
+            }
+            Append(new SmStageSampleRecord
+            {
+                RecordType = "SmStageSample",
+                Bot = "BabyShark",
+                TimestampUtc = DateTime.UtcNow,
+                GameFrame = frame,
+                GameSeconds = frame / 22.4,
+                StartSide = startSide ?? string.Empty,
+                MineralLabel = mineralLabel ?? string.Empty,
+                WorkerTag = workerTag,
+                Phase = phase ?? string.Empty,
+                AngleDeg = angleDeg,
+                Radius = radius,
+                BearingDeg = bearingDeg,
+                TargetX = targetX,
+                TargetY = targetY,
+                StandX = standX,
+                StandY = standY,
+                DistToIdeal = distToIdeal,
+                Held = held,
+                Harvested = harvested,
+                MineralContentsBefore = mineralContentsBefore,
+                MineralContentsAfter = mineralContentsAfter,
+                Valid = valid,
+                Note = note ?? string.Empty,
+                Ordinal = ordinal,
+            });
+        }
+
+        // --smhandoff (owner spec 2026-10-29 16:37): one record per handoff
+        // event — A (harvester) and B (stager) state transitions, stands,
+        // drift, harvest-frame counts, and the seam between A's round end
+        // and B's first harvest frame.
+        public void LogSmHandoffSample(
+            int frame,
+            string startSide,
+            string mineralLabel,
+            ulong workerTag,
+            string role,
+            string phase,
+            double x,
+            double y,
+            double distToIdeal,
+            int harvestFrames,
+            string note,
+            int ordinal)
+        {
+            EnsureLogFile();
+            if (string.IsNullOrEmpty(_logFile))
+            {
+                return;
+            }
+            Append(new SmHandoffSampleRecord
+            {
+                RecordType = "SmHandoffSample",
+                Bot = "BabyShark",
+                TimestampUtc = DateTime.UtcNow,
+                GameFrame = frame,
+                GameSeconds = frame / 22.4,
+                StartSide = startSide ?? string.Empty,
+                MineralLabel = mineralLabel ?? string.Empty,
+                WorkerTag = workerTag,
+                Role = role ?? string.Empty,
+                Phase = phase ?? string.Empty,
+                X = x,
+                Y = y,
+                DistToIdeal = distToIdeal,
+                HarvestFrames = harvestFrames,
+                Note = note ?? string.Empty,
+                Ordinal = ordinal,
+            });
         }
 
         public void LogAction(SC2APIProtocol.Action action, ResponseObservation observation, string sourceManager)
@@ -762,6 +952,76 @@ namespace BabySharkBot.Services
             public bool JustPickedUp { get; set; }
             public List<int> CurrentOrderAbilityIds { get; set; }
             public string TargetUnitTag { get; set; }
+            public ulong? OrderTargetUnitTag { get; set; }
+        }
+
+        private sealed class SmSweepSampleRecord
+        {
+            public string RecordType { get; set; }
+            public string Bot { get; set; }
+            public DateTime TimestampUtc { get; set; }
+            public int GameFrame { get; set; }
+            public double GameSeconds { get; set; }
+            public string StartSide { get; set; }
+            public string MineralLabel { get; set; }
+            public ulong WorkerTag { get; set; }
+            public double AngleDeg { get; set; }
+            public double ApproachX { get; set; }
+            public double ApproachY { get; set; }
+            public double StandX { get; set; }
+            public double StandY { get; set; }
+            public double DistToHatcheryCircle1 { get; set; }
+            public bool Valid { get; set; }
+            public int StillFrames { get; set; }
+            public int Ordinal { get; set; }
+        }
+
+        private sealed class SmStageSampleRecord
+        {
+            public string RecordType { get; set; }
+            public string Bot { get; set; }
+            public DateTime TimestampUtc { get; set; }
+            public int GameFrame { get; set; }
+            public double GameSeconds { get; set; }
+            public string StartSide { get; set; }
+            public string MineralLabel { get; set; }
+            public ulong WorkerTag { get; set; }
+            public string Phase { get; set; }        // "verify" | "tip" | "stage-hold" | "stage-smart"
+            public double AngleDeg { get; set; }     // absolute approach angle (mineral->hatchery = 0)
+            public double Radius { get; set; }       // staging radius from ideal stand (0 for tip/verify)
+            public double BearingDeg { get; set; }   // staging bearing from stand (0 = toward hatchery)
+            public double TargetX { get; set; }
+            public double TargetY { get; set; }
+            public double StandX { get; set; }
+            public double StandY { get; set; }
+            public double DistToIdeal { get; set; }
+            public bool Held { get; set; }           // stage-hold: stayed put | stage-smart: hit the ideal stand
+            public bool Harvested { get; set; }      // mineral contents dropped while standing
+            public int MineralContentsBefore { get; set; }
+            public int MineralContentsAfter { get; set; }
+            public bool Valid { get; set; }
+            public string Note { get; set; }
+            public int Ordinal { get; set; }
+        }
+
+        private sealed class SmHandoffSampleRecord
+        {
+            public string RecordType { get; set; }
+            public string Bot { get; set; }
+            public DateTime TimestampUtc { get; set; }
+            public int GameFrame { get; set; }
+            public double GameSeconds { get; set; }
+            public string StartSide { get; set; }
+            public string MineralLabel { get; set; }
+            public ulong WorkerTag { get; set; }
+            public string Role { get; set; }         // "A" (harvester) | "B" (stager)
+            public string Phase { get; set; }        // "move" | "stand" | "harvest" | "smart" | "hold" | "flip-return" | "handoff"
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double DistToIdeal { get; set; }  // stands: distance from the stored ideal stand
+            public int HarvestFrames { get; set; }   // A: accumulated stationary+1183 frames at this event
+            public string Note { get; set; }
+            public int Ordinal { get; set; }
         }
 
         private sealed class WorkerCommandRecord
@@ -776,8 +1036,7 @@ namespace BabySharkBot.Services
             public string WorkerLabel { get; set; }
             public string WorkerRole { get; set; }
             public string RoleNumber { get; set; }
-            public string WorkerType { get; set; }
-            public float? WorkerX { get; set; }
+            public string WorkerType { get; set; }            public float? WorkerX { get; set; }
             public float? WorkerY { get; set; }
             public List<int> CurrentOrderAbilityIds { get; set; }
             public int AbilityId { get; set; }

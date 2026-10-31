@@ -118,6 +118,14 @@ namespace BabySharkBot.Setup
         MacroHatcherySite,
         JitHarvestA,
         JitHarvestB,
+        // jitMHFineTune (owner spec 2026-10-22, T1 fine-tuning): the MOVE-THROUGH
+        // point — the speed-mining harvest point mirrored across the mineral
+        // center (ResourcePosition), so the frame-20 walk passes THROUGH the
+        // mineral footprint instead of decelerating at the ~0.2u-short standoff
+        // the telemetry showed. Falls back to the plain harvest point when the
+        // mineral center is unknown. Resolved from the row TargetId's mining
+        // target.
+        HarvestThrough,
         JitWaitPointA,
         JitWaitPointB,
         JitReturnPoint,
@@ -141,7 +149,143 @@ namespace BabySharkBot.Setup
         // (owner spec 2026-10-20 20:09), so the worker is never the standing 1183
         // waiter the game re-pathes away after 15 frames. Resolved from the team
         // assignments by mineral UnitTag, with the team JIT wait point as fallback.
-        CcaWait
+        CcaWait,
+        // T1 arrival test battery (owner spec 2026-10-24 18:16), --t1test=N:
+        // SmHarvestForce — the row TargetId mineral's SmHarvestPoint
+        // UNCONDITIONALLY (Point.Harvest only resolves the SM point when global
+        // speed-mining is active; the test books need it from frame 0). Falls
+        // back to HarvestPoint when the SM point is zero.
+        // SmMidpoint — the "Green Star": halfway between the mineral's
+        // SmHarvestPoint and SmReturnPoint.
+        // StarGatedChase — the chased partner's (T4/T5: T1) LIVE position, gated:
+        // null until T1 is within 0.2u of ITS OWN TA SmMidpoint, so T4/T5 keep
+        // mineral-walking until T1 reaches the star; deadline fail-open at
+        // relative frame 22 so a missed star can never park the walker.
+        // ChaseBreakOffGate — an InvertGate-jump gate: resolves (non-null) once
+        // the FOLLOWER is within 0.5u of the partner's SmHarvestPoint (following
+        // closer would shove the partner off the mineral) OR at the relative
+        // frame 26 deadline; null while the follow should continue.
+        // ClearOfPartnerGate — an InvertGate-jump gate: resolves once the walker
+        // is >= 0.4u clear of the partner (T1) OR at the relative frame 19
+        // deadline; null while T1 is inside the walker's radius, so the loop
+        // keeps mineral-walking without bumping.
+        // StarRedirect — the row TargetId mineral's SmHarvestPoint, gated on the
+        // WORKER ITSELF being within 0.2u of the mineral's SmMidpoint (the
+        // Green Star): null while the worker is still approaching the star, so a
+        // Move row carrying this point redirects the worker from the star to the
+        // SM harvest only at star proximity; relative-frame-24 deadline fail-open
+        // returns the SM harvest unconditionally so the book can never stall.
+        // RollingLine — anti-deceleration rolling waypoint (owner spec
+        // 2026-10-25 09:24): the worker's CURRENT position plus 0.5u along the
+        // unit direction from the worker's frame-0 position (captured on first
+        // resolve) through the row TargetId mineral's ResourcePosition — the
+        // start->mineral line extended through the mineral. Re-resolved every
+        // frame, the waypoint always recedes, so the worker never decelerates
+        // into an arrival.
+        // HarvestRangeGate — an InvertGate-jump gate for the rolling book:
+        // resolves (non-null) once the worker is within 0.35u of the row
+        // mineral's ResourcePosition (close enough to harvest), or at the
+        // relative-frame-40 deadline; null while still approaching, so the jump
+        // keeps re-issuing the rolling move.
+        // DecelPlan — variant 9 anti-deceleration approach (owner spec
+        // 2026-10-25 16:17, tests 18/19): before the latch the row TargetId
+        // mineral's HarvestPoint (the worker's normal destination, same anchor
+        // as the rolling tests); once the worker is within 0.7u of it (~1 frame
+        // before the game's arrival deceleration onset) the target latches to a
+        // FIXED point 2u beyond the HarvestPoint along the frame-0-origin ->
+        // HarvestPoint line, so the worker cruises through the footprint at
+        // full cruise speed. After the latch the cached point keeps being
+        // returned (re-issuing a fixed target does not restart the game's
+        // move) so the gate row below it keeps evaluating every frame.
+        // T2 is special (owner spec): the latch fires on the FIRST resolve
+        // (frame 0) with a 0.5u extension, and there is no gate — the Smart is
+        // a plain queued row at the worker's current smart frame.
+        // LeadHarvestGate — an InvertGate-jump gate for the DecelPlan book:
+        // resolves (non-null) once the worker is within 0.45u of the mineral OR
+        // is projected to be within 0.45u in `lead` frames (lead by role:
+        // T3/Y1 = 1, Y2/B2 = 2, Y3 = 3, T1 = 4, S2 = 5 — the owner-named
+        // projection-lead samples), or at the relative-frame-40 deadline; null
+        // while still approaching, so the jump keeps re-issuing the DecelPlan
+        // move until the Smart transition frame.
+        // RollingReturnPoint — variant 14 return leg (owner question
+        // 2026-10-25 "can this technique be applied to the return trip going
+        // back to the hatchery"): the homing 2u rolling waypoint toward the
+        // worker's StoredTargetPoint — the pair-table ReturnPoint the setup
+        // row just stored — the same anti-deceleration receding target as the
+        // homing harvest leg, so the drone arrives at the hatchery footprint
+        // at full cruise instead of decelerating into the fixed return point.
+        // ReturnRangeGate — an InvertGate-jump gate for the rolling return
+        // book: resolves once the worker is within 0.45u of the
+        // StoredTargetPoint, or 40 frames after the return leg began
+        // (per-worker anchor — the leg starts ~100 frames in, so the harvest
+        // gates' frame-0 relative anchor cannot be reused).
+        SmHarvestForce,
+        SmMidpoint,
+        StarGatedChase,
+        ChaseBreakOffGate,
+        ClearOfPartnerGate,
+        StarRedirect,
+        RollingLine,
+        HarvestRangeGate,
+        DecelPlan,
+        LeadHarvestGate,
+        RollingReturnPoint,
+        ReturnRangeGate,
+        // Bump choreography (owner spec 2026-10-26 18:45, --t1test=34/35,
+        // variant 17 — the "green line" T1 push with T4/T5 staging handoffs).
+        // All resolve from persisted patch data / live worker positions BEFORE
+        // the MiningTargets lookup, keyed by mineral label carried in
+        // TargetPointReference:
+        // ChoreoGreenLine — T1's frame-0 target (owner Paint 2026-10-26 20:47):
+        // the latched start THROUGH the TA mineral (HarvestPoint anchor — the
+        // real unit position; ResourcePosition is ~0.9u off), extended 2u past
+        // the mineral so T1 rolls through without decelerating.
+        // ChoreoSmHarvestLabel — the labeled mineral's SmHarvestPoint (the
+        // frame-6 T1 redirect target, T4's TB/TA legs, T5's TA leg).
+        // ChoreoSaIntersect — T5's frame-0 move: the ray from T5's latched
+        // start toward SA's SmHarvestPoint, extended 2u past its crossing
+        // with the TA SM (SmReturn->SmHarvest) line; falls back to 2u past
+        // SA's SmHarvestPoint when the ray misses the line.
+        // ChoreoWaitCircle2Label — the labeled mineral's OUTER-circle stand
+        // point (harvest radius + 0.4u on the hatchery side) — the Circle 2
+        // staging point T4/T5 wait at for the T2/S2 32-frame handoff.
+        // ChoreoT1ArrivalGate — InvertGate-jump gate: null while T1 is NOT
+        // within one frame's travel of the TA SmHarvestPoint (floor relative
+        // frame 16, fail-open 30); non-null the frame T1 will arrive next
+        // frame, so the SB mineral-walk / T1 Smart fire on that exact frame.
+        // ChoreoClearOfGate — InvertGate-jump gate: null while the WORKER is
+        // within 1.0u of the live role named in TargetPointReference ("T1"
+        // for T4, "T3" for T5), non-null once clear (fail-open frame 45).
+        // ChoreoSmLineExtend — T1's frame-10 redirect target (owner spec
+        // 2026-10-27 11:16 "switch to the harvest line extended 2u
+        // intersecting SMH ... Let T4 bump T1 off that target line ... then
+        // target the mineral"): the TA SmHarvestPoint extended 2u along the
+        // SmReturn->SmHarvest direction — T1 rolls THROUGH the SM point at
+        // cruise speed. The resolver latches T1 on the line and, once T4's
+        // bump knocks T1 off it (or T1 reaches the extension end), switches
+        // the re-issue target to the SM harvest point; the SMH arrival gate
+        // then fires the Smart. (Superseded the 10-26 frame-6 SM-line spec
+        // and the 10-27 09:18 move-to-SMH spec — both decelerated T1.)
+        // ChoreoConvergence — SUPERSEDED by the 2026-10-27 14:16 fix ("T1 is
+        // being told to stay in place"): the closest point on T1's
+        // start->TA-mineral line to the TA SM harvest point sits only ~0.45u
+        // from spawn, so T1 braked to a standstill by f8. T1's frame-0 target
+        // is ChoreoGreenLine again (rolling target 2u PAST the live mineral);
+        // this resolver is retained for reference only.
+        ChoreoGreenLine,
+        ChoreoSmHarvestLabel,
+        ChoreoSaIntersect,
+        ChoreoWaitCircle2Label,
+        ChoreoT1ArrivalGate,
+        ChoreoClearOfGate,
+        ChoreoSmLineExtend,
+        ChoreoConvergence,
+        // ChoreoT4AngleStart — owner test suite 2026-10-28 08:14: T4's frame-0
+        // MOVE target when --t4angle=D is set — the worker's latched start
+        // along its start -> SA-mineral-center heading rotated by D degrees,
+        // 4u out (no deceleration before the frame-8 TB switch). The row's
+        // TargetPointReference names the heading mineral ("SA").
+        ChoreoT4AngleStart
     }
 
     public sealed class WorkerInstruction
@@ -189,6 +333,24 @@ namespace BabySharkBot.Setup
         // worker standing at the CcaWait staging point — never on the busy
         // mineral's footprint where the game would re-path it away after 15 frames.
         public bool HarvestReleaseGate { get; set; }
+        // Free-only release gate (owner report 2026-10-25 21:36, B2 stops mining):
+        // valid on Wait rows carrying HarvestReleaseGate. When true the 32-frame
+        // accumulated-harvest clause is skipped — the row passes ONLY when the
+        // target mineral has no active harvester. B2's second BB approach needs
+        // this: Y5's swing book parks on BB for 120+ frames, so the 32-frame
+        // clause released B2 onto an occupied footprint, its one-shot Smart
+        // bounced, and the book deadlocked into wait(1183->1184) with no cargo.
+        public bool HarvestReleaseFreeOnly { get; set; }
+
+        // Frames-only release gate (owner spec 2026-10-26 18:45, the T4->TB /
+        // T5->SB staging handoffs): valid on Wait rows carrying
+        // HarvestReleaseGate. When true the free-mineral clause is skipped —
+        // the row passes ONLY when the target mineral HAS an active harvester
+        // that has accumulated StagedReleaseHarvestFrames (32) harvest frames
+        // ("wait for T2 to reach 32 Harvest frames then issue a Smart on TB").
+        // The free-clause would pass the moment T4/T5 arrive at the stage
+        // point, long before T2 starts mining.
+        public bool HarvestReleaseFramesOnly { get; set; }
         // Mineral gate (owner spec 2026-10-13, B2 pool build), valid on Wait rows:
         // the row passes only when the mineral bank holds at least this many
         // minerals (-1 = disabled, the default). Rows carrying the gate ignore
@@ -198,7 +360,15 @@ namespace BabySharkBot.Setup
         // Absolute frame gate (owner spec 2026-10-13, Y2 BB trip), valid on Wait
         // rows: the row passes only once the ABSOLUTE game frame reaches this
         // value (-1 = disabled). Same cargo-handoff exclusion as RequireMinerals.
+        // Command rows (owner spec 2026-10-22, jitRMFineTune): the value acts as an
+        // absolute EARLIEST-EXECUTION floor — the row may not execute before the
+        // game reaches the frame, and once past it the row's normal gates govern.
         public int RequireFrame { get; set; } = -1;
+        // Ability override (owner spec 2026-10-22, jitMHFineTune): when >= 0, a
+        // Gather row issues this ability id instead of HARVEST_GATHER — the
+        // fine-tune Smart rows use it to send SMART (right-click) on the mineral,
+        // matching the Smart the game itself reports for harvest orders.
+        public int AbilityIdOverride { get; set; } = -1;
     }
 
     public sealed class RuntimeWorkerState

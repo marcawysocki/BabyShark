@@ -50,6 +50,10 @@ namespace BabySharkBot
         private readonly ExtractorTrickService _extractorTrickService;
         private readonly WorkerCommandTelemetry _workerCommandTelemetry;
 
+        // Exposed for test services (SmSweepService) that log their own telemetry
+        // records from outside the BabySharkAI frame loop.
+        public WorkerCommandTelemetry CommandTelemetry => _workerCommandTelemetry;
+
         /// <summary>
         /// Initialize BabySharkAI with a GameConnection instance.
         /// The actual Sharky managers are loaded through a proxy DefaultSharkyBot.
@@ -87,10 +91,22 @@ namespace BabySharkBot
             // BuildManager runs second and executes the selected opening build.
             _extractorTrickService = new ExtractorTrickService(_defaultBot);
             var buildManager = new BabySharkBuildManager(_defaultBot);
-            buildManager.SetBuild(Settings.UseTwelvePoolBuild
-                ? new BabySharkBot.Builds.TwelvePoolBuild(_defaultBot)
-                : new BabySharkBot.Builds.BuildIne(_defaultBot, _extractorTrickService));
-            Console.WriteLine($"BabySharkAI: active opening build = {(Settings.UseTwelvePoolBuild ? "TwelvePoolBuild (12 pool, race to 200)" : "BuildIne (mining test)")}");
+            // --naturaltest (owner spec 2026-10-28 14:13, "Test 1"): passive
+            // observation build — production schedule only, zero worker
+            // commands (the command sources are gated on
+            // Settings.NaturalObservationMode inside the managers).
+            buildManager.SetBuild(Settings.NaturalObservationMode
+                ? new BabySharkBot.Builds.NaturalObservationBuild(_defaultBot)
+                : Settings.SmHandoffMode
+                    ? new BabySharkBot.Builds.SmHandoffBuild(_defaultBot)
+                    : Settings.SmStageMode
+                        ? new BabySharkBot.Builds.SmStageBuild(_defaultBot)
+                        : Settings.SmSweepMode
+                            ? new BabySharkBot.Builds.SmSweepBuild(_defaultBot)
+                            : Settings.UseTwelvePoolBuild
+                                ? new BabySharkBot.Builds.TwelvePoolBuild(_defaultBot)
+                                : new BabySharkBot.Builds.BuildIne(_defaultBot, _extractorTrickService));
+            Console.WriteLine($"BabySharkAI: active opening build = {(Settings.NaturalObservationMode ? "NaturalObservation (passive, production schedule only)" : Settings.SmHandoffMode ? "SmHandoff (handoff service owns all worker commands)" : Settings.SmStageMode ? "SmStage (stage service owns all worker commands)" : Settings.SmSweepMode ? "SmSweep (sweep service owns all worker commands)" : Settings.UseTwelvePoolBuild ? "TwelvePoolBuild (12 pool, race to 200)" : "BuildIne (mining test)")}");
             Managers.Add(buildManager);
 
             // Scouting consumes the observation prepared by the first manager.
@@ -320,6 +336,14 @@ namespace BabySharkBot
                     else if (Settings.WorkerCount == 12) Settings.CurrentBaseHasBeenPlayed12 = Settings.CurrentBaseHasBeenPlayed;
                 }
             }
+
+            // Telemetry log naming (owner spec 2026-10-23): resolve the NW/SE
+            // start tag BEFORE any manager runs — the mining-test loggers
+            // (worker_commands / worker_instruction_lists / mining_test csv /
+            // frame0 dump) pick it up when they create their files, lazily on
+            // first write, so the two spawns never share file names.
+            Globals.currentMapStartLocation = GetApiLocAndCOM.ResolveStartLocationTag(gameInfo);
+            Console.WriteLine($"BabySharkAI: Start location tag = '{Globals.currentMapStartLocation}'");
 
             foreach (var playerInfo in gameInfo.PlayerInfo)
             {

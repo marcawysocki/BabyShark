@@ -1307,6 +1307,70 @@ namespace BabySharkBot.Setup
             return results;
         }
 
+        // Measured speed-mining stand points from the Sharky_Measured telemetry
+        // (2026-10-27 command logs, SE 06:18 / NW 06:24; extraction script in the
+        // task workspace, cross-validated against observed worker park positions
+        // within 0.06u). Keyed by mineral center position. The constant geometry
+        // below puts SmHarvestPoint mineralRadius+smallInset = 2.75u out from the
+        // center — floating ~2.1u from the real stand. Owner spec 2026-10-28:
+        // "SM Harvest is on the Mineral footprint. T1 Starts very near SM
+        // Return Cargo." When a resource matches a measured mineral (nearest
+        // within 0.75u), the measured SM points override the constants.
+        // Columns: mineralCenterX, mineralCenterY, smHarvestX, smHarvestY,
+        //          smReturnX, smReturnY
+        private static readonly (float cx, float cy, float smHx, float smHy, float smRx, float smRy)[] MeasuredSmPoints =
+        {
+            // SE start (labels from BabyShark SE registration, seed 3)
+            (127.00f, 18.50f, 127.062f, 19.352f, 127.229f, 21.542f), // 1-TA
+            (128.00f, 17.50f, 128.304f, 18.270f, 127.838f, 21.573f), // 2-TB
+            (130.00f, 18.50f, 129.726f, 19.334f, 128.711f, 21.714f), // 3-SA
+            (133.00f, 19.50f, 132.490f, 20.325f, 129.736f, 22.571f), // 4-SB
+            (134.00f, 20.50f, 133.344f, 21.285f, 130.087f, 23.013f), // 5-BB (n=9/13, low confidence)
+            (134.00f, 22.50f, 132.758f, 22.786f, 130.377f, 23.610f), // 6-BA
+            (135.00f, 23.50f, 133.750f, 23.502f, 130.230f, 23.641f), // 7-YB (n=8/21, low confidence)
+            (134.00f, 24.50f, 132.754f, 24.523f, 130.429f, 24.515f), // 8-YA
+            // NW start (labels from BabyShark NW registration, seed 1)
+            (25.00f, 133.50f, 24.988f, 132.665f, 24.708f, 130.487f), // 1-TA (n=4/8, low confidence)
+            (24.00f, 134.50f, 23.704f, 133.750f, 24.156f, 130.434f), // 2-TB (n=3/6, low confidence)
+            (22.00f, 133.50f, 22.276f, 132.654f, 23.187f, 130.112f), // 3-SA
+            (19.00f, 132.50f, 19.369f, 131.528f, 22.137f, 129.159f), // 4-SB (SMH spread 1.78)
+            (18.00f, 131.50f, 18.606f, 130.708f, 21.898f, 128.984f), // 5-BB
+            (18.00f, 129.50f, 19.248f, 129.227f, 21.634f, 128.417f), // 6-BA
+            (17.00f, 128.50f, 18.250f, 128.464f, 21.574f, 127.927f), // 7-YB
+            (18.00f, 127.50f, 19.248f, 127.488f, 21.573f, 127.492f), // 8-YA
+        };
+
+        private const float MeasuredSmMatchTolerance = 0.75f;
+
+        private static bool TryGetMeasuredSmPoints(Vector2Dto resourcePosition, out (float smHx, float smHy, float smRx, float smRy) measured)
+        {
+            measured = default;
+            if (resourcePosition == null)
+            {
+                return false;
+            }
+            var best = -1;
+            var bestDistSq = MeasuredSmMatchTolerance * MeasuredSmMatchTolerance;
+            for (var i = 0; i < MeasuredSmPoints.Length; i++)
+            {
+                var dx = MeasuredSmPoints[i].cx - resourcePosition.X;
+                var dy = MeasuredSmPoints[i].cy - resourcePosition.Y;
+                var dSq = dx * dx + dy * dy;
+                if (dSq <= bestDistSq)
+                {
+                    bestDistSq = dSq;
+                    best = i;
+                }
+            }
+            if (best < 0)
+            {
+                return false;
+            }
+            var entry = MeasuredSmPoints[best];
+            measured = (entry.smHx, entry.smHy, entry.smRx, entry.smRy);
+            return true;
+        }
+
         private HarvestReturnCargoPointDto BuildHarvestReturnCargoPoint(Vector2Dto resourcePosition, Vector2Dto townhallPosition)
         {
             var baseVector = new Vector2(townhallPosition.X, townhallPosition.Y);
@@ -1338,6 +1402,15 @@ namespace BabySharkBot.Setup
 
             var smReturnPoint = GetPointOnLine(baseVector, unitDirection, hatcheryRadius - smallInset, townhallPosition.Z);
             var smHarvestPoint = GetPointOnLine(resourceVector, -unitDirection, mineralRadius + smallInset, resourcePosition.Z);
+
+            // Measured-telemetry override (see MeasuredSmPoints): the constant
+            // geometry above floats ~2.1u off the real harvest stand.
+            if (TryGetMeasuredSmPoints(resourcePosition, out var measured))
+            {
+                Console.WriteLine($"InitialMapData: measured SM override mineral=({resourcePosition.X:F2},{resourcePosition.Y:F2}) smH=({measured.smHx:F3},{measured.smHy:F3}) smR=({measured.smRx:F3},{measured.smRy:F3})");
+                smHarvestPoint = new Vector2Dto(measured.smHx, measured.smHy, resourcePosition.Z);
+                smReturnPoint = new Vector2Dto(measured.smRx, measured.smRy, townhallPosition.Z);
+            }
 
             return new HarvestReturnCargoPointDto
             {

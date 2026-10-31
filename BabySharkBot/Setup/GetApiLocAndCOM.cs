@@ -30,6 +30,52 @@ namespace BabySharkBot.Setup
             }
         }
 
+        // Telemetry log naming (owner spec 2026-10-23): resolve the current
+        // start location to "NW" / "SE" for the mining-test file names. SE is
+        // the FIRST entry of the owner's SE-first clockwise start order
+        // (HardcodedStartOrders); when the map has no hardcoded table, fall
+        // back to the API start list — on the diagonal two-start maps the own
+        // start's X below the start-list midpoint means NW, above means SE.
+        // Empty string when the spawn has not been resolved yet.
+        public static string ResolveStartLocationTag(ResponseGameInfo gameInfo)
+        {
+            try
+            {
+                var own = Settings.CurrentSpawnLocation;
+                if (own == null || (own.X == 0f && own.Y == 0f))
+                {
+                    return string.Empty;
+                }
+
+                var hardcoded = HardcodedStartOrders.Get(gameInfo?.MapName);
+                if (hardcoded?.Starts != null && hardcoded.Starts.Count > 0)
+                {
+                    var ordered = HardcodedStartOrders.OrderClockwiseFromSouthEast(hardcoded.Starts);
+                    var se = ordered.FirstOrDefault();
+                    if (se != null)
+                    {
+                        const float tolerance = 5f;
+                        var dx = own.X - se.X;
+                        var dy = own.Y - se.Y;
+                        return dx * dx + dy * dy <= tolerance * tolerance ? "SE" : "NW";
+                    }
+                }
+
+                var apiStarts = gameInfo?.StartRaw?.StartLocations;
+                if (apiStarts == null || apiStarts.Count < 2)
+                {
+                    return string.Empty;
+                }
+
+                var midX = apiStarts.Average(s => s.X);
+                return own.X < midX ? "NW" : "SE";
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
         public static int ResolveCurrentSpawnIndex(ResponseGameInfo gameInfo, MawBaseLocationData mapData, ResponseObservation observation)
         {
             var observedTownHall = observation?.Observation?.RawData?.Units?
