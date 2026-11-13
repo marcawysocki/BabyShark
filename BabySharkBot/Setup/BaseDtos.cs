@@ -489,7 +489,7 @@ namespace BabySharkBot.Setup
     {
         // MemoryPack schema policy: any BaseDtos serialized-shape change must increment
         // this version past the decimal point and invalidate older cached data.
-        public string BaseDtosVersion { get; set; } = Settings.SpeedMiningVersion;
+        public string BaseDtosVersion { get; set; } = Settings.SpeedMiningCacheVersion;
 
         public Vector2Dto[] StartingTownHall { get; set; } = new Vector2Dto[0];
         public List<Vector2Dto> ExpansionTownhalls { get; set; } = new List<Vector2Dto>();

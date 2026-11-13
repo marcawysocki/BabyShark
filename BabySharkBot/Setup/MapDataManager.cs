@@ -47,8 +47,8 @@ namespace BabySharkBot.Setup
             {
                 var safeMapName = SanitizeMapNameForFilename(mapName);
                 var dataFolder = Path.Combine(Directory.GetCurrentDirectory(), "data", "base");
-                versionPath = Path.Combine(dataFolder, $"{safeMapName}.Version{Settings.SpeedMiningVersion}.dat");
-                Console.WriteLine($"[MAP DATA 02] expected schema version={Settings.SpeedMiningVersion}");
+                versionPath = Path.Combine(dataFolder, $"{safeMapName}.Version{Settings.SpeedMiningCacheVersion}.dat");
+                Console.WriteLine($"[MAP DATA 02] expected schema version={Settings.SpeedMiningCacheVersion}");
                 Console.WriteLine($"[MAP DATA 03] data folder={dataFolder}");
                 Console.WriteLine($"[MAP DATA 04] version path constructed");
                 Console.WriteLine($"MapDataManager: versionPath={versionPath}");
@@ -61,7 +61,7 @@ namespace BabySharkBot.Setup
                 var loaded = MemoryPackSerializer.Deserialize<MawBaseLocationData>(bytes);
                 Console.WriteLine($"[MAP DATA 09] MemoryPack deserialize completed loaded={loaded != null}");
                 var loadedVersion = loaded?.BaseDtosVersion;
-                var expectedVersion = Settings.SpeedMiningVersion;
+                var expectedVersion = Settings.SpeedMiningCacheVersion;
                 var versionValid = loaded != null && string.Equals(loadedVersion, expectedVersion, StringComparison.Ordinal);
                 Console.WriteLine($"[MAP DATA 10] loaded schema version={(loadedVersion ?? "<missing>")}");
                 Console.WriteLine($"[MAP DATA 11] schema validation expected={expectedVersion} valid={versionValid}");

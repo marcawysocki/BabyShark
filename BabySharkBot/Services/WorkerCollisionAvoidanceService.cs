@@ -135,7 +135,32 @@ namespace BabySharkBot.Services
                 return WorkerCollisionIntervention.None;
             }
 
-            var ownMineralTag = assignedWorker.MiningTargets?.ElementAtOrDefault(assignedWorker.Mti)?.ResourceUnitId ?? 0;
+            // Corridor test (owner spec 2026-11-08 20:22): closing inside 2.0u
+            // is not enough — T3 mineral-walked when T1/T2 passed nearby on
+            // courses that never cross ("T3 will not encounter another worker
+            // in its corridor ... these workers are not on the same path").
+            // Project both workers' frame velocities to their closest point of
+            // approach; only when the pair actually comes within the contact
+            // corridor within the next few frames do the paths intersect and
+            // the detour help. Head-on same-line meetings (the verified
+            // pass-through / cross-bump cases) have CPA ~ 0 and still trigger.
+            if (!inContact
+                && !PathsIntersect(runtimeWorker.UnitTag, nearestCarrying.UnitTag, selfPosition, nearestCarrying.Position, out var closestApproach, out var framesToApproach))
+            {
+                Console.WriteLine($"[WORKER COLLISION] frame={currentFrame} worker={runtimeWorker.UnitTag} command=SKIPPED reason=paths-diverge avoided={nearestCarrying.UnitTag} closest={closestApproach:F2} inFrames={framesToApproach:F1}");
+                RememberPosition(runtimeWorker.UnitTag, selfPosition);
+                return WorkerCollisionIntervention.None;
+            }
+
+            // Own-mineral resolution (Pattern B fallout, run 060735): under
+            // --staymin the four second miners switch minerals after their
+            // first flip but Mti never advances, so MiningTargets[Mti] stays
+            // the FIRST mineral (Y5's BB) while the book walks the worker to
+            // its new one — a detour Smart to the stale mineral fights the
+            // book (Y5 yanked off its BA line f179-205). Prefer the mineral
+            // on the worker's CURRENT instruction row, then a few rows ahead
+            // (the walk direction), then behind; fall back to Mti.
+            var ownMineralTag = ResolveOwnMineralTag(runtimeWorker, assignedWorker, snapshot);
             if (ownMineralTag == 0
                 || !snapshot.Minerals.TryGetValue(ownMineralTag, out var mineral)
                 || mineral == null
@@ -160,12 +185,37 @@ namespace BabySharkBot.Services
                 return WorkerCollisionIntervention.None;
             }
 
+            // Parked-at-my-mineral skip (2026-11-07, Pattern A run 171404/172234
+            // analysis): when the avoided carrier is STATIONARY and parked AT the
+            // walker's own mineral (a seated harvester, or a partner frozen
+            // post-pickup on the stand point), a detour SMART does what the
+            // arrival gate's queued Smart will do 1-2 frames later, but suspends
+            // the book and starts the engine Gather deceleration ~1u out —
+            // measured cost ~10-13f on T1/Y1 out legs (the f113 Avoid-partner
+            // detour: T1 arrived with speed 0.154 u/f, was Gather-decelerated to
+            // a stop, then micro-adjusted 7f more). The trigger range (2.0u from
+            // the blocker) already bounds the walker's distance to its mineral.
+            // Let the list keep running: the gate's Move-SMH + queued Smart lands
+            // the phase-through, and the engine paths the final approach around
+            // the parked body.
+            if (mineral.Position != null
+                && nearestCarrying.Position != null
+                && IsStationary(nearestCarrying.UnitTag, nearestCarrying.Position)
+                && DistanceSquared(nearestCarrying.Position, mineral.Position) <= BlockerAtMineralRange * BlockerAtMineralRange)
+            {
+                Console.WriteLine($"[WORKER COLLISION] frame={currentFrame} worker={runtimeWorker.UnitTag} command=SKIPPED reason=blocker-parked-at-own-mineral targetMineral={ownMineralTag} avoided={nearestCarrying.UnitTag} listIndex={runtimeWorker.CurInstrIdx}/{(runtimeWorker.Instructions?.Count ?? 0)}");
+                RememberPosition(runtimeWorker.UnitTag, selfPosition);
+                return WorkerCollisionIntervention.None;
+            }
+
             runtimeWorker.CollisionDetourActive = true;
             runtimeWorker.CollisionDetourStartFrame = currentFrame;
             runtimeWorker.CollisionAvoidedUnitTag = nearestCarrying.UnitTag;
             runtimeWorker.CollisionDetourStartOffsetX = selfPosition.X - nearestCarrying.Position.X;
             runtimeWorker.CollisionDetourStartOffsetY = selfPosition.Y - nearestCarrying.Position.Y;
             runtimeWorker.CollisionDetourEngaged = false;
+            runtimeWorker.CollisionDetourPrevPairDist = -1f;
+            runtimeWorker.CollisionDetourSeparatingFrames = 0;
             action = CreateMineralWalkSmart(runtimeWorker.UnitTag, ownMineralTag);
             Console.WriteLine($"[WORKER COLLISION] frame={currentFrame} worker={runtimeWorker.UnitTag} command=SMART targetMineral={ownMineralTag} event=MINERAL_WALK_START avoided={nearestCarrying.UnitTag} trigger={(inContact ? "contact" : "oncoming-closing")} listIndex={runtimeWorker.CurInstrIdx}/{(runtimeWorker.Instructions?.Count ?? 0)}");
             RememberPosition(runtimeWorker.UnitTag, selfPosition);
@@ -192,22 +242,62 @@ namespace BabySharkBot.Services
             }
             else
             {
-                // Engagement latch: the pair has now actually come together within
-                // contact range at least once during this detour. Until this is
-                // true, "pair-clear" must NOT end the detour — a detour started at
-                // the 2.0u oncoming range would otherwise be killed the very next
-                // frame (the pair is still ~1.9u apart, far beyond the 0.35u
-                // contact range) and the walk would flip-flop on/off every frame.
-                if (!runtimeWorker.CollisionDetourEngaged
-                    && IsNearCarryingWorker(runtimeWorker.UnitTag, selfPosition, allAssignedWorkers, snapshot, WorkerPassThroughRange))
+                // Crossed-separating exit (owner spec 2026-11-07: end the detour
+                // 2-4 frames after the crossing). Track the distance to the
+                // AVOIDED worker specifically — not any carrying worker — and end
+                // once the pair has closed and then separated for 2 consecutive
+                // frames beyond contact range. The passed-hatchery radial margin
+                // alone takes 13-15f when the avoided worker delivers and
+                // immediately walks back out (its radial distance grows again),
+                // leaving the walker on engine Gather for most of its out leg
+                // (Pattern A run 083149: T1 out leg 36f vs T5's 22f same lane).
+                // Cannot flip-flop: while the pair is still closing the
+                // separating counter never increments, and re-begin requires
+                // closing.
+                if (runtimeWorker.CollisionAvoidedUnitTag != 0
+                    && selfPosition != null
+                    && snapshot?.SelfUnits != null
+                    && snapshot.SelfUnits.TryGetValue(runtimeWorker.CollisionAvoidedUnitTag, out var avoidedSelf)
+                    && avoidedSelf?.Position != null)
                 {
-                    runtimeWorker.CollisionDetourEngaged = true;
+                    var pairDist = (float)Math.Sqrt(DistanceSquared(selfPosition, avoidedSelf.Position));
+                    if (runtimeWorker.CollisionDetourPrevPairDist >= 0f
+                        && pairDist > runtimeWorker.CollisionDetourPrevPairDist + ClosingEpsilon)
+                    {
+                        runtimeWorker.CollisionDetourSeparatingFrames++;
+                    }
+                    else
+                    {
+                        runtimeWorker.CollisionDetourSeparatingFrames = 0;
+                    }
+                    runtimeWorker.CollisionDetourPrevPairDist = pairDist;
+
+                    if (runtimeWorker.CollisionDetourSeparatingFrames >= 2
+                        && pairDist > WorkerPassThroughRange)
+                    {
+                        endReason = "crossed-separating";
+                    }
                 }
 
-                if (runtimeWorker.CollisionDetourEngaged
-                    && !IsNearCarryingWorker(runtimeWorker.UnitTag, selfPosition, allAssignedWorkers, snapshot, WorkerPassThroughRange))
+                if (endReason == null)
                 {
-                    endReason = "pair-clear";
+                    // Engagement latch: the pair has now actually come together within
+                    // contact range at least once during this detour. Until this is
+                    // true, "pair-clear" must NOT end the detour — a detour started at
+                    // the 2.0u oncoming range would otherwise be killed the very next
+                    // frame (the pair is still ~1.9u apart, far beyond the 0.35u
+                    // contact range) and the walk would flip-flop on/off every frame.
+                    if (!runtimeWorker.CollisionDetourEngaged
+                        && IsNearCarryingWorker(runtimeWorker.UnitTag, selfPosition, allAssignedWorkers, snapshot, WorkerPassThroughRange))
+                    {
+                        runtimeWorker.CollisionDetourEngaged = true;
+                    }
+
+                    if (runtimeWorker.CollisionDetourEngaged
+                        && !IsNearCarryingWorker(runtimeWorker.UnitTag, selfPosition, allAssignedWorkers, snapshot, WorkerPassThroughRange))
+                    {
+                        endReason = "pair-clear";
+                    }
                 }
             }
 
@@ -222,6 +312,8 @@ namespace BabySharkBot.Services
             runtimeWorker.CollisionDetourStartOffsetX = 0;
             runtimeWorker.CollisionDetourStartOffsetY = 0;
             runtimeWorker.CollisionDetourEngaged = false;
+            runtimeWorker.CollisionDetourPrevPairDist = -1f;
+            runtimeWorker.CollisionDetourSeparatingFrames = 0;
             Console.WriteLine($"[WORKER COLLISION] frame={currentFrame} worker={runtimeWorker.UnitTag} command=END-DETOUR reason={endReason} listIndex={runtimeWorker.CurInstrIdx}/{(runtimeWorker.Instructions?.Count ?? 0)}");
             return WorkerCollisionIntervention.EndDetour;
         }
@@ -345,6 +437,120 @@ namespace BabySharkBot.Services
             return DistanceSquared(selfNow, otherNow) < DistanceSquared(selfPrevious, otherPrevious) - ClosingEpsilon;
         }
 
+        // Closest-point-of-approach corridor test (owner spec 2026-11-08
+        // 20:22). Both workers' headings come from their last frame's
+        // displacement; the relative-motion CPA gives the pair's closest
+        // distance and the frames until it. "Paths intersect" means CPA lies
+        // inside the contact corridor (two worker radii, ~0.75u) and arrives
+        // within the intervention window. When either side's heading is
+        // unknown or near-zero (parked, first observation) the test cannot
+        // prove the paths diverge, so it defers to the legacy trigger.
+        private const float CollisionCorridorRadius = 0.8f;
+        private const float MaxApproachFrames = 8f;
+        private const float MinHeadingSpeedSquared = 0.0001f; // ~0.01 u/frame
+
+        private bool PathsIntersect(
+            ulong selfTag,
+            ulong otherTag,
+            Vector2Dto selfNow,
+            Vector2Dto otherNow,
+            out float closestApproach,
+            out float framesToApproach)
+        {
+            closestApproach = 0f;
+            framesToApproach = 0f;
+            if (!_previousPositions.TryGetValue(selfTag, out var selfPrevious) || selfPrevious == null
+                || !_previousPositions.TryGetValue(otherTag, out var otherPrevious) || otherPrevious == null)
+            {
+                return true;
+            }
+
+            var selfVelocityX = selfNow.X - selfPrevious.X;
+            var selfVelocityY = selfNow.Y - selfPrevious.Y;
+            var otherVelocityX = otherNow.X - otherPrevious.X;
+            var otherVelocityY = otherNow.Y - otherPrevious.Y;
+            var selfSpeedSquared = selfVelocityX * selfVelocityX + selfVelocityY * selfVelocityY;
+            var otherSpeedSquared = otherVelocityX * otherVelocityX + otherVelocityY * otherVelocityY;
+            if (selfSpeedSquared < MinHeadingSpeedSquared
+                || otherSpeedSquared < MinHeadingSpeedSquared)
+            {
+                // Near-stationary side (owner spec 2026-11-09 00:08, doctrine
+                // D3): velocity CPA cannot say where a parked/frozen worker
+                // will go, but geometry CAN say whether the MOVING worker's
+                // course even reaches it. S2 f120: Y4 had just picked up BA
+                // (post-pickup freeze, speed ~0) parked 1.38u off S2's BB
+                // line — no contact possible, yet the legacy branch detoured
+                // S2 into a center-honing Smart that cost the 3 frames the
+                // S2×Y3 bump had just won. A carrier parked OFF the walker's
+                // ray can never be hit: skip the detour.
+                if (otherSpeedSquared < MinHeadingSpeedSquared && selfSpeedSquared >= MinHeadingSpeedSquared)
+                {
+                    closestApproach = DistancePointToRay(otherNow, selfNow, selfVelocityX, selfVelocityY);
+                    framesToApproach = float.MaxValue;
+                    return closestApproach <= CollisionCorridorRadius;
+                }
+                if (selfSpeedSquared < MinHeadingSpeedSquared && otherSpeedSquared >= MinHeadingSpeedSquared)
+                {
+                    closestApproach = DistancePointToRay(selfNow, otherNow, otherVelocityX, otherVelocityY);
+                    framesToApproach = float.MaxValue;
+                    return closestApproach <= CollisionCorridorRadius;
+                }
+                return true; // both parked — defer to the legacy closing trigger
+            }
+
+            // Relative motion of the other worker in this worker's frame.
+            var relativeX = otherNow.X - selfNow.X;
+            var relativeY = otherNow.Y - selfNow.Y;
+            var relativeVelocityX = otherVelocityX - selfVelocityX;
+            var relativeVelocityY = otherVelocityY - selfVelocityY;
+            var relativeSpeedSquared = relativeVelocityX * relativeVelocityX + relativeVelocityY * relativeVelocityY;
+            if (relativeSpeedSquared < ClosingEpsilon)
+            {
+                // Identical courses — the pair never gains on itself.
+                closestApproach = (float)Math.Sqrt(relativeX * relativeX + relativeY * relativeY);
+                framesToApproach = float.MaxValue;
+                return false;
+            }
+
+            var tStar = -(relativeX * relativeVelocityX + relativeY * relativeVelocityY) / relativeSpeedSquared;
+            if (tStar < 0f)
+            {
+                // Closest approach is behind them — diverging.
+                closestApproach = (float)Math.Sqrt(relativeX * relativeX + relativeY * relativeY);
+                framesToApproach = tStar;
+                return false;
+            }
+
+            framesToApproach = tStar;
+            var closestX = relativeX + relativeVelocityX * tStar;
+            var closestY = relativeY + relativeVelocityY * tStar;
+            closestApproach = (float)Math.Sqrt(closestX * closestX + closestY * closestY);
+            return tStar <= MaxApproachFrames
+                && closestApproach <= CollisionCorridorRadius;
+        }
+
+        // Perpendicular distance from a point to the moving worker's forward
+        // ray (position + t·velocity, t ≥ 0). Behind the worker counts as
+        // the distance to its current position — already passed, no contact.
+        private static float DistancePointToRay(Vector2Dto point, Vector2Dto rayStart, float velocityX, float velocityY)
+        {
+            var relX = point.X - rayStart.X;
+            var relY = point.Y - rayStart.Y;
+            var speedSquared = velocityX * velocityX + velocityY * velocityY;
+            if (speedSquared < 0.0000001f)
+            {
+                return (float)Math.Sqrt(relX * relX + relY * relY);
+            }
+            var t = (relX * velocityX + relY * velocityY) / speedSquared;
+            if (t < 0f)
+            {
+                return (float)Math.Sqrt(relX * relX + relY * relY);
+            }
+            var closestX = relX - velocityX * t;
+            var closestY = relY - velocityY * t;
+            return (float)Math.Sqrt(closestX * closestX + closestY * closestY);
+        }
+
         private void RememberPosition(ulong workerTag, Vector2Dto position)
         {
             if (workerTag == 0 || position == null)
@@ -353,6 +559,26 @@ namespace BabySharkBot.Services
             }
 
             _previousPositions[workerTag] = new Vector2Dto(position.X, position.Y, position.Z);
+        }
+
+        // A stationary blocker within this distance of the walker's own mineral is
+        // parked AT that mineral (stand point is ~0.83-1.25u from center) — handled
+        // by the arrival gate instead of a detour (see skip above).
+        private const float BlockerAtMineralRange = 2.0f;
+        private const float StationaryEpsilon = 0.01f;
+
+        // True when the worker's frame-over-frame displacement is under
+        // StationaryEpsilon — a seated harvester or a post-pickup-frozen carrier.
+        // Unknown history (never observed) counts as NOT stationary, so the
+        // detour still begins when we cannot prove the blocker is parked.
+        private bool IsStationary(ulong workerTag, Vector2Dto position)
+        {
+            if (workerTag == 0 || position == null
+                || !_previousPositions.TryGetValue(workerTag, out var prev) || prev == null)
+            {
+                return false;
+            }
+            return DistanceSquared(position, prev) < StationaryEpsilon * StationaryEpsilon;
         }
 
         private readonly struct CarryingWorkerCandidate
@@ -415,6 +641,57 @@ namespace BabySharkBot.Services
             float range)
         {
             return FindNearestCarryingWorker(workerTag, selfPosition, allAssignedWorkers, snapshot, range).UnitTag != 0;
+        }
+
+        // Resolves the worker's current destination mineral for the detour
+        // Smart. The book's current row is authoritative (Pattern B switchers
+        // loop on a mineral Mti no longer names); rows without a mineral tag
+        // (waits, jumps) scan ahead — the walk direction — then behind.
+        private static ulong ResolveOwnMineralTag(
+            RuntimeWorkerState runtimeWorker,
+            AssignedWorkerDto assignedWorker,
+            ObservationSnapshotDto snapshot)
+        {
+            var rows = runtimeWorker?.Instructions;
+            if (rows != null
+                && runtimeWorker.CurInstrIdx >= 0
+                && runtimeWorker.CurInstrIdx < rows.Count
+                && snapshot?.Minerals != null)
+            {
+                for (var offset = 0; offset <= 4; offset++)
+                {
+                    var ahead = runtimeWorker.CurInstrIdx + offset;
+                    if (ahead < rows.Count && TryGetRowMineralTag(rows[ahead], snapshot, out var aheadTag))
+                    {
+                        return aheadTag;
+                    }
+
+                    var behind = runtimeWorker.CurInstrIdx - offset;
+                    if (offset > 0 && behind >= 0 && TryGetRowMineralTag(rows[behind], snapshot, out var behindTag))
+                    {
+                        return behindTag;
+                    }
+                }
+            }
+
+            return assignedWorker?.MiningTargets?.ElementAtOrDefault(assignedWorker.Mti)?.ResourceUnitId ?? 0;
+        }
+
+        private static bool TryGetRowMineralTag(WorkerInstruction row, ObservationSnapshotDto snapshot, out ulong tag)
+        {
+            tag = 0;
+            if (row == null || row.TargetId == 0)
+            {
+                return false;
+            }
+
+            if (!snapshot.Minerals.TryGetValue(row.TargetId, out var mineral) || mineral == null)
+            {
+                return false;
+            }
+
+            tag = row.TargetId;
+            return true;
         }
 
         private static SC2APIProtocol.Action CreateMineralWalkSmart(ulong workerTag, ulong mineralTag)

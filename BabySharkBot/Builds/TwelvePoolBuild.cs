@@ -44,6 +44,11 @@ namespace BabySharkBot.Builds
         private bool _initialRecordWritten;
         private string _logFile;
         private bool _logFileResolved;
+
+        // Owner request 2026-11-08 16:32: the "Woke Label" CSV column — the
+        // team label(s) of the worker(s) whose cargo-return edge (carry buff
+        // 271/272 true->false) landed on this record's frame, space-joined.
+        private readonly Dictionary<ulong, bool> _prevCarryingByTag = new Dictionary<ulong, bool>();
         private readonly object _logLock = new object();
         private bool _frameZeroContentsCaptured;
         private int _frameZeroWorkerCount;
@@ -77,7 +82,7 @@ namespace BabySharkBot.Builds
 
                 if (!File.Exists(_logFile))
                 {
-                    File.WriteAllText(_logFile, "Loaded,TimestampUTC,GameSeconds,Minerals,Frame,Worker.Count,M[1].content,M[2].content,M[3].content,M[4].content,M[5].content,M[6].content,M[7].content,M[8].content" + Environment.NewLine);
+                    File.WriteAllText(_logFile, "Loaded,TimestampUTC,GameSeconds,Minerals,Frame,Woke Label,Worker.Count,M[1].content,M[2].content,M[3].content,M[4].content,M[5].content,M[6].content,M[7].content,M[8].content" + Environment.NewLine);
                 }
             }
             catch
@@ -136,6 +141,7 @@ namespace BabySharkBot.Builds
             }
             if (MacroData != null)
             {
+                var returnedLabels = DetectReturnedWorkerLabels(observation);
                 var currentMinerals = MacroData.Minerals;
                 var currentFrame = MacroData.Frame;
 
@@ -147,7 +153,7 @@ namespace BabySharkBot.Builds
                 }
                 else if (currentMinerals != _prevMinerals)
                 {
-                    AppendMineralRecord(currentMinerals, currentFrame, useFrameZeroContents: false);
+                    AppendMineralRecord(currentMinerals, currentFrame, useFrameZeroContents: false, wokeLabels: returnedLabels);
                     _prevMinerals = currentMinerals;
                 }
             }
@@ -433,7 +439,7 @@ namespace BabySharkBot.Builds
             _frameZeroContentsCaptured = true;
         }
 
-        private void AppendMineralRecord(int minerals, int frame, bool useFrameZeroContents)
+        private void AppendMineralRecord(int minerals, int frame, bool useFrameZeroContents, IReadOnlyList<string> wokeLabels = null)
         {
             EnsureLogFile();
             if (string.IsNullOrEmpty(_logFile)) return;
@@ -451,8 +457,11 @@ namespace BabySharkBot.Builds
             var contents = useFrameZeroContents
                 ? $",{_frameZeroWorkerCount},{string.Join(",", _frameZeroMineralContents)}"
                 : BuildCurrentMineralContentsCsv();
+            var woke = wokeLabels == null || wokeLabels.Count == 0
+                ? string.Empty
+                : string.Join(" ", wokeLabels);
             var loadedStatus = Settings.BaseDtosLoadedBeforeGameConnection ? "loaded:true" : "loaded:false";
-            var line = $"{loadedStatus},{DateTime.UtcNow:o},{gameSeconds:F3},{minerals},{frame}{contents}{Environment.NewLine}";
+            var line = $"{loadedStatus},{DateTime.UtcNow:o},{gameSeconds:F3},{minerals},{frame},{woke}{contents}{Environment.NewLine}";
 
             try
             {
@@ -462,6 +471,49 @@ namespace BabySharkBot.Builds
                 }
             }
             catch { }
+        }
+
+        // Detect cargo-return edges this frame: a self drone whose carry buff
+        // (271 mineral / 272 vespene) was on last frame and is off now. Returns
+        // the team labels ("T1", "Y1"...) of those workers, sorted for stable
+        // output. Runs EVERY frame so the carry-edge state stays current.
+        private List<string> DetectReturnedWorkerLabels(ResponseObservation observation)
+        {
+            var labels = new List<string>();
+            var rawUnits = observation?.Observation?.RawData?.Units;
+            if (rawUnits == null)
+            {
+                return labels;
+            }
+
+            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+            var roleByTag = Globals.CurrentMapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
+                ?.Where(worker => worker != null)
+                .GroupBy(worker => worker.UnitID)
+                .ToDictionary(group => group.Key, group => group.First().Role);
+
+            foreach (var unit in rawUnits)
+            {
+                if (unit == null || unit.Alliance != Alliance.Self || unit.UnitType != (uint)UnitTypes.ZERG_DRONE)
+                {
+                    continue;
+                }
+
+                var carrying = unit.BuffIds != null && unit.BuffIds.Any(b => b == 271 || b == 272);
+                if (carrying == false
+                    && _prevCarryingByTag.TryGetValue(unit.Tag, out var wasCarrying)
+                    && wasCarrying
+                    && roleByTag != null
+                    && roleByTag.TryGetValue(unit.Tag, out var role)
+                    && !string.IsNullOrWhiteSpace(role))
+                {
+                    labels.Add(role);
+                }
+                _prevCarryingByTag[unit.Tag] = carrying;
+            }
+
+            labels.Sort(StringComparer.OrdinalIgnoreCase);
+            return labels;
         }
     }
 }

@@ -285,7 +285,160 @@ namespace BabySharkBot.Setup
         // along its start -> SA-mineral-center heading rotated by D degrees,
         // 4u out (no deceleration before the frame-8 TB switch). The row's
         // TargetPointReference names the heading mineral ("SA").
-        ChoreoT4AngleStart
+        ChoreoT4AngleStart,
+        // BumpWalkIntersectF10 — 5x5 T1 opening Move target (owner Paint
+        // diagram 2026-11-04 15:11: "T4 Mineral Walk to SB, Position at
+        // Frame 10. T1 on intersect line to be in front of T4 in alignment
+        // with SMH."). The meet point P is T4's predicted frame-10 position
+        // on the SB mineral walk (latched start + 0.527u along the
+        // start->SB bearing) shifted 0.5u along the T4f10 -> TA-SMH line —
+        // T1 stands in FRONT of T4, T4-T1-SMH aligned so the push drives T1
+        // down the SMH line. The move target is T1's latched start through
+        // P, extended 2u past P (the "Starting T1 Target Line" in the
+        // diagram). Resolved from live/persisted data, never the row
+        // TargetId's mining target.
+        BumpWalkIntersectF10,
+        // BumpSmhThruPoint — 5x5 meet-switch Move target (owner spec
+        // 2026-11-04 08:54: "then change them both to Move thru the SMH 2u
+        // Past the SMH"; Paint diagram 15:11 "2u past SMH target point").
+        // At the frame-10 meet BOTH T1 and T4 Move to this fixed point: the
+        // TA SM harvest point + 2u along the T4f10 -> SMH line (the diagram's
+        // dark-blue line), so T4's move passes through T1 and pushes it down
+        // the SMH line. Resolved from the same T4f10 computation as
+        // BumpWalkIntersectF10, never the row TargetId's mining target.
+        BumpSmhThruPoint,
+        // BumpSmhArrivalGate — InvertGate-jump gate for T1 (owner spec
+        // 2026-11-04 08:54: "F16 to F19 calculate if T1 will reach SMH on the
+        // next frame. One Frame before T1 Arrives at SMH issue a move to SMH,
+        // and a queued Smart on TA."). Null before game-relative frame 16 and
+        // while T1 is more than one frame's travel from the TA SM harvest
+        // point (per-frame speed from T1's live deltas, pushed workers move
+        // faster than cruise); resolves to T1's own position the frame T1
+        // will arrive next frame, so the Move-to-SMH + queued Smart fire on
+        // that exact frame. Fail-open at game-relative frame 30.
+        BumpSmhArrivalGate,
+        // BumpPartnerSmhInside — 5x5 bump-helper move target (owner spec
+        // 2026-11-04 17:49, replacing the f6-18 BumpChasePartner live-position
+        // chase for T5/Y4/Y5: "Change to Move to so that it is inside the
+        // mineral Foot Print, Perhaps a 0.5 to 0.75u past the SMH"): the
+        // chased partner's A-mineral SM harvest point + 0.6u along the
+        // SMH -> mineral-center line — a point INSIDE the mineral footprint
+        // the worker can never reach, so it keeps pressing into/around the
+        // mineral edge ("At some point the worker tries to move around the
+        // mineral"). T5 -> TA, Y4/Y5 -> YA. Resolved by label from the
+        // persisted patch data, never the row TargetId's mining target.
+        BumpPartnerSmhInside,
+        // SmrThruPoint / SmrPoint / SmrArrivalGate — 5x5 return-leg
+        // choreography for the bump leaders (owner spec 2026-11-04 08:54:
+        // "on the frame that the Flip happens issue a move to 2u thru the
+        // SMR, One frame before T1 Reaches SMR issue a move to SMR and a
+        // queued Smart Return"; owner 2026-11-05 06:38: the default return
+        // leg loses the 2-frame arrival win). SmrThruPoint = the worker's
+        // A-mineral SM return point + 2u along the mineral-center -> SMR
+        // bearing (toward the hatchery — inside the building ring ON
+        // PURPOSE, the same press-into-the-edge pattern as the mineral
+        // inside point). SmrPoint = the SMR itself. SmrArrivalGate is the
+        // InvertGate-jump gate: null while the carrying worker is more than
+        // one frame's travel (0.75u corridor floor) from the SMR; resolves
+        // to the worker's position for the handoff; passes through
+        // immediately once the cargo is gone (delivered) and fails open 60
+        // frames after the flip latch. T1 -> TA, Y1 -> YA. All resolve from
+        // persisted patch data, never the row TargetId's mining target.
+        SmrThruPoint,
+        SmrPoint,
+        SmrArrivalGate,
+        // ── Stay-mineral harness generalization (owner spec 2026-11-06 08:17:
+        // "Every worker that is moving needs a move thru point or they
+        // decelerate") — the T1/Y1 thru-point choreography generalized to ANY
+        // mineral via the row TargetId's persisted patch data:
+        // SmhThruPoint = the row mineral's SmHarvestPoint + 0.6u along the
+        // SMH -> mineral-center line (inside the footprint — the 2026-11-04
+        // 18:17 lesson: never target behind the mineral). SmhPoint = the SMH
+        // itself. SmhArrivalGate = InvertGate-jump gate, null while the worker
+        // is more than one frame's travel (0.75u corridor floor, live-speed)
+        // from the row mineral's SMH; trip-anchored fail-open (40 frames from
+        // the last >2u-out observation) so loop repeats never see the
+        // game-relative fail-open of the T1/Y1 startup gate.
+        SmhThruPoint,
+        SmhPoint,
+        SmhArrivalGate,
+        // Y1/B2 bump choreography (owner spec 2026-11-06 08:17: "Y1 should be
+        // on an intersect course with B2. B2 should be mineral Walking to
+        // BA"): BumpY1Intersect mirrors T1's BumpWalkIntersectF10 — Y1's
+        // latched start through the meet point (B2's predicted frame-10
+        // BA-walk position shifted 0.5u toward the YA SMH), extended 2u past.
+        // BumpY1ThruPoint = the dynamic thru target BOTH Y1 and B2 receive at
+        // the meet frame: computed ONCE (latched) from Y1's live position at
+        // the bump through the YA SMH, +0.6u into the footprint ("a
+        // calculated point from Y1's position at the bump that intersects
+        // the SMH and goes thru it"). BumpB2ClearGate = InvertGate-jump gate:
+        // null while B2 is within 1.0u of any YB/BA worker (Y2/Y3/Y4) —
+        // "when it has cleared the workers for YB and BA then it should
+        // calculate a move thru point for the SMH of BB"; resolves to B2's
+        // own position when clear, fail-open at relative frame 35.
+        BumpY1Intersect,
+        BumpY1ThruPoint,
+        BumpB2ClearGate,
+        // B2CrowdDodge (owner spec 2026-11-06 19:05): B2's first-10-frames
+        // waypoint — "aimed a touch north of the Y-side lanes for the first
+        // ~10 frames, then converge on the BB SMH thru point". Resolves to a
+        // point computed from BB's SMH/SMR (4.0u along the mineral line away
+        // from the SMR, 0.6u back toward the SMR side) so it mirrors spawns.
+        B2CrowdDodge,
+        // CrossBumpGate (owner spec 2026-11-08 08:55 + 16:08): Pattern D
+        // same-line crossing. T1/Y1's outbound leg mineral-walks (unqueued
+        // Smart on the target mineral — harvest order = collision-free)
+        // THROUGH the inbound pair partner (T2/Y2) on the shared pair-return
+        // line. The InvertGate jump re-issues the Smart while unresolved;
+        // the gate resolves the frame the partner is closer to the pair
+        // return point (hatchery side) than the walker — the walker's next
+        // row is the SMH move-thru, whose collision re-enable at the overlap
+        // repels the walker toward the mineral and the carrier toward the
+        // hatchery ("this bumps T1 faster to TB and T2 faster into the
+        // Hatchery"). Passes through immediately when no crossing is possible
+        // (partner absent/delivered/not on the lane) and fails open 40 frames
+        // after first evaluation.
+        CrossBumpGate,
+        // S2×Y3 cross-bump (owner spec 2026-11-08 22:20): Y3's FIRST return
+        // leg positions Y3 on S2's {SB,BB} lane (the pair ReturnPoint -> BB
+        // SMH segment) between S2 and BB while S2's cargo lands; when S2
+        // starts its collision-free BB walk, Y3 Moves to the SAME pair return
+        // point S2 used; once they have crossed (S2 closer to BB, Y3 closer
+        // to the hatchery) S2's CrossBumpGate switches it to the move-thru
+        // and the repel accelerates S2 toward BB and Y3 toward the hatchery.
+        // BumpS2LaneIntercept = the park point, 1.2u along the lane from the
+        // {SB,BB} pair ReturnPoint toward BB's SMH (resolved from the row's
+        // pair reference + TargetId = BB tag). BumpS2WalkStartedGate =
+        // InvertGate-jump gate: null while S2 is still carrying (its BB walk
+        // has not started); resolves to Y3's own position the frame S2's
+        // cargo lands, fail-open 60 frames after first evaluation so a lost
+        // S2 can never park Y3 with cargo.
+        BumpS2LaneIntercept,
+        BumpS2WalkStartedGate,
+        // PatternJIT bite 4 (owner spec 2026-11-10 18:48): S3's SA wait spot —
+        // "the other two take turns on SA and will have time to reposition to
+        // a different wait spot waiting for harvest frame 32". A literal point
+        // from Settings.PatternJitSa3WaitX/Y (default: 2.0u from the SA stand
+        // toward the hatchery, derived in ApplyPatternJitSaStand; --sasawait=
+        // overrides). S3 stands there on the harvest-release gate until S1 has
+        // accumulated 32 harvest frames, then Smarts onto SA.
+        PatternJitSaWait,
+        // PatternJIT bite 5b (owner spec 2026-11-10 21:35): S1's f0 angled
+        // Move target for the T2 bump — 2.0u past the meeting point on the
+        // line from S1's start. A literal point from
+        // Settings.PatternJitS1BumpThruX/Y (computed in
+        // BabySharkBot.ComputePatternJitT2BumpGeometry).
+        PatternJitS1BumpThru,
+        // PatternJIT owner probe (owner spec 2026-11-11 07:56): "Move S1
+        // west 4u and South 1u" — a literal frame-0 Move target from
+        // Settings.PatternJitS1F0X/Y (--s1f0=X,Y). Issued ONCE, exactly the
+        // specified point, no thru offset (D6 addendum).
+        PatternJitS1F0Point
+        // NOTE (owner spec 2026-11-08 17:13, busy-mineral wait zones): the
+        // wait-zone divert is implemented as a resolver redirect inside
+        // BabySharkMiningManager (SmhThruPoint returns the wait-zone point and
+        // SmhArrivalGate is suppressed while the divert holds) — no book rows,
+        // so no enum values are needed here.
     }
 
     public sealed class WorkerInstruction
@@ -410,6 +563,16 @@ namespace BabySharkBot.Setup
         // mineral walking"; the cancel/reissue churn shoved the returning worker
         // onto a long avoidance line).
         public bool CollisionDetourEngaged { get; set; }
+        // Pair-separation tracking for the "crossed-separating" detour exit
+        // (owner spec 2026-11-07: end the detour 2-4 frames after the crossing).
+        // Distance to the AVOIDED worker at the previous ContinueDetour frame and
+        // the count of consecutive separating frames. The 0.2u radial hatchery
+        // margin alone takes 13-15f when the avoided worker delivers and turns
+        // straight back out (its radial distance grows again), which left the
+        // walker on an engine Gather for most of its out leg (Pattern A run
+        // 083149: T1 out leg 36f vs T5's 22f on the identical lane).
+        public float CollisionDetourPrevPairDist { get; set; } = -1f;
+        public int CollisionDetourSeparatingFrames { get; set; }
 
         // Label color-cue state (owner spec 2026-10-17 08:11): on pickup the
         // number part of the worker label takes the just-collected mineral's

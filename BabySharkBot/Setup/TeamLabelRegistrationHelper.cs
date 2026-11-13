@@ -495,7 +495,48 @@ namespace BabySharkBot.Setup
                 return;
             }
 
-            if (Settings.IsMagannatha5x5Rotation && Settings.IsMagannathaMap)
+            if (Settings.PatternJitMode && Settings.IsMagannathaMap)
+            {
+                // PatternJIT (owner spec 2026-11-09 17:59): four teams of
+                // THREE, one per mineral pair (T={TA,TB}, S={SA,SB},
+                // B={BB,BA}, Y={YA,YB}). FLAT W->role map, applied per
+                // team-call — each call labels the subset of workers it
+                // holds (W8 sits in the Y-side proximity group but carries
+                // the B2 role):
+                //   W1=S3  W2=T3  W3=T1  W4=T2  W5=S1  W6=S2
+                //   W7=B1  W8=B2  W9=Y1  W10=Y2 W11=Y3 W12=B3
+                var jitRoleByStartLabel = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["W1"] = "S3",
+                    ["W2"] = "T3",
+                    ["W3"] = "T1",
+                    ["W4"] = "T2",
+                    ["W5"] = "S1",
+                    ["W6"] = "S2",
+                    ["W7"] = "B1",
+                    ["W8"] = "B2",
+                    ["W9"] = "Y1",
+                    ["W10"] = "Y2",
+                    ["W11"] = "Y3",
+                    ["W12"] = "B3"
+                };
+
+                foreach (var jitRole in jitRoleByStartLabel)
+                {
+                    var worker = FindWorkerByStartLabel(teamWorkers, jitRole.Key);
+                    if (worker == null)
+                    {
+                        continue; // this W lives in another team's call
+                    }
+
+                    AssignFinalLabel(worker, jitRole.Value, workerLabelService);
+                }
+
+                SetNoPushFlag(mapData, startIndex, $"{prefix}NoPush");
+                return;
+            }
+
+            if (Settings.IsMagannatha5x5Rotation && Settings.IsMagannathaMap && !Settings.PatternJitMode)
             {
                 // 5x5 rotation layout, Version 2 ("5 by 5 starting teams Version 2").
                 // Team patch membership is unchanged (proximity-based groups of 3);

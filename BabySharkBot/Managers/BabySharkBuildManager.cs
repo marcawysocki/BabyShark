@@ -798,8 +798,31 @@ namespace BabySharkBot.Managers
                         else if (is5x5BumpTestRole)
                         {
                             instructionSet5x5 = $"bump{role}";
+                            // Pattern A (owner spec 2026-11-07 08:16): under
+                            // --staymin --patterna the four bump roles stage
+                            // and mine their A mineral from the start — the
+                            // bump rows are role-keyed and unchanged; only the
+                            // post-bump target (f15/f19 transport walk, f25 CCA
+                            // stage, release gate, stored-point tail) swaps
+                            // from the B mineral to the A mineral.
+                            var bumpTargetId = initialTarget.ResourceUnitId;
+                            var bumpTargetLabel = initialTarget.ResourceLabel;
+                            if (Settings.StayMineralLoop)
+                            {
+                                var patternATarget = FindPatternATarget(role, Globals.CurrentMapData.AssignedWorkers
+                                    .ElementAtOrDefault(startIndex)?
+                                    .FirstOrDefault(worker => worker?.UnitID == assignedWorker.UnitTag)?
+                                    .MiningTargets);
+                                if (patternATarget != null)
+                                {
+                                    bumpTargetId = patternATarget.ResourceUnitId;
+                                    bumpTargetLabel = patternATarget.ResourceLabel;
+                                    Console.WriteLine($"[PATTERN-A] role={role} stages {patternATarget.ResourceLabel}({patternATarget.ResourceUnitId}) from the start (was {initialTarget.ResourceLabel})");
+                                }
+                            }
+
                             startup5x5 = Build5x5ChaseBumpInstructions(
-                                instructionSet5x5, role, initialTarget.ResourceUnitId, initialTarget.ResourceLabel, startIndex, assignments);
+                                instructionSet5x5, role, bumpTargetId, bumpTargetLabel, startIndex, assignments);
                         }
                         else if (helpersWalkAtFrameZero)
                         {
@@ -831,7 +854,20 @@ namespace BabySharkBot.Managers
                                         initialTarget.ResourceUnitId,
                                         40)
                                     : is5x5AMiner
-                                        ? Build5x5AMinerFineTuneStartupInstructions(instructionSet5x5, initialTarget.ResourceUnitId, role)
+                                        // PatternJIT bite 2 (owner spec
+                                        // 2026-11-10 15:27): S1 opens with ONE
+                                        // Smart on SA at f0 — the engine's
+                                        // natural stand is the measurement
+                                        // baseline; the fine-tune book must
+                                        // NOT shape it. Checked BEFORE the
+                                        // staymin/fine-tune split.
+                                        ? (Settings.PatternJitMode
+                                            ? BuildPatternJitStartup(instructionSet5x5, initialTarget.ResourceUnitId, role)
+                                            : Settings.StayMineralLoop
+                                            && !string.Equals(normalizedRole5x5, "T1", StringComparison.OrdinalIgnoreCase)
+                                            && !string.Equals(normalizedRole5x5, "Y1", StringComparison.OrdinalIgnoreCase)
+                                            ? BuildStayMinThruStartup(instructionSet5x5, initialTarget.ResourceUnitId)
+                                            : Build5x5AMinerFineTuneStartupInstructions(instructionSet5x5, initialTarget.ResourceUnitId, role, startIndex))
                                         : NormalizeRole(role) == "T5"
                                             // Harvest-frame test case: the new T5 (W1) stages at
                                             // SB's CCA wait point and waits on the harvest-release
@@ -842,7 +878,17 @@ namespace BabySharkBot.Managers
                                             // behind the gate and their relative frames count from
                                             // the gate pass.
                                             ? Build5x5SwingStartupWithStaging(instructionSet5x5, initialTarget.ResourceUnitId)
-                                            : BuildStandardStartupInstructions(instructionSet5x5, WorkerInstructionPoint.Harvest, initialTarget.ResourceUnitId, -1);
+                                            // PatternJIT (owner spec 2026-11-09 17:59): S2
+                                            // gets the proven staymin thru shape even without
+                                            // --staymin so the harness flag stands alone.
+                                            // Bite 2 (owner spec 2026-11-10 15:27): S1/S3
+                                            // open with one-shot f0 Smarts instead (SA
+                                            // natural stand / SB mineral-walk telemetry).
+                                            : Settings.PatternJitMode
+                                                ? BuildPatternJitStartup(instructionSet5x5, initialTarget.ResourceUnitId, role)
+                                                : Settings.StayMineralLoop
+                                                    ? BuildStayMinThruStartup(instructionSet5x5, initialTarget.ResourceUnitId)
+                                                    : BuildStandardStartupInstructions(instructionSet5x5, WorkerInstructionPoint.Harvest, initialTarget.ResourceUnitId, -1);
                         }
 
                         var list5x5 = BuildMineralInstructionList(startIndex, assignedWorker, instructionSet5x5, startup5x5);
@@ -1854,7 +1900,11 @@ namespace BabySharkBot.Managers
             switch (normalizedRole)
             {
                 case "T4":
-                    walkLabel = "SA";
+                    // Owner spec 2026-11-04 08:54/12:30: T4 mineral-walks SB
+                    // (was SA) so its walk line crosses T1's new opening angle
+                    // at the frame-10 intersect — "I should see T4 Targeting
+                    // SB".
+                    walkLabel = "SB";
                     partnerALabel = "TA";
                     break;
                 case "T5":
@@ -1959,35 +2009,76 @@ namespace BabySharkBot.Managers
             // frame-gated (PositionTolerance 0); the Y-side clear hold ("mineral
             // walk to SB until clear of any workers") lives in
             // ResolveBumpChasePartnerPoint.
-            for (var frame = 6; frame <= 18; frame++)
+            // T4 EXCEPTION (owner spec 2026-11-04 08:54 + diagram 15:11): no
+            // chase — T4 holds the SB mineral walk until the frame-11 meet
+            // (owner 20:18/20:25: tried 9, then 11),
+            // then BOTH T1 and T4 switch to Move thru the SMH to the inside-
+            // footprint point (T4's move passes through T1 and pushes it down
+            // the SMH line);
+            // at frame 15 T4 mineral-walks TB. The f6-18 chase rows and the
+            // frame-19 SB walk were the "invented" rows the owner flagged at
+            // frame 7.
+            if (normalizedRole == "T4")
             {
                 instructions.Add(new WorkerInstruction
                 {
                     InstructionSet = instructionSet,
                     Command = WorkerInstructionCommand.Move,
-                    Point = WorkerInstructionPoint.BumpChasePartner,
+                    Point = WorkerInstructionPoint.BumpSmhThruPoint,
                     TargetId = partnerAMineral?.UnitTag != 0 ? partnerAMineral.UnitTag : targetId,
-                    RelativeFrame = frame,
+                    RelativeFrame = Settings.BumpMeetFrame >= 0 ? Settings.BumpMeetFrame : 11,
                     PositionTolerance = 0f,
                     Queue = false
                 });
+                instructions.Add(new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = targetId,
+                    RelativeFrame = 15,
+                    NoCondition = true,
+                    Queue = false
+                });
             }
-
-            // Row 14: the frame-19 SB mineral walk — a NoCondition 1183 gather on
-            // SB for all four roles ("on frame 19 they both Mineral Walk to SB").
-            // NoCondition bypasses the gather-send/mineral-busy gates so the walk
-            // issues exactly at frame 19 even if SB is mid-cycle; the explicit
-            // RelativeFrame holds the row to its frame.
-            instructions.Add(new WorkerInstruction
+            else
             {
-                InstructionSet = instructionSet,
-                Command = WorkerInstructionCommand.Gather,
-                Point = WorkerInstructionPoint.None,
-                TargetId = frame19WalkMineral.UnitTag,
-                RelativeFrame = 19,
-                NoCondition = true,
-                Queue = false
-            });
+                // Owner spec 2026-11-04 17:49: the f6-18 rows no longer chase
+                // the partner's live position — they Move to a fixed point
+                // INSIDE the partner A-mineral's footprint (SMH + 0.6u toward
+                // the center), so the helper presses into/around the mineral
+                // edge ("At some point the worker tries to move around the
+                // mineral").
+                for (var frame = 6; frame <= 18; frame++)
+                {
+                    instructions.Add(new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Move,
+                        Point = WorkerInstructionPoint.BumpPartnerSmhInside,
+                        TargetId = partnerAMineral?.UnitTag != 0 ? partnerAMineral.UnitTag : targetId,
+                        RelativeFrame = frame,
+                        PositionTolerance = 0f,
+                        Queue = false
+                    });
+                }
+
+                // Row 14: the frame-19 SB mineral walk — a NoCondition 1183 gather on
+                // SB for all four roles ("on frame 19 they both Mineral Walk to SB").
+                // NoCondition bypasses the gather-send/mineral-busy gates so the walk
+                // issues exactly at frame 19 even if SB is mid-cycle; the explicit
+                // RelativeFrame holds the row to its frame.
+                instructions.Add(new WorkerInstruction
+                {
+                    InstructionSet = instructionSet,
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = frame19WalkMineral.UnitTag,
+                    RelativeFrame = 19,
+                    NoCondition = true,
+                    Queue = false
+                });
+            }
 
             // Row 19 (the inverted-gate park hold) and row 18 (the frame-21
             // central SA mineral walk) REMOVED 2026-10-20: the new schedule is
@@ -2051,35 +2142,72 @@ namespace BabySharkBot.Managers
             var bbMineral = allMinerals.FirstOrDefault(mineral =>
                 mineral != null
                 && string.Equals(mineral.FinalLabel, "BB", StringComparison.OrdinalIgnoreCase));
+            var baMineral = allMinerals.FirstOrDefault(mineral =>
+                mineral != null
+                && string.Equals(mineral.FinalLabel, "BA", StringComparison.OrdinalIgnoreCase));
+            var sbMineral = allMinerals.FirstOrDefault(mineral =>
+                mineral != null
+                && string.Equals(mineral.FinalLabel, "SB", StringComparison.OrdinalIgnoreCase));
 
             var instructions = new List<WorkerInstruction>();
-            if (bbMineral == null || bbMineral.UnitTag == 0)
+            if (bbMineral == null || bbMineral.UnitTag == 0
+                || baMineral == null || baMineral.UnitTag == 0
+                || sbMineral == null || sbMineral.UnitTag == 0)
             {
-                Console.WriteLine($"[BUILD START 5X5 B2 BBWALK FALLBACK] set={instructionSet} reason=missing-BB tag={bbMineral?.UnitTag ?? 0}");
+                Console.WriteLine($"[BUILD START 5X5 B2 BBWALK FALLBACK] set={instructionSet} reason=missing-mineral bb={bbMineral?.UnitTag ?? 0} ba={baMineral?.UnitTag ?? 0} sb={sbMineral?.UnitTag ?? 0}");
                 instructions.AddRange(BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1));
                 return instructions;
             }
 
-            Console.WriteLine($"[BUILD START 5X5 B2 BBWALK SET] set={instructionSet} bb=[{bbMineral.Index}]{bbMineral.FinalLabel} tag={bbMineral.UnitTag} target={targetId}");
+            // Owner spec 2026-11-07 05:47: "Go back to the best results for Y1
+            // and B2" — restored to the measured-best 0.14 startup (run 172733
+            // — B2 pickups 87/204/322): f0 mineral-walk to BA (the walk threads
+            // the f0-f10 east-column crowd 1 frame better than any direct or
+            // waypoint heading — §33/§34), the meet-frame Move to the dynamic
+            // BumpY1ThruPoint (the Y1 bump follow), the f15 mineral-walk to SB
+            // until the BumpB2ClearGate says the Y-side lanes are cleared, then
+            // the BB SMH thru loop with the arrival gate handing off to Move
+            // SMH + queued Smart. (18:31 SB-walk and 18:56/19:05 direct/dodge
+            // variants all measured neutral-to-worse.)
+            Console.WriteLine($"[BUILD START 5X5 B2 BBWALK SET] set={instructionSet} bb=[{bbMineral.Index}]{bbMineral.FinalLabel} tag={bbMineral.UnitTag} ba={baMineral.UnitTag} sb={sbMineral.UnitTag} target={targetId} (0.14 BA-walk restore)");
+            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.None, TargetId = baMineral.UnitTag, RelativeFrame = -1, NoCondition = true, Queue = false });
+            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpY1ThruPoint, TargetId = baMineral.UnitTag, RelativeFrame = Settings.BumpMeetFrame >= 0 ? Settings.BumpMeetFrame : 11, PositionTolerance = 0f, Queue = false });
+            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.None, TargetId = sbMineral.UnitTag, RelativeFrame = 15, NoCondition = true, Queue = false });
+            // The loop row the clear-gate jump re-issues — must stay
+            // frame-SATISFIED (RelativeFrame=0): the jump-back resets
+            // InstructionStartFrame (see the T1 branch comment).
+            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.None, TargetId = sbMineral.UnitTag, RelativeFrame = 0, NoCondition = true, Queue = false });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Jump,
+                Point = WorkerInstructionPoint.BumpB2ClearGate,
+                TargetId = sbMineral.UnitTag,
+                InvertGate = true,
+                JumpToPreviousRow = true
+            });
+            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmhThruPoint, TargetId = bbMineral.UnitTag, RelativeFrame = 0, PositionTolerance = 0f, Queue = false });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = instructionSet,
+                Command = WorkerInstructionCommand.Jump,
+                Point = WorkerInstructionPoint.SmhArrivalGate,
+                TargetId = bbMineral.UnitTag,
+                InvertGate = true,
+                JumpToPreviousRow = true
+            });
+            instructions.Add(new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmhPoint, TargetId = bbMineral.UnitTag, RelativeFrame = 0, Queue = false });
             instructions.Add(new WorkerInstruction
             {
                 InstructionSet = instructionSet,
                 Command = WorkerInstructionCommand.Gather,
                 Point = WorkerInstructionPoint.None,
                 TargetId = bbMineral.UnitTag,
+                RelativeFrame = -1,
                 NoCondition = true,
-                Queue = false
+                Queue = true,
+                AbilityIdOverride = (int)Abilities.SMART
             });
-
-            foreach (var row in BuildStandardStartupInstructions(instructionSet, WorkerInstructionPoint.Harvest, targetId, -1))
-            {
-                if (row.RelativeFrame >= 0)
-                {
-                    row.RelativeFrame += 6;
-                }
-
-                instructions.Add(row);
-            }
 
             return instructions;
         }
@@ -2327,7 +2455,8 @@ namespace BabySharkBot.Managers
         private static IReadOnlyList<WorkerInstruction> Build5x5AMinerFineTuneStartupInstructions(
             string instructionSet,
             ulong targetId,
-            string role)
+            string role,
+            int startIndex = -1)
         {
             // T1 arrival test battery (owner spec 2026-10-24 18:16, --t1test=N):
             // T1's startup book is replaced by the test book (direct to the TA SM
@@ -2340,7 +2469,207 @@ namespace BabySharkBot.Managers
             }
 
             var normalizedRole = NormalizeRole(role);
-            var firstTripPoint = normalizedRole == "T1" || normalizedRole == "Y1" || normalizedRole == "T3" || normalizedRole == "Y3"
+            // Pattern D (owner spec 2026-11-08 09:57): T1/Y1's FIRST return leg
+            // also rides the shared {TA,TB} / {YA,YB} pair ReturnPoint — the
+            // crossing bump needs T1 at the pair point when T2 comes in.
+            var patternDPairReference = startIndex >= 0 ? PatternDPairReference(role, startIndex) : null;
+            // Owner spec 2026-11-04 08:54 + Paint diagram 15:11 (T1 only —
+            // "First we learn on T1, then apply that to Y1"): the opening
+            // moves run T1's Starting Target Line (its start through the meet
+            // point — T4's frame-10 SB-walk position shifted 0.5u toward the
+            // TA SMH, "in front of T4 in alignment with SMH" — extended 2u
+            // past). At the frame-10 meet BOTH T1 and T4 switch to Move thru
+            // the SMH to a point just inside the mineral footprint (the fixed
+            // BumpSmhThruPoint — owner 18:17: inside the footprint, not 2u
+            // past, so pathing does not arc around the mineral's back). From
+            // frame 16 the
+            // arrival gate calculates whether T1 reaches the SMH next frame;
+            // one frame before arrival T1 gets a Move to the SMH plus a
+            // queued Smart on TA. Other A-miners keep the prior book.
+            if (normalizedRole == "T1")
+            {
+                return new List<WorkerInstruction>
+                {
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.StoreTargetPoint,
+                        Point = WorkerInstructionPoint.Harvest,
+                        TargetId = targetId,
+                        NoCondition = true,
+                        StoreTargetPoint = true
+                    },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpWalkIntersectF10, TargetId = targetId, RelativeFrame = 0, Queue = false },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpWalkIntersectF10, TargetId = targetId, RelativeFrame = 1, Queue = false },
+                    // f11: the one-shot meet switch (owner 20:25: "Perhaps
+                    // 11") — both T1 and T4 Move to the inside-footprint
+                    // point. The row BELOW it is the loop row the
+                    // gate jump re-issues: it must stay frame-SATISFIED
+                    // (RelativeFrame=0) — a row executes on frame || ability
+                    // || position, so RelativeFrame=-1 with tolerance 0 never
+                    // fires (deadlock, run 15:52), and a frame-gated loop row
+                    // re-blocks after every jump-back because the jump resets
+                    // InstructionStartFrame (run 15:33: gate evaluated only
+                    // at f10/20/30, missing the f17-19 corridor).
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpSmhThruPoint, TargetId = targetId, RelativeFrame = Settings.BumpMeetFrame >= 0 ? Settings.BumpMeetFrame : 11, PositionTolerance = 0f, Queue = false },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpSmhThruPoint, TargetId = targetId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Jump,
+                        Point = WorkerInstructionPoint.BumpSmhArrivalGate,
+                        TargetId = targetId,
+                        InvertGate = true,
+                        JumpToPreviousRow = true
+                    },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 0, Queue = false },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Gather,
+                        Point = WorkerInstructionPoint.None,
+                        TargetId = targetId,
+                        RelativeFrame = -1,
+                        NoCondition = true,
+                        Queue = true,
+                        AbilityIdOverride = (int)Abilities.SMART
+                    },
+                    // Return leg (owner spec 2026-11-04 08:54 + 2026-11-05
+                    // 06:38 "the return Cargo trip is losing 2 frames"): the
+                    // Wait detects the 1184 flip and issues NOTHING during the
+                    // harvest (a live order would cancel the pickup). The
+                    // frame the flip happens: Move 2u thru the SMR — starts
+                    // the return immediately instead of the measured 8-frame
+                    // post-pickup sit (f67-f75). The SMR gate loops the thru
+                    // move until one frame from the SMR, then Move to the SMR
+                    // + queued Return so the engine docks without the
+                    // f97-101 hatchery-rim wobble. (Spec step 1 — queued
+                    // Smart Return one frame BEFORE the flip — skipped: the
+                    // unqueued flip-frame Move wipes the queue anyway.)
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Wait,
+                        TargetId = targetId,
+                        PreviousAbilityId = (int)Abilities.HARVEST_GATHER_DRONE,
+                        TargetAbilityId = (int)Abilities.HARVEST_RETURN_DRONE
+                    },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmrThruPoint, TargetId = targetId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false, TargetPointReference = patternDPairReference ?? string.Empty },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmrThruPoint, TargetId = targetId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false, TargetPointReference = patternDPairReference ?? string.Empty },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Jump,
+                        Point = WorkerInstructionPoint.SmrArrivalGate,
+                        TargetId = targetId,
+                        InvertGate = true,
+                        JumpToPreviousRow = true,
+                        TargetPointReference = patternDPairReference ?? string.Empty
+                    },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmrPoint, TargetId = targetId, RelativeFrame = 0, Queue = false, TargetPointReference = patternDPairReference ?? string.Empty },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Return,
+                        Point = WorkerInstructionPoint.None,
+                        TargetId = targetId,
+                        RelativeFrame = -1,
+                        NoCondition = true,
+                        Queue = true
+                    }
+                };
+            }
+
+            // Y1 (owner 2026-11-07 05:47: "Go back to the best results for
+            // Y1 and B2"): restored to the measured-best 0.14 book (run
+            // 172733 — Y1 SMH-arr f22 / 1184-flip f67 / return f97) — the
+            // T1-mirrored bump choreography: BumpY1Intersect x2 (Y1's start
+            // line through the meet point), both Y1 and B2 switch to the
+            // dynamic BumpY1ThruPoint at the meet frame, BumpSmhArrivalGate
+            // hands off one frame out to Move StoredTarget + queued Smart.
+            // (The 2026-11-06 19:05 straight-to-YA variant measured exactly
+            // 1 frame slower every cycle — §34.)
+            if (normalizedRole == "Y1")
+            {
+                return new List<WorkerInstruction>
+                {
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.StoreTargetPoint,
+                        Point = WorkerInstructionPoint.Harvest,
+                        TargetId = targetId,
+                        NoCondition = true,
+                        StoreTargetPoint = true
+                    },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpY1Intersect, TargetId = targetId, RelativeFrame = 0, Queue = false },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpY1Intersect, TargetId = targetId, RelativeFrame = 1, Queue = false },
+                    // Meet-frame switch (mirrors T1): the row BELOW is the
+                    // loop row the gate jump re-issues — it must stay
+                    // frame-SATISFIED (RelativeFrame=0); see the T1 branch.
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpY1ThruPoint, TargetId = targetId, RelativeFrame = Settings.BumpMeetFrame >= 0 ? Settings.BumpMeetFrame : 11, PositionTolerance = 0f, Queue = false },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpY1ThruPoint, TargetId = targetId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Jump,
+                        Point = WorkerInstructionPoint.BumpSmhArrivalGate,
+                        TargetId = targetId,
+                        InvertGate = true,
+                        JumpToPreviousRow = true
+                    },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.StoredTarget, TargetId = targetId, RelativeFrame = 0, Queue = false },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Gather,
+                        Point = WorkerInstructionPoint.None,
+                        TargetId = targetId,
+                        RelativeFrame = -1,
+                        NoCondition = true,
+                        Queue = true,
+                        AbilityIdOverride = (int)Abilities.SMART
+                    },
+                    // Return leg — identical choreography to T1 above (owner
+                    // spec 2026-11-04 08:54 + 2026-11-05 06:38): Wait for the
+                    // 1184 flip, Move 2u thru the SMR on the flip frame, SMR
+                    // gate hands off to Move-SMR + queued Return one frame
+                    // before arrival. Resolvers map Y1 -> YA.
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Wait,
+                        TargetId = targetId,
+                        PreviousAbilityId = (int)Abilities.HARVEST_GATHER_DRONE,
+                        TargetAbilityId = (int)Abilities.HARVEST_RETURN_DRONE
+                    },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmrThruPoint, TargetId = targetId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false, TargetPointReference = patternDPairReference ?? string.Empty },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmrThruPoint, TargetId = targetId, RelativeFrame = 0, PositionTolerance = 0f, Queue = false, TargetPointReference = patternDPairReference ?? string.Empty },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Jump,
+                        Point = WorkerInstructionPoint.SmrArrivalGate,
+                        TargetId = targetId,
+                        InvertGate = true,
+                        JumpToPreviousRow = true,
+                        TargetPointReference = patternDPairReference ?? string.Empty
+                    },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmrPoint, TargetId = targetId, RelativeFrame = 0, Queue = false, TargetPointReference = patternDPairReference ?? string.Empty },
+                    new WorkerInstruction
+                    {
+                        InstructionSet = instructionSet,
+                        Command = WorkerInstructionCommand.Return,
+                        Point = WorkerInstructionPoint.None,
+                        TargetId = targetId,
+                        RelativeFrame = -1,
+                        NoCondition = true,
+                        Queue = true
+                    }
+                };
+            }
+
+            var firstTripPoint = normalizedRole == "Y1" || normalizedRole == "T3" || normalizedRole == "Y3"
                 ? WorkerInstructionPoint.Harvest
                 : WorkerInstructionPoint.OptimalFirstHarvest;
             return new List<WorkerInstruction>
@@ -2704,10 +3033,11 @@ namespace BabySharkBot.Managers
             var workerRole = worker.FinalLabel ?? worker.Label ?? worker.StartLabel ?? string.Empty;
             if (targets.Count < 2)
             {
-                // Version 2 temp roles (S2/B2) have a single-target book: the {SB,SB} /
-                // {BB,BB} self-pair speed-mining loop. The setup row stores the self-pair
-                // harvest point and Build5x5Book appends the loop.
-                if (Settings.IsMagannatha5x5Rotation && Is5x5TempRole(workerRole) && targets.Count == 1)
+                // (PatternJIT bite-2's S1/S3 startup-only bypass was removed in
+                // bite 4 — owner spec 2026-11-10 18:48: S1/S3 now run the full
+                // loop book on SA like S2 does on SB.)
+                if (Settings.IsMagannatha5x5Rotation && targets.Count == 1
+                    && (Is5x5TempRole(workerRole) || Settings.StayMineralLoop || Settings.PatternJitMode))
                 {
                     var tempList = new List<WorkerInstruction>();
                     AddSelfPairSetupInstruction(tempList, startIndex, startupInstructionSet, targets[0], WorkerInstructionCommand.StoreTargetPoint, WorkerInstructionPoint.JitHarvestA, "HarvestA");
@@ -2720,10 +3050,43 @@ namespace BabySharkBot.Managers
             var firstTarget = targets[0];
             var secondTarget = targets[1];
             var instructions = new List<WorkerInstruction>();
+
+            // PatternJIT bite 5c juggler (owner spec 2026-11-10 21:00,
+            // --juggler): two-target rotation books. Same StoreTargetPoint
+            // self-pair row the proven single-target PatternJIT books open
+            // with, then the startup rows (S1 bump line / S3 wait+gate /
+            // S2 stand move), then Build5x5Book's juggler branch appends the
+            // alternating SA/SB loop chapters on the shared pair line.
+            // Routed directly — the generic two-target path below is the
+            // pre-staymin shape and Is5x5RotationRole does not cover S-roles.
+            if (Settings.PatternJitMode && Settings.PatternJitJuggler)
+            {
+                AddSelfPairSetupInstruction(instructions, startIndex, startupInstructionSet, firstTarget, WorkerInstructionCommand.StoreTargetPoint, WorkerInstructionPoint.JitHarvestA, "HarvestA");
+                instructions.AddRange(startupInstructions);
+                return Build5x5Book(instructions, startIndex, workerRole, targets);
+            }
+
             var firstLinePoint = ResolveFirstLinePoint(startupInstructionSet, workerRole);
             if (firstLinePoint != WorkerInstructionPoint.None)
             {
-                AddJitPairSetupInstruction(instructions, startIndex, startupInstructionSet, firstTarget, secondTarget, firstLinePoint, WorkerInstructionCommand.StoreTargetPoint, true);
+                if (Settings.StayMineralLoop)
+                {
+                    // Stay-mineral harness (owner 2026-11-06 08:17: "T2 ... should
+                    // mine TB but points at TA" — the {TA,TB}.HarvestB pair point
+                    // resolves 0.88u from TA's center): the startup's stored point
+                    // must be the worker's OWN mineral's {X,X} self-pair HarvestA
+                    // (the SMH) — "All workers are on the SMR and SMH points for
+                    // their target mineral."
+                    // Pattern A (owner spec 2026-11-07 08:16): the four bump
+                    // roles store their A mineral's self-pair HarvestA instead —
+                    // the stored point is the staging-release approach target.
+                    var storeTarget = FindPatternATarget(workerRole, targets) ?? firstTarget;
+                    AddSelfPairSetupInstruction(instructions, startIndex, startupInstructionSet, storeTarget, WorkerInstructionCommand.StoreTargetPoint, WorkerInstructionPoint.JitHarvestA, "HarvestA");
+                }
+                else
+                {
+                    AddJitPairSetupInstruction(instructions, startIndex, startupInstructionSet, firstTarget, secondTarget, firstLinePoint, WorkerInstructionCommand.StoreTargetPoint, true);
+                }
             }
             instructions.AddRange(startupInstructions);
 
@@ -2932,6 +3295,396 @@ namespace BabySharkBot.Managers
         //   ret(targets[0] -> targets[1])
         //   wait handoff; wait mti -> 1
         //   Jump -> chapter1Harvest (mti already 1, matching the set about to run)
+        // Pattern B (owner spec 2026-11-07 05:47): the four second miners
+        // switch permanently to the team A mineral after their first
+        // B-mineral flip — T4 TB->TA, T5 SB->SA, Y5 BB->BA, Y4 YB->YA.
+        // Returns null for every other role (they keep looping targets[0]).
+        private static string PatternBStayMinSwitchLabel(string workerRole)
+        {
+            return NormalizeRole(workerRole) switch
+            {
+                "T4" => "TA",
+                "T5" => "SA",
+                "Y5" => "BA",
+                "Y4" => "YA",
+                _ => null
+            };
+        }
+
+        // Pattern A (owner spec 2026-11-07 05:47 first paragraph + 08:16 "Do
+        // Pattern A"): Sharky-style — the four extra workers take turns on an
+        // A mineral FROM THE START instead of mining a B mineral first:
+        // "T5 mines TA after T1 flips", "T4 will wait for T3 to flip on SA",
+        // "Y4 can wait for Y3 to flip on BA", "Y5 waits for Y1 to flip".
+        // Returns null for the eight unchanged workers.
+        private static string PatternAStartLabel(string workerRole)
+        {
+            // Pattern D (owner spec 2026-11-08 08:55): T4's post-bump stage and
+            // first harvest move SA -> SB ("change T4 first Assignment to
+            // SB"); its bump walk rows are role-keyed and unchanged.
+            if (Settings.PatternDReturnSwap && string.Equals(NormalizeRole(workerRole), "T4", StringComparison.OrdinalIgnoreCase))
+            {
+                return "SB";
+            }
+            return NormalizeRole(workerRole) switch
+            {
+                "T5" => "TA",
+                "T4" => "SA",
+                "Y4" => "BA",
+                "Y5" => "YA",
+                _ => null
+            };
+        }
+
+        // Pattern C (owner spec 2026-11-07 19:52, --patternc) per-trip rotation
+        // plan for the five rotating roles; null = pinned role (single-mineral
+        // staymin loop, no Pattern-C involvement):
+        //   "the first miners on SA, SB, and BB all rotate right" — T3 alternates
+        //     SA/SB, S2 alternates SB/BB, B2 alternates BB/BA, each from trip 2.
+        //   "TA/TB and YA/YB start with a B pattern so the workers repeat the
+        //     same mineral twice and the second worker from TB and YB starts
+        //     the rotations" — T4 mines TB twice (startup trip + ExtraTrips)
+        //     then alternates TA/TB; Y4 mines YB twice then alternates YA/YB.
+        // ExtraTrips run once between the first return leg and the infinite
+        // loop; LoopTrips repeat forever.
+        private static (string[] ExtraTrips, string[] LoopTrips)? PatternCRotationPlan(string workerRole)
+        {
+            return NormalizeRole(workerRole) switch
+            {
+                "T3" => (Array.Empty<string>(), new[] { "SB", "SA" }),
+                "S2" => (Array.Empty<string>(), new[] { "BB", "SB" }),
+                "B2" => (Array.Empty<string>(), new[] { "BA", "BB" }),
+                "T4" => (new[] { "TB" }, new[] { "TA", "TB" }),
+                "Y4" => (new[] { "YB" }, new[] { "YA", "YB" }),
+                _ => null
+            };
+        }
+
+        // Pattern D (owner spec 2026-11-08 08:55, --patternd) return-swap
+        // rotation: "T1 T2 and T4 can start a TA/TB switch. Y1,Y5,Y2 can start
+        // YA/YB." — the fast bumped workers rotate onto the slow B minerals
+        // from trip 2 so no worker runs three 112-frame trips; the SB/BB
+        // group rotates right (S2 SB->BB, B2 BB->SB, T4 stages SB then
+        // alternates). Trip 1 is targets[0] for every role; the loop below
+        // starts at trip 2. Pinned roles (T5=TA, T3=SA, Y3=BA, Y4=BA, Y5=YA)
+        // return null and keep the plain staymin loop.
+        private static (string[] ExtraTrips, string[] LoopTrips)? PatternDRotationPlan(string workerRole)
+        {
+            return NormalizeRole(workerRole) switch
+            {
+                "T1" => (Array.Empty<string>(), new[] { "TB", "TA" }),
+                "T2" => (Array.Empty<string>(), new[] { "TA", "TB" }),
+                "Y1" => (Array.Empty<string>(), new[] { "YB", "YA" }),
+                "Y2" => (Array.Empty<string>(), new[] { "YA", "YB" }),
+                "S2" => (Array.Empty<string>(), new[] { "BB", "SB" }),
+                "B2" => (Array.Empty<string>(), new[] { "SB", "BB" }),
+                "T4" => (Array.Empty<string>(), new[] { "BB", "SB" }),
+                _ => null
+            };
+        }
+
+        // Pattern D same-line pairs (owner spec 2026-11-08 09:57: "T1 and T2
+        // are returning to the point in the dat files that is the shortest
+        // return point between TA and TB... T1 and T2 need to be on the same
+        // line and going to the exact same point"): T1/T2 share the {TA,TB}
+        // jit pair row, Y1/Y2 share {YA,YB}. Returns the row's reference key
+        // ("{startIndex}-TA-TB.ReturnPoint") — every SMR/SMH point row in the
+        // book then resolves off the pair geometry (shared ReturnPoint, pair
+        // HarvestA/HarvestB) so both workers ride the exact same segment.
+        private static string PatternDPairReference(string workerRole, int startIndex)
+        {
+            if (!Settings.PatternDReturnSwap)
+            {
+                return null;
+            }
+
+            string labelA;
+            string labelB;
+            switch (NormalizeRole(workerRole))
+            {
+                case "T1":
+                case "T2":
+                    labelA = "TA";
+                    labelB = "TB";
+                    break;
+                case "Y1":
+                case "Y2":
+                    labelA = "YA";
+                    labelB = "YB";
+                    break;
+                // S2×Y3 cross-bump (owner spec 2026-11-08 22:20): S2 rides
+                // the {SB,BB} pair geometry — "S2's line will be from the
+                // SB-BB return Cargo Point thru the SMH on BB".
+                case "S2":
+                    labelA = "SB";
+                    labelB = "BB";
+                    break;
+                default:
+                    return null;
+            }
+
+            if (!IsCanonicalFirst(labelA, labelB))
+            {
+                (labelA, labelB) = (labelB, labelA);
+            }
+
+            var key = $"{startIndex}-{labelA}-{labelB}";
+            var row = Globals.CurrentMapData?.MainJitPairReturnCalculations?.ElementAtOrDefault(startIndex)
+                ?.FirstOrDefault(candidate => string.Equals(candidate?.PairKey, key, StringComparison.OrdinalIgnoreCase));
+            if (row == null || !HasNonZeroPoint(row.ReturnPoint))
+            {
+                Console.WriteLine($"[PATTERN-D PAIR MISSING] role={workerRole} key={key} — keeping per-mineral SMR geometry");
+                return null;
+            }
+
+            Console.WriteLine($"[STAYMIN PATTERN-D PAIR] role={workerRole} key={key} return=({row.ReturnPoint.X:F2},{row.ReturnPoint.Y:F2}) harvestA({row.FromResourceLabel})=({row.HarvestA.X:F2},{row.HarvestA.Y:F2}) harvestB({row.ToResourceLabel})=({row.HarvestB.X:F2},{row.HarvestB.Y:F2})");
+            return key + ".ReturnPoint";
+        }
+
+        // PatternJIT bite 5c juggler (owner spec 2026-11-10 21:00): all three
+        // corridor workers ride the ONE shared {SA,SB} pair return point so
+        // every leg is on the same lane — that is what makes the head-on
+        // mineral-walk crossing protocol possible. The row's HarvestA/B are
+        // patched to the locked stands by ApplyPatternJitPairRowStands (the
+        // harvest legs themselves keep the per-mineral SMH thru points —
+        // pair-row harvest stands facing the shared return point drag the
+        // outbound line through the neighbour patch, Pattern-C lesson).
+        private static string PatternJitJugglerPairReference(int startIndex)
+        {
+            var key = $"{startIndex}-SA-SB";
+            var row = Globals.CurrentMapData?.MainJitPairReturnCalculations?.ElementAtOrDefault(startIndex)
+                ?.FirstOrDefault(candidate => string.Equals(candidate?.PairKey, key, StringComparison.OrdinalIgnoreCase));
+            if (row == null || !HasNonZeroPoint(row.ReturnPoint))
+            {
+                Console.WriteLine($"[PATTERN-JIT JUGGLER PAIR MISSING] key={key} — keeping per-mineral SMR geometry");
+                return null;
+            }
+
+            Console.WriteLine($"[PATTERN-JIT JUGGLER PAIR] key={key} return=({row.ReturnPoint.X:F2},{row.ReturnPoint.Y:F2}) harvestA({row.FromResourceLabel})=({row.HarvestA.X:F2},{row.HarvestA.Y:F2}) harvestB({row.ToResourceLabel})=({row.HarvestB.X:F2},{row.HarvestB.Y:F2})");
+            return key + ".ReturnPoint";
+        }
+
+        // S2×Y3 cross-bump (owner spec 2026-11-08 22:20): "Y3 needs to do a
+        // special Maneuver where it's going to position itself in between S2
+        // and BB. Both Y3 and S2 are returning cargo. Y3 has a longer wait
+        // time when it returns to BA and the mineral BB is currently idle, so
+        // we want to get S2 there as soon as possible. S2 will return cargo,
+        // Mineral Walk to BB, as Y3 is positioning itself on its line. When
+        // S2 starts its mineral walk then Y3 will be given the move to the
+        // hatchery to the same point that S2 is using. As soon as S2 is
+        // closer to the mineral and Y3 is closer to the hatchery, S2 will be
+        // given a positive bump. After Y3 returns cargo it goes to BA."
+        // Y3's first return leg (replaces the plain BA return leg):
+        //   wait(1183->1184)                     <- BA flip, Y3 now carrying
+        //   Move BumpS2LaneIntercept (BB tag)    <- park on S2's {SB,BB} lane
+        //   Jump BumpS2WalkStartedGate (invert)  <- hold until S2's cargo lands
+        //   Move SmrPoint (BA tag, pair ref)     <- the SAME return point S2 used
+        //   Return queued
+        //   Gather SMART queued (BA)             <- turn-around backstop
+        //   wait handoff
+        // S2's CrossBumpGate (walker side) resolves once they have crossed.
+        private static bool TryAddBumpS2Y3FirstReturnLeg(List<WorkerInstruction> instructions, ulong baTag, int startIndex)
+        {
+            var labelA = "SB";
+            var labelB = "BB";
+            if (!IsCanonicalFirst(labelA, labelB))
+            {
+                (labelA, labelB) = (labelB, labelA);
+            }
+
+            var key = $"{startIndex}-{labelA}-{labelB}";
+            var row = Globals.CurrentMapData?.MainJitPairReturnCalculations?.ElementAtOrDefault(startIndex)
+                ?.FirstOrDefault(candidate => string.Equals(candidate?.PairKey, key, StringComparison.OrdinalIgnoreCase));
+            var bbTag = row == null ? 0ul
+                : string.Equals(row.FromResourceLabel, "BB", StringComparison.OrdinalIgnoreCase) ? row.FromResourceUnitTag
+                : string.Equals(row.ToResourceLabel, "BB", StringComparison.OrdinalIgnoreCase) ? row.ToResourceUnitTag
+                : 0ul;
+            if (row == null || !HasNonZeroPoint(row.ReturnPoint) || bbTag == 0)
+            {
+                Console.WriteLine($"[BUMP-S2Y3 MISSING] key={key} — Y3 keeps the plain BA return leg");
+                return false;
+            }
+
+            var pairRef = key + ".ReturnPoint";
+            Console.WriteLine($"[BUMP-S2Y3] Y3 first return parks on the {key} lane 1.2u from return=({row.ReturnPoint.X:F2},{row.ReturnPoint.Y:F2}) toward BB({bbTag}), delivers at the shared point once S2 starts its BB walk");
+
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "wait",
+                Command = WorkerInstructionCommand.Wait,
+                PreviousAbilityId = (int)Abilities.HARVEST_GATHER_DRONE,
+                TargetAbilityId = (int)Abilities.HARVEST_RETURN_DRONE
+            });
+            instructions.Add(new WorkerInstruction { InstructionSet = "staymin", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.BumpS2LaneIntercept, TargetId = bbTag, RelativeFrame = 0, Queue = false, TargetPointReference = pairRef });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "staymin",
+                Command = WorkerInstructionCommand.Jump,
+                Point = WorkerInstructionPoint.BumpS2WalkStartedGate,
+                TargetId = bbTag,
+                InvertGate = true,
+                JumpToPreviousRow = true,
+                TargetPointReference = pairRef
+            });
+            instructions.Add(new WorkerInstruction { InstructionSet = "staymin", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmrPoint, TargetId = baTag, RelativeFrame = 0, Queue = false, TargetPointReference = pairRef });
+            instructions.Add(new WorkerInstruction { InstructionSet = "staymin", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.None, TargetId = baTag, RelativeFrame = -1, NoCondition = true, Queue = true });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "staymin",
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = baTag,
+                RelativeFrame = -1,
+                NoCondition = true,
+                Queue = true,
+                AbilityIdOverride = (int)Abilities.SMART
+            });
+            instructions.Add(CreateHandoffWait());
+            return true;
+        }
+
+        // Builds the Pattern-C staymin book tail: first return leg on the trip-1
+        // mineral, the one-time ExtraTrips, then the infinite alternating loop —
+        // every return leg's turn-around backstop Smart already targets the NEXT
+        // trip's mineral so the worker walks out toward its next patch the frame
+        // the cargo lands (owner spec 2026-11-06 08:17). Returns false when the
+        // worker's MiningTargets list lacks a planned label (caller falls back
+        // to the plain staymin loop).
+        private static bool TryBuildPatternCStayMinBook(
+            List<WorkerInstruction> instructions,
+            string workerRole,
+            List<MiningTargetDto> targets,
+            (string[] ExtraTrips, string[] LoopTrips) plan,
+            string pairReference = null)
+        {
+            ulong ResolveTag(string label)
+            {
+                var match = targets?.FirstOrDefault(candidate =>
+                    string.Equals(candidate?.ResourceLabel, label, StringComparison.OrdinalIgnoreCase));
+                return match?.ResourceUnitId ?? 0;
+            }
+
+            var trip1Tag = targets?.ElementAtOrDefault(0)?.ResourceUnitId ?? 0;
+            var extraTags = plan.ExtraTrips.Select(ResolveTag).ToList();
+            var loopTags = plan.LoopTrips.Select(ResolveTag).ToList();
+            if (trip1Tag == 0 || loopTags.Count == 0
+                || extraTags.Any(tag => tag == 0) || loopTags.Any(tag => tag == 0))
+            {
+                Console.WriteLine($"[PATTERN-C MISSING] role={workerRole} trip1={targets?.ElementAtOrDefault(0)?.ResourceLabel} — a planned mineral is not in MiningTargets");
+                return false;
+            }
+
+            Console.WriteLine($"[STAYMIN PATTERN-C] role={workerRole} trip1={targets[0].ResourceLabel}({trip1Tag}) extra=[{string.Join(",", plan.ExtraTrips)}] loop=[{string.Join(",", plan.LoopTrips)}]");
+
+            // First return leg on the trip-1 mineral; the turn-around Smart
+            // walks the worker out toward trip 2.
+            var trip2Tag = extraTags.Count > 0 ? extraTags[0] : loopTags[0];
+            var startupEndsWithReturn = instructions.Count > 0
+                && instructions[instructions.Count - 1].Command == WorkerInstructionCommand.Return;
+            if (!startupEndsWithReturn)
+            {
+                AddStayMinReturnLeg(instructions, trip1Tag, trip2Tag, pairReference);
+            }
+            else
+            {
+                instructions.Add(new WorkerInstruction
+                {
+                    InstructionSet = "staymin",
+                    Command = WorkerInstructionCommand.Gather,
+                    Point = WorkerInstructionPoint.None,
+                    TargetId = trip2Tag,
+                    RelativeFrame = -1,
+                    NoCondition = true,
+                    Queue = true,
+                    AbilityIdOverride = (int)Abilities.SMART
+                });
+                instructions.Add(CreateHandoffWait());
+            }
+
+            // One-time extra trips (the B-pattern "repeat the same mineral twice").
+            // NOTE (owner 2026-11-08 09:57): the pairReference rides the RETURN
+            // legs only — the harvest legs keep the per-mineral SMH thru point.
+            // The pair-row HarvestA/B stands face the shared return point, which
+            // pulls the outbound line THROUGH the neighbour patch's footprint
+            // (run 20261108102200: T2 +24f, Y1 +16f); the SMH stand's line from
+            // the pair return point clears it (1.22u vs 1.0u footprint).
+            for (var i = 0; i < extraTags.Count; i++)
+            {
+                var nextTag = i + 1 < extraTags.Count ? extraTags[i + 1] : loopTags[0];
+                AddStayMinHarvestLeg(instructions, extraTags[i]);
+                AddStayMinReturnLeg(instructions, extraTags[i], nextTag, pairReference);
+            }
+
+            // Infinite rotation loop — each return leg's backstop Smart targets
+            // the next mineral in the cycle. T1/Y1 with a pair reference get the
+            // cross-bump harvest leg (owner spec 2026-11-08 08:55 + 16:08).
+            // S2 as well (owner spec 2026-11-08 22:20): its BB legs mineral-walk
+            // through the inbound Y3 on the shared {SB,BB} line — the gate's
+            // partner-not-carrying / already-delivered pass-throughs keep the
+            // off-cycle legs free.
+            var crossBump = pairReference != null
+                && (string.Equals(NormalizeRole(workerRole), "T1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(NormalizeRole(workerRole), "Y1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(NormalizeRole(workerRole), "S2", StringComparison.OrdinalIgnoreCase)
+                    // PatternJIT bite 5c juggler (owner spec 2026-11-10
+                    // 21:00): EVERY outbound leg on the SA/SB corridor
+                    // mineral-walks head-on through the inbound carrier,
+                    // then switches back to the move-thru once their tails
+                    // share the same space.
+                    || (Settings.PatternJitJuggler
+                        && (string.Equals(NormalizeRole(workerRole), "S1", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(NormalizeRole(workerRole), "S3", StringComparison.OrdinalIgnoreCase))));
+            var loopStart = instructions.Count;
+            for (var i = 0; i < loopTags.Count; i++)
+            {
+                var nextTag = loopTags[(i + 1) % loopTags.Count];
+                if (crossBump)
+                {
+                    AddStayMinCrossBumpHarvestLeg(instructions, loopTags[i], pairReference);
+                }
+                else
+                {
+                    AddStayMinHarvestLeg(instructions, loopTags[i]);
+                }
+                AddStayMinReturnLeg(instructions, loopTags[i], nextTag, pairReference);
+            }
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "last-line",
+                Command = WorkerInstructionCommand.Jump,
+                JumpToInstructionIndex = loopStart
+            });
+            return true;
+        }
+
+        // Resolves a worker's Pattern-A mining target from its own
+        // MiningTargets list (every bump role's rotation list contains its
+        // Pattern-A A mineral: T4 {TB,TA,SA}, T5 {SB,SA,TB,TA},
+        // Y4 {YB,BA,YA}, Y5 {BB,BA,YA,YB}).
+        private static MiningTargetDto FindPatternATarget(string workerRole, List<MiningTargetDto> targets)
+        {
+            if (!Settings.PatternAStart || targets == null)
+            {
+                return null;
+            }
+
+            var label = PatternAStartLabel(workerRole);
+            if (label == null)
+            {
+                return null;
+            }
+
+            var target = targets.FirstOrDefault(candidate =>
+                string.Equals(candidate?.ResourceLabel, label, StringComparison.OrdinalIgnoreCase));
+            if (target == null || target.ResourceUnitId == 0)
+            {
+                Console.WriteLine($"[PATTERN-A MISSING] role={workerRole} label={label} not in targets — keeping the B mineral book");
+                return null;
+            }
+
+            return target;
+        }
+
         private static List<WorkerInstruction> Build5x5Book(
             List<WorkerInstruction> instructions,
             int startIndex,
@@ -2941,7 +3694,198 @@ namespace BabySharkBot.Managers
             var firstGatherAbility = (int)Abilities.HARVEST_GATHER_DRONE;
             var returnAbility = (int)Abilities.HARVEST_RETURN_DRONE;
 
-            if (Is5x5TempRole(workerRole))
+            // PatternJIT bite 5c juggler (owner spec 2026-11-10 21:00,
+            // --juggler): "The first task is for S1 to mine SA, return Cargo
+            // and then go to SB; the others will also now do the SA/SB
+            // switch." Alternating loop chapters on the shared {SA,SB} pair
+            // return line with the corridor cross-bump harvest legs — the
+            // mineral-bound worker mineral-walks head-on through the inbound
+            // carrier and switches back to the move-thru once their tails
+            // share the same space. Checked FIRST: the staymin branch is off
+            // in PatternJIT runs and the A-miner prologue below would index
+            // targets[2] on a two-entry list.
+            if (Settings.PatternJitMode && Settings.PatternJitJuggler && targets.Count >= 2)
+            {
+                var jugglerPlan = (ExtraTrips: Array.Empty<string>(),
+                    LoopTrips: new[] { targets[1].ResourceLabel, targets[0].ResourceLabel });
+                if (TryBuildPatternCStayMinBook(instructions, workerRole, targets, jugglerPlan, PatternJitJugglerPairReference(startIndex)))
+                {
+                    return instructions;
+                }
+            }
+
+            // Stay-mineral harness (owner spec 2026-11-05 15:47, --staymin;
+            // thru-point shape owner spec 2026-11-06 08:17): "Change the book
+            // so that all workers stay on their current mineral" — T1 repeats
+            // TA, T2/T4 repeat TB, T3 repeats SA, S2/T5 repeat SB, B2/Y5
+            // repeat BB, Y3 repeats BA, Y2/Y4 repeat YB, Y1 repeats YA.
+            // Pattern B amendment (owner spec 2026-11-07 05:47): the four
+            // second miners (T4/T5/Y5/Y4) repeat their B mineral for the
+            // FIRST cycle only, then switch permanently to the team A
+            // mineral (T4->TA, T5->SA, Y5->BA, Y4->YA) — see
+            // PatternBStayMinSwitchLabel. Everyone else's repeat mineral IS
+            // their startup mineral (targets[0]) — one uniform infinite loop.
+            // The rotation chapters, T1's TB/TA detour, the swing books and
+            // B2's pool chapter are ALL skipped; B2 never morphs (the run
+            // suicides at the 200 bank anyway).
+            //
+            // 08:17 shape — "Every worker that is moving needs a move thru
+            // point or they decelerate", BOTH legs:
+            //   [startup trip already mined targets[0]]            (caller)
+            //   (first return leg — skipped for T1/Y1: their jitMHFineTune
+            //    startup books already end on the return leg's queued Return;
+            //    they get only the turn-around Smart + handoff)
+            //   loopStart:
+            //     Move SmhThruPoint (loop)          <- hatchery -> SMH at
+            //     Jump SmhArrivalGate (invert)         cruise, gate hands off
+            //     Move SmhPoint                        one frame before arrival
+            //     Gather SMART queued (mineral)
+            //     wait(1183->1184)
+            //     Move SmrThruPoint x2 (loop)       <- mineral -> SMR
+            //     Jump SmrArrivalGate (invert)
+            //     Move SmrPoint
+            //     Return queued
+            //     Gather SMART queued (mineral)     <- turn-around backstop:
+            //     wait handoff                         walks out the frame the
+            //     Jump -> loopStart                    cargo lands
+            if (Settings.StayMineralLoop && targets.Count >= 1)
+            {
+                var stayTarget = targets[0];
+
+                // Pattern D (owner spec 2026-11-08 08:55): return-swap
+                // rotation for the seven rotating roles; checked before the
+                // Pattern-C and Pattern-A fallbacks.
+                if (Settings.PatternDReturnSwap)
+                {
+                    var patternDPlan = PatternDRotationPlan(workerRole);
+                    if (patternDPlan != null
+                        && TryBuildPatternCStayMinBook(instructions, workerRole, targets, patternDPlan.Value, PatternDPairReference(workerRole, startIndex)))
+                    {
+                        return instructions;
+                    }
+                }
+
+                // Pattern C (owner spec 2026-11-07 19:52): the five rotating
+                // roles (T3/S2/B2 rotate right from trip 2; T4/Y4 repeat their
+                // B mineral twice, then alternate) get the per-trip book;
+                // pinned roles fall through to the plain single-mineral loop
+                // (their Pattern-C MiningTargets list IS the pinned mineral).
+                if (Settings.PatternCRotation)
+                {
+                    var patternCPlan = PatternCRotationPlan(workerRole);
+                    if (patternCPlan != null
+                        && TryBuildPatternCStayMinBook(instructions, workerRole, targets, patternCPlan.Value))
+                    {
+                        return instructions;
+                    }
+                }
+
+                // Pattern A (owner spec 2026-11-07 08:16): the four extra
+                // workers never touch a B mineral — their whole book (startup
+                // staging, first return leg, and the infinite loop) runs on
+                // the A mineral. The Pattern B switch is meaningless here
+                // (no B-mineral first set) and is skipped.
+                var patternATarget = FindPatternATarget(workerRole, targets);
+                if (patternATarget != null)
+                {
+                    stayTarget = patternATarget;
+                    Console.WriteLine($"[STAYMIN PATTERN-A] role={workerRole} loops {stayTarget.ResourceLabel}({stayTarget.ResourceUnitId}) from the start");
+                }
+
+                var stayTag = stayTarget.ResourceUnitId;
+
+                // Pattern B (owner spec 2026-11-07 05:47): "Then we send the
+                // four to wait for a B mineral... The four will be the first
+                // set of staggered returners. T4 bumps then waits for T2 to
+                // mine TB, When T4 flips it will return cargo... and then
+                // switch to TA, Likewise T5 flips and switches to SA, Y5
+                // switches to BA and Y4 switches to YA." The FIRST cycle is
+                // unchanged (startup + first return leg on the B mineral);
+                // from the first turn-around the worker permanently loops on
+                // the A mineral — the return leg's backstop Smart and the
+                // whole infinite loop target the A tag.
+                var loopTag = stayTag;
+                var loopLabel = stayTarget.ResourceLabel;
+                var switchLabel = patternATarget == null && Settings.PatternBMineralSwitch ? PatternBStayMinSwitchLabel(workerRole) : null;
+                if (switchLabel != null)
+                {
+                    var switchTarget = targets.FirstOrDefault(target =>
+                        string.Equals(target?.ResourceLabel, switchLabel, StringComparison.OrdinalIgnoreCase));
+                    if (switchTarget != null && switchTarget.ResourceUnitId != 0)
+                    {
+                        loopTag = switchTarget.ResourceUnitId;
+                        loopLabel = switchLabel;
+                        Console.WriteLine($"[STAYMIN PATTERN-B] role={workerRole} first={stayTarget.ResourceLabel}({stayTag}) loop={switchLabel}({loopTag})");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[STAYMIN PATTERN-B MISSING] role={workerRole} label={switchLabel} not in targets — staying on {stayTarget.ResourceLabel}");
+                    }
+                }
+
+                var startupEndsWithReturn = instructions.Count > 0
+                    && instructions[instructions.Count - 1].Command == WorkerInstructionCommand.Return;
+                if (!startupEndsWithReturn)
+                {
+                    // S2×Y3 cross-bump (owner spec 2026-11-08 22:20): on Y3's
+                    // FIRST return only, Y3 parks on S2's {SB,BB} lane between
+                    // S2 and BB; when S2's cargo lands (its collision-free BB
+                    // walk starts) Y3 Moves to the SAME pair return point S2
+                    // used; once they cross, S2's move-thru re-enable repels
+                    // S2 toward BB and Y3 toward the hatchery. BA is busy with
+                    // Y4 until ~f140, so Y3's later delivery rides free slack.
+                    var y3BumpLeg = Settings.PatternDReturnSwap
+                        && string.Equals(NormalizeRole(workerRole), "Y3", StringComparison.OrdinalIgnoreCase)
+                        && TryAddBumpS2Y3FirstReturnLeg(instructions, stayTag, startIndex);
+                    if (!y3BumpLeg)
+                    {
+                        // First return leg still runs on the B mineral's SMR; the
+                        // turn-around backstop Smart walks the worker out toward
+                        // the LOOP mineral (the A mineral for the Pattern-B four).
+                        AddStayMinReturnLeg(instructions, stayTag, loopTag);
+                    }
+                }
+                else
+                {
+                    // Trip-1 turn-around backstop behind the startup's queued
+                    // Return (owner 08:17: "As soon as the worker has returned
+                    // cargo, they need to be overridden with a move thru").
+                    instructions.Add(new WorkerInstruction
+                    {
+                        InstructionSet = "staymin",
+                        Command = WorkerInstructionCommand.Gather,
+                        Point = WorkerInstructionPoint.None,
+                        TargetId = loopTag,
+                        RelativeFrame = -1,
+                        NoCondition = true,
+                        Queue = true,
+                        AbilityIdOverride = (int)Abilities.SMART
+                    });
+                    instructions.Add(CreateHandoffWait());
+                }
+
+                var stayLoopStart = instructions.Count;
+                AddStayMinHarvestLeg(instructions, loopTag);
+                AddStayMinReturnLeg(instructions, loopTag);
+                instructions.Add(new WorkerInstruction
+                {
+                    InstructionSet = "last-line",
+                    Command = WorkerInstructionCommand.Jump,
+                    JumpToInstructionIndex = stayLoopStart
+                });
+                return instructions;
+            }
+
+            // PatternJIT bite 4 (owner spec 2026-11-10 18:48: "have S1 and S3
+            // Speed mine SA ... S2 mines SB by itself and the other two take
+            // turns on SA"): a PatternJIT single-target book runs the SAME
+            // single-mineral speed-mining loop as the temp roles, regardless
+            // of role letter — S1's targets list is {SA} only, and without
+            // this the A-miner prologue below indexes targets[1]/targets[2]
+            // and crashes. The 32-frame harvest-release staging IS the SA
+            // turn-taking: the waiting worker releases when the active miner
+            // accumulates 32 harvest frames.
+            if (Is5x5TempRole(workerRole) || (Settings.PatternJitMode && targets.Count == 1))
             {
                 var onlyTarget = targets[0];
                 instructions.Add(new WorkerInstruction
@@ -3406,6 +4350,215 @@ namespace BabySharkBot.Managers
                 JumpToInstructionIndex = chapter1Harvest
             });
             return instructions;
+        }
+
+        // Stay-mineral thru-shape legs (owner spec 2026-11-06 08:17): "Every
+        // worker that is moving needs a move thru point or they decelerate."
+        // Harvest leg: move thru the SMH (0.6u inside the footprint) at cruise
+        // until the arrival gate says one frame out, then Move to the SMH with
+        // a queued Smart on the mineral.
+        private static void AddStayMinHarvestLeg(List<WorkerInstruction> instructions, ulong mineralTag, string pairReference = null)
+        {
+            // PatternJIT (owner spec 2026-11-10 08:51: "It does not get told to
+            // move to the point I told you to move the worker to until around
+            // f18 instead of on f0 ... give the worker this new point on frame
+            // 0"): bite-1 S2 targets the SMH stand itself from frame 0 — no
+            // thru-point lead-in, no gate wait for the point.
+            var firstPoint = Settings.PatternJitMode
+                ? WorkerInstructionPoint.SmhPoint
+                : WorkerInstructionPoint.SmhThruPoint;
+            instructions.Add(new WorkerInstruction { InstructionSet = "staymin", Command = WorkerInstructionCommand.Move, Point = firstPoint, TargetId = mineralTag, RelativeFrame = 0, PositionTolerance = 0f, Queue = false, TargetPointReference = pairReference ?? string.Empty });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "staymin",
+                Command = WorkerInstructionCommand.Jump,
+                Point = WorkerInstructionPoint.SmhArrivalGate,
+                TargetId = mineralTag,
+                InvertGate = true,
+                JumpToPreviousRow = true,
+                TargetPointReference = pairReference ?? string.Empty
+            });
+            instructions.Add(new WorkerInstruction { InstructionSet = "staymin", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmhPoint, TargetId = mineralTag, RelativeFrame = 0, Queue = false, TargetPointReference = pairReference ?? string.Empty });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "staymin",
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = mineralTag,
+                RelativeFrame = -1,
+                NoCondition = true,
+                Queue = true,
+                AbilityIdOverride = (int)Abilities.SMART
+            });
+        }
+
+        // Cross-bump harvest leg (owner spec 2026-11-08 08:55 + 16:08, Pattern D
+        // T1/Y1 outbound on the shared pair line): the outbound rides an
+        // unqueued Smart on the target mineral (harvest order = collision-free)
+        // THROUGH the inbound pair partner; the CrossBumpGate jump re-issues the
+        // Smart until the partner is closer to the hatchery ("as soon as T2 is
+        // closer to the hatchery and T1 is closer to the mineral, T1 is given a
+        // move to TB Move thru point"), then the normal SMH thru/point shape
+        // takes over — the move-thru's collision re-enable at the overlap bumps
+        // the walker toward the mineral and the carrier toward the hatchery.
+        private static void AddStayMinCrossBumpHarvestLeg(List<WorkerInstruction> instructions, ulong mineralTag, string pairReference)
+        {
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "staymin",
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = mineralTag,
+                RelativeFrame = -1,
+                NoCondition = true,
+                Queue = false,
+                AbilityIdOverride = (int)Abilities.SMART,
+                TargetPointReference = pairReference ?? string.Empty
+            });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "staymin",
+                Command = WorkerInstructionCommand.Jump,
+                Point = WorkerInstructionPoint.CrossBumpGate,
+                TargetId = mineralTag,
+                InvertGate = true,
+                JumpToPreviousRow = true,
+                TargetPointReference = pairReference ?? string.Empty
+            });
+            AddStayMinHarvestLeg(instructions, mineralTag);
+        }
+
+        // PatternJIT startup dispatcher. Bite 4 (owner spec 2026-11-10 18:48):
+        // S1 (SA) and S2 (SB) open with ONE f0 Move to the SMH stand — the
+        // direct Smart comes from the mining manager at PatternJitSaSmartFrame
+        // / PatternJitSbSmartFrame (both default 16). S3 is the SA turn-taker:
+        // f0 Move to the SA wait spot (PatternJitSaWait — 2.0u from the stand
+        // toward the hatchery), hold on the harvest-release gate
+        // (frames-only: fires once S1 has ACCUMULATED 32 harvest frames —
+        // never opens on a free mineral), then an immediate unqueued Smart on
+        // SA. The loop chapters Build5x5Book appends carry the 32-frame
+        // gather-send gate on later cycles, so S1 and S3 alternate on SA
+        // without bouncing.
+        private static IReadOnlyList<WorkerInstruction> BuildPatternJitStartup(string instructionSet, ulong mineralTag, string role)
+        {
+            if (string.Equals(NormalizeRole(role), "S3", StringComparison.OrdinalIgnoreCase))
+            {
+                return new List<WorkerInstruction>
+                {
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.PatternJitSaWait, TargetId = mineralTag, RelativeFrame = 0, PositionTolerance = 0f, Queue = false },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Wait, Point = WorkerInstructionPoint.None, TargetId = mineralTag, HarvestReleaseGate = true, HarvestReleaseFramesOnly = true },
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Gather, Point = WorkerInstructionPoint.None, TargetId = mineralTag, RelativeFrame = -1, NoCondition = true, Queue = false, AbilityIdOverride = (int)Abilities.SMART },
+                };
+            }
+            // Owner probe (owner spec 2026-11-11 07:56: "Move S1 west 4u and
+            // South 1u"): --s1f0=X,Y gives S1 ONE frame-0 Move to exactly the
+            // specified point — no thru offset, no reissue (D6 addendum).
+            // Takes priority over the t2bump bump-line startup.
+            if (Settings.PatternJitS1F0X >= 0f
+                && string.Equals(NormalizeRole(role), "S1", StringComparison.OrdinalIgnoreCase))
+            {
+                return new List<WorkerInstruction>
+                {
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.PatternJitS1F0Point, TargetId = mineralTag, RelativeFrame = 0, PositionTolerance = 0f, Queue = false },
+                };
+            }
+            // Bite 5b (owner spec 2026-11-10 21:35: "S1 will start on an angle
+            // to meet T2"): with --t2bump on, S1's f0 Move rides the angled
+            // bump line (PatternJitS1BumpThru, computed from T2's measured
+            // walk line) instead of the straight SMH line. The meet-frame
+            // switch to the shared stand-thru point comes from the mining
+            // manager (IssuePatternJitT2Bump).
+            if (Settings.PatternJitT2Bump
+                && string.Equals(NormalizeRole(role), "S1", StringComparison.OrdinalIgnoreCase))
+            {
+                return new List<WorkerInstruction>
+                {
+                    new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.PatternJitS1BumpThru, TargetId = mineralTag, RelativeFrame = 0, PositionTolerance = 0f, Queue = false },
+                };
+            }
+            return new List<WorkerInstruction>
+            {
+                new WorkerInstruction { InstructionSet = instructionSet, Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmhPoint, TargetId = mineralTag, RelativeFrame = 0, PositionTolerance = 0f, Queue = false },
+            };
+        }
+
+        // Stay-mineral first-trip startup (owner spec 2026-11-06 08:17: "All
+        // the starting workers are targeting a mineral and not a move thru
+        // point"): the pure miners (T2/T3/S2/Y2/Y3 under --staymin) open with
+        // the same thru shape as the loop — Move thru the SMH from f0, the
+        // loop-safe arrival gate hands off one frame before arrival to Move
+        // SMH + queued Smart.
+        private static IReadOnlyList<WorkerInstruction> BuildStayMinThruStartup(string instructionSet, ulong mineralTag)
+        {
+            var instructions = new List<WorkerInstruction>();
+            // --sbsmart=N (owner spec 2026-11-10 09:22 + 11:39 + 11:49): the
+            // book is ONE Move at frame 0 to EXACTLY the owner point — no
+            // thru-point offset, no reissue, no gate, no queued Smart.
+            // "I do not want to see garbage on frame zero" — the frame-0
+            // target IS the specified stand point. The mining manager fires
+            // a direct Smart on SB at frame N (IssuePatternJitSbSmart).
+            if (Settings.PatternJitMode && Settings.PatternJitSbSmartFrame >= 0)
+            {
+                instructions.Add(new WorkerInstruction { InstructionSet = "staymin", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmhPoint, TargetId = mineralTag, RelativeFrame = 0, PositionTolerance = 0f, Queue = false });
+                return instructions;
+            }
+            AddStayMinHarvestLeg(instructions, mineralTag);
+            return instructions;
+        }
+
+        // Return leg: on the 1183->1184 flip, move thru the SMR (1.0u toward
+        // the hatchery) until the SMR gate says one frame out, then Move to
+        // the SMR with a queued Return AND a queued Smart back on the mineral
+        // behind it (owner 08:17: "a queued Mineral Return and a Queued Smart
+        // Harvest on the Next mineral... As soon as the worker has returned
+        // cargo, they need to be overridden with a move thru to the SMH") —
+        // the Smart walks the worker out the frame the cargo lands; the next
+        // loop pass's Move-thru overrides it a frame later.
+        private static void AddStayMinReturnLeg(List<WorkerInstruction> instructions, ulong mineralTag, ulong backstopTag = 0, string pairReference = null)
+        {
+            // backstopTag (Pattern B, owner spec 2026-11-07 05:47): the
+            // turn-around Smart's mineral — defaults to the mineral just
+            // returned from; the four second miners instead walk out toward
+            // their post-switch A mineral (T4->TA, T5->SA, Y5->BA, Y4->YA).
+            // pairReference (Pattern D, owner spec 2026-11-08 09:57): jit pair
+            // row key ("{startIndex}-TA-TB.ReturnPoint") — every Smr point row
+            // resolves the SHARED pair ReturnPoint so both swapping workers
+            // ride the same line to the exact same point.
+            var walkOutTag = backstopTag != 0 ? backstopTag : mineralTag;
+            var pairRef = pairReference ?? string.Empty;
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "wait",
+                Command = WorkerInstructionCommand.Wait,
+                PreviousAbilityId = (int)Abilities.HARVEST_GATHER_DRONE,
+                TargetAbilityId = (int)Abilities.HARVEST_RETURN_DRONE
+            });
+            instructions.Add(new WorkerInstruction { InstructionSet = "staymin", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmrThruPoint, TargetId = mineralTag, RelativeFrame = 0, PositionTolerance = 0f, Queue = false, TargetPointReference = pairRef });
+            instructions.Add(new WorkerInstruction { InstructionSet = "staymin", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmrThruPoint, TargetId = mineralTag, RelativeFrame = 0, PositionTolerance = 0f, Queue = false, TargetPointReference = pairRef });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "staymin",
+                Command = WorkerInstructionCommand.Jump,
+                Point = WorkerInstructionPoint.SmrArrivalGate,
+                TargetId = mineralTag,
+                InvertGate = true,
+                JumpToPreviousRow = true,
+                TargetPointReference = pairRef
+            });
+            instructions.Add(new WorkerInstruction { InstructionSet = "staymin", Command = WorkerInstructionCommand.Move, Point = WorkerInstructionPoint.SmrPoint, TargetId = mineralTag, RelativeFrame = 0, Queue = false, TargetPointReference = pairRef });
+            instructions.Add(new WorkerInstruction { InstructionSet = "staymin", Command = WorkerInstructionCommand.Return, Point = WorkerInstructionPoint.None, TargetId = mineralTag, RelativeFrame = -1, NoCondition = true, Queue = true });
+            instructions.Add(new WorkerInstruction
+            {
+                InstructionSet = "staymin",
+                Command = WorkerInstructionCommand.Gather,
+                Point = WorkerInstructionPoint.None,
+                TargetId = walkOutTag,
+                RelativeFrame = -1,
+                NoCondition = true,
+                Queue = true,
+                AbilityIdOverride = (int)Abilities.SMART
+            });
+            instructions.Add(CreateHandoffWait());
         }
 
         // ABBA stagger cycle for Y1/Y2/T1/T2. Loop = ABBAB for role 1, BAABA for role 2:
@@ -4714,6 +5867,33 @@ namespace BabySharkBot.Managers
                     center.Z);
         }
 
+        // SMH-anchored return geometry (owner spec 2026-11-08 11:30: "SMR points
+        // should have been calculated off the SMH not the mineral point. TA and
+        // SA are the only minerals that can use the mineral point for
+        // calculations"). The pair return point's mineral-side anchor is the
+        // mineral's SMH STAND (where the worker actually flips) — averaging
+        // centers points the return ray at the wrong spot for the fixed-SMH
+        // minerals (TB/SB/BB/BA/YB/YA). TA/SA can be mined off-center, so the
+        // mineral point stays valid for them. Verified against the stored
+        // measured SMRs: every fixed mineral's measured SMR sits on the
+        // townhall->SMH ray, not the townhall->center ray.
+        // (Magannatha labels; other maps default to the SMH anchor, the safe
+        // side of the rule.)
+        private static readonly HashSet<string> MineralPointAnchorLabels = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "TA", "SA"
+        };
+
+        private static Vector2Dto ReturnAnchorFor(string label, Vector2Dto center, Vector2Dto smHarvestPoint)
+        {
+            if (MineralPointAnchorLabels.Contains(label))
+            {
+                return center;
+            }
+
+            return smHarvestPoint != null && HasNonZeroPoint(smHarvestPoint) ? smHarvestPoint : center;
+        }
+
         private static void PopulateJitPairReturnCalculations(
             MawBaseLocationData mapData,
             int startIndex,
@@ -4741,7 +5921,7 @@ namespace BabySharkBot.Managers
                 .ToList() ?? new List<OrderedVespene>();
             var poolPosition = mapData.SpawningPoolPlacements?.ElementAtOrDefault(startIndex);
 
-            var resources = new List<(string Label, ulong Tag, Vector2Dto Center, float HarvestRadius, Vector2Dto Wait)>();
+            var resources = new List<(string Label, ulong Tag, Vector2Dto Center, float HarvestRadius, Vector2Dto Wait, Vector2Dto Anchor)>();
 
             foreach (var vespene in orderedVespene)
             {
@@ -4756,19 +5936,20 @@ namespace BabySharkBot.Managers
                         vespene.Position.X + geyserDirection.Value.X * geyserFootprintRadius,
                         vespene.Position.Y + geyserDirection.Value.Y * geyserFootprintRadius,
                         vespene.Position.Z);
-                resources.Add((vespene.Label, vespene.UnitTag, vespene.Position, 0f, geyserWait));
+                resources.Add((vespene.Label, vespene.UnitTag, vespene.Position, 0f, geyserWait, vespene.Position));
             }
 
             foreach (var mineral in orderedMinerals)
             {
-                resources.Add((mineral.FinalLabel, mineral.UnitTag, mineral.Position, mineralFootprintRadius, mineral.CcaWaitPoint));
+                resources.Add((mineral.FinalLabel, mineral.UnitTag, mineral.Position, mineralFootprintRadius, mineral.CcaWaitPoint,
+                    ReturnAnchorFor(mineral.FinalLabel, mineral.Position, mineral.SmHarvestPoint)));
             }
 
             if (poolPosition != null && HasNonZeroPoint(poolPosition))
             {
                 // The pool is never harvested; its harvest and wait fields carry its own X,Y so
                 // no field is ever stored as (0,0) (round 2 answer 10).
-                resources.Add(("Pool", 0, poolPosition, 0f, new Vector2Dto(poolPosition.X, poolPosition.Y, poolPosition.Z)));
+                resources.Add(("Pool", 0, poolPosition, 0f, new Vector2Dto(poolPosition.X, poolPosition.Y, poolPosition.Z), poolPosition));
             }
 
             if (resources.Count == 0)
@@ -4811,13 +5992,17 @@ namespace BabySharkBot.Managers
 
                     // JIT return point: 0.1u outside the hatchery footprint circle (2.85u
                     // from the hatchery center, owner request), toward the average of the
-                    // two resource centers. Harvest points: on each resource's footprint
-                    // circle (minerals 1.0u), toward that JIT return point. A self pair
-                    // degenerates to the speed-mining line (round 9 formula).
-                    var averageX = (first.Center.X + second.Center.X) * 0.5f;
-                    var averageY = (first.Center.Y + second.Center.Y) * 0.5f;
+                    // two RETURN ANCHORS (owner spec 2026-11-08 11:30: the SMH stand for
+                    // the fixed-SMH minerals, the mineral point for TA/SA — "average TA's
+                    // XY and the XY of TB's SMH, then a line from that point to the center
+                    // of the hatchery intersects the footprint of the hatchery's return
+                    // circle"). Harvest points: on each resource's footprint circle
+                    // (minerals 1.0u), toward that JIT return point. A self pair
+                    // degenerates to that resource's SMH-anchored speed-mining line.
+                    var averageX = (first.Anchor.X + second.Anchor.X) * 0.5f;
+                    var averageY = (first.Anchor.Y + second.Anchor.Y) * 0.5f;
                     var returnDirection = Normalize(averageX - townhall.X, averageY - townhall.Y)
-                        ?? Normalize(first.Center.X - townhall.X, first.Center.Y - townhall.Y);
+                        ?? Normalize(first.Anchor.X - townhall.X, first.Anchor.Y - townhall.Y);
                     var returnPoint = returnDirection == null
                         ? new Vector2Dto(townhall.X, townhall.Y, townhall.Z)
                         : new Vector2Dto(
@@ -4901,6 +6086,105 @@ namespace BabySharkBot.Managers
             // No workerCount gate: a rotation role must never fall through to the legacy
             // two-mineral {X}A/{X}B branch below — that stale fallback is the "old list
             // commands" that kept T1 on TA-TB and Y1 on YA-YB without the third mineral.
+            //
+            // Pattern C (owner spec 2026-11-07 19:52, --patternc): "mostly B
+            // pattern, but send Y5 to SA" — per-role lists carry exactly the
+            // minerals that role's staymin book loop visits. targets[0] is the
+            // startup mineral; Build5x5Book's Pattern-C branch appends the
+            // per-trip rotation legs. Pinned roles get a single-entry list.
+            // Pattern D (owner spec 2026-11-08 08:55, --patternd): return-swap
+            // rotation — lists carry the role's full trip sequence;
+            // targets[0] is the trip-1 mineral, the Pattern-D plan in
+            // Build5x5Book appends the alternating legs from trip 2.
+            // PatternJIT (owner spec 2026-11-09 17:59, --patternjit): bite 1 —
+            // ONLY S2 carries a target list ({SB}); every other role returns
+            // EMPTY so it gets no MiningTargets, no book, and auto-harvests
+            // until the owner adds its starting instructions one by one.
+            // Bite 4 (owner spec 2026-11-10 18:48): S1 -> {SA}, S3 -> {SA}
+            // (they take turns on SA — S3 stages on the 32-frame release
+            // gate), S2 -> {SB}. Everyone else stays empty and parks.
+            if (Settings.PatternJitMode
+                && !string.IsNullOrWhiteSpace(role) && role.Length == 2)
+            {
+                // S2-on-SA frame battery (owner spec 2026-11-11 09:13,
+                // --s2sa=N): S2 carries {SA} only — the same single-target
+                // speed-mining shape the SB battery used, pointed at SA.
+                if (Settings.PatternJitS2SaSmartFrame >= 0
+                    && string.Equals(NormalizeRole(role), "S2", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new[] { "SA" };
+                }
+                // Bite 5c (owner spec 2026-11-10 21:00, --juggler): the SA/SB
+                // juggler — "like a juggler with three balls and two hands".
+                // Each worker alternates minerals: S1 mines SA, returns, goes
+                // to SB; S2 mines SB, returns, mines SA when S3 flips; S3 is
+                // ready to go when S1 flips. Two-entry lists make
+                // Build5x5Book append the alternating loop chapters.
+                if (Settings.PatternJitJuggler)
+                {
+                    // Move probe (owner spec 2026-11-11 20:48): S3 carries NO
+                    // book — its "book" IS the probe choreography: mineral
+                    // walk toward SB, stand on S1's exact SA seat until it can
+                    // harvest, Smart on SA once S1 has 32 harvest frames
+                    // (~f65). Reused juggler chapters pulled S3 off the seat
+                    // into the approach corridor (run 182729: SMH-arr f115
+                    // instead of mining right after S1's f70 flip).
+                    return NormalizeRole(role) switch
+                    {
+                        "S1" => new[] { "SA", "SB" },
+                        "S2" => new[] { "SB", "SA" },
+                        "S3" => Settings.PatternJitMoveProbe && Settings.PatternJitS3StopBump ? Array.Empty<string>() : new[] { "SA", "SB" },
+                        _ => Array.Empty<string>(),
+                    };
+                }
+                return NormalizeRole(role) switch
+                {
+                    "S1" => new[] { "SA" },
+                    "S2" => new[] { "SB" },
+                    "S3" => new[] { "SA" },
+                    _ => Array.Empty<string>(),
+                };
+            }
+            if (Settings.PatternDReturnSwap
+                && !string.IsNullOrWhiteSpace(role) && role.Length == 2)
+            {
+                return NormalizeRole(role) switch
+                {
+                    "T1" => new[] { "TA", "TB" },
+                    "T2" => new[] { "TB", "TA" },
+                    "T3" => new[] { "SA" },
+                    "T4" => new[] { "SB", "BB" },
+                    "T5" => new[] { "TA" },
+                    "S2" => new[] { "SB", "BB" },
+                    "B2" => new[] { "BB", "SB" },
+                    "Y1" => new[] { "YA", "YB" },
+                    "Y2" => new[] { "YB", "YA" },
+                    "Y3" => new[] { "BA" },
+                    "Y4" => new[] { "BA" },
+                    "Y5" => new[] { "YA" },
+                    _ => Array.Empty<string>()
+                };
+            }
+            if (Settings.PatternCRotation
+                && !string.IsNullOrWhiteSpace(role) && role.Length == 2)
+            {
+                return NormalizeRole(role) switch
+                {
+                    "T1" => new[] { "TA" },
+                    "T2" => new[] { "TB" },
+                    "T3" => new[] { "SA", "SB" },
+                    "T4" => new[] { "TB", "TA" },
+                    "T5" => new[] { "SB" },
+                    "S2" => new[] { "SB", "BB" },
+                    "Y5" => new[] { "SA" },
+                    "B2" => new[] { "BB", "BA" },
+                    "Y3" => new[] { "BA" },
+                    "Y1" => new[] { "YA" },
+                    "Y2" => new[] { "YB" },
+                    "Y4" => new[] { "YB", "YA" },
+                    _ => Array.Empty<string>()
+                };
+            }
             if (Settings.IsMagannatha5x5Rotation
                 && !string.IsNullOrWhiteSpace(role) && role.Length == 2)
             {

@@ -1342,6 +1342,42 @@ namespace BabySharkBot.Setup
 
         private const float MeasuredSmMatchTolerance = 0.75f;
 
+        // Left-point-default minerals (owner directive 2026-11-06 17:14: "Fix
+        // S2" x10 — S2 must aim at SB's LEFT POINT, not the face midpoint).
+        // The --smhcorner sweep (battery report §29) measured the corner SMH
+        // as a STRICT WIN for SB only: S2 first pickup f69->f65, T5
+        // f115->f111, the SB pair gains a 6th pickup by f338, bank-200 stays
+        // f338 with 31 deliveries. BB's corner was good for its own pair but
+        // its return lane blocks Y3's BA reseat (Y3 +19/+27 on trips 2-3),
+        // and the BA/YB/YA corners pay a corner-seat harvest-initiation
+        // penalty that eats the path gain (all-five netted f342). So the left
+        // point is the DEFAULT for exactly the measured-good mineral;
+        // --smhcorner still applies it to every x-dominant mineral.
+        // Coordinate-keyed like MeasuredSmPoints.
+        private static readonly (float cx, float cy)[] LeftPointDefaultMinerals =
+        {
+            (133.00f, 19.50f), // SE SB
+            (19.00f, 132.50f), // NW SB (no-op today: its SMR is y-dominant)
+        };
+
+        private static bool IsLeftPointDefaultMineral(Vector2Dto resourcePosition)
+        {
+            if (resourcePosition == null)
+            {
+                return false;
+            }
+            for (var i = 0; i < LeftPointDefaultMinerals.Length; i++)
+            {
+                var dx = LeftPointDefaultMinerals[i].cx - resourcePosition.X;
+                var dy = LeftPointDefaultMinerals[i].cy - resourcePosition.Y;
+                if (dx * dx + dy * dy <= MeasuredSmMatchTolerance * MeasuredSmMatchTolerance)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private static bool TryGetMeasuredSmPoints(Vector2Dto resourcePosition, out (float smHx, float smHy, float smRx, float smRy) measured)
         {
             measured = default;
@@ -1410,6 +1446,67 @@ namespace BabySharkBot.Setup
                 Console.WriteLine($"InitialMapData: measured SM override mineral=({resourcePosition.X:F2},{resourcePosition.Y:F2}) smH=({measured.smHx:F3},{measured.smHy:F3}) smR=({measured.smRx:F3},{measured.smRy:F3})");
                 smHarvestPoint = new Vector2Dto(measured.smHx, measured.smHy, resourcePosition.Z);
                 smReturnPoint = new Vector2Dto(measured.smRx, measured.smRy, townhallPosition.Z);
+                // HarvestPoint must sit on the worker-stand rectangle, not the
+                // 1.0u constant circle: the circle sits INSIDE the footprint
+                // collision margin on E/W faces, making the StoredTarget
+                // approach point unreachable — the worker stops ~0.1u short
+                // and creeps (fresh-cache control run 2026-11-06 15:01: Y1
+                // flip f68->f71, loop +15-23f/cycle). HP = ray from the
+                // mineral center toward the townhall intersected with the
+                // stand rectangle (2x1 footprint + 0.375u worker radius =>
+                // half-extents 1.375 x 0.875). This reproduces the tuned
+                // stale-0.11-cache HPs within 0.02u (TA (127.083,19.367),
+                // YA (132.647,24.496)); HP=SMH was tried and cost T1 a frame.
+                {
+                    var hdx = (double)townhallPosition.X - resourcePosition.X;
+                    var hdy = (double)townhallPosition.Y - resourcePosition.Y;
+                    var htx = Math.Abs(hdx) > 1e-6 ? 1.375 / Math.Abs(hdx) : double.MaxValue;
+                    var hty = Math.Abs(hdy) > 1e-6 ? 0.875 / Math.Abs(hdy) : double.MaxValue;
+                    var ht = Math.Min(htx, hty);
+                    harvestPoint = new Vector2Dto(
+                        (float)(resourcePosition.X + hdx * ht),
+                        (float)(resourcePosition.Y + hdy * ht),
+                        resourcePosition.Z);
+                }
+            }
+
+            // --smhcorner (owner spec 2026-11-06 15:21): "have workers that mine
+            // SB,BB,BA,YB,YA move to the SMH by finding a point thru that where
+            // the worker tries to move thru the SMH without decelerating ...
+            // not the fat center of the mineral but the left point ... a
+            // shorter walk to and from the mineral."
+            //
+            // The screen-left point of the drawn footprint hexagon is the
+            // SMR-FACING side/corner of the axis-aligned 2x1 footprint. Rule:
+            // when the SMR direction from the mineral center is x-dominant
+            // (|dx| > |dy| — exactly the right-column minerals SB/BB/BA/YB/YA
+            // at SE), the SMH becomes the closest point of the stand rectangle
+            // to the SMR (side face, refined in y — SW corner for SB/BB).
+            // Face-on minerals (TA/TB/SA, y-dominant) keep the measured
+            // face-midpoint SMH: clamping those slid TA's stand 0.17u along
+            // the face and cost T1 a frame (0.12-cache test).
+            //
+            // Verified mechanics (run 144556): the engine accepts corner
+            // stands — S2 sat 0.07-0.24u from the SB corner and harvested;
+            // SB pair first pickup f69->f65.
+            //
+            // Default scope (owner directive 2026-11-06 17:14 "Fix S2"): SB is
+            // cornered WITHOUT the flag — the only mineral where the sweep
+            // measured a strict win. --smhcorner still corners every
+            // x-dominant mineral (SB/BB/BA/YB/YA at SE).
+            if (Settings.SmhCornerStand || IsLeftPointDefaultMineral(resourcePosition))
+            {
+                const float standHalfX = 1.25f;
+                const float standHalfY = 0.83f;
+                var sdx = smReturnPoint.X - resourcePosition.X;
+                var sdy = smReturnPoint.Y - resourcePosition.Y;
+                if (Math.Abs(sdx) > Math.Abs(sdy))
+                {
+                    var cornerX = Math.Clamp(smReturnPoint.X, resourcePosition.X - standHalfX, resourcePosition.X + standHalfX);
+                    var cornerY = Math.Clamp(smReturnPoint.Y, resourcePosition.Y - standHalfY, resourcePosition.Y + standHalfY);
+                    Console.WriteLine($"InitialMapData: SMHCORNER{(Settings.SmhCornerStand ? "" : "-SB-DEFAULT")} mineral=({resourcePosition.X:F2},{resourcePosition.Y:F2}) faceSmH=({smHarvestPoint.X:F3},{smHarvestPoint.Y:F3}) leftSmH=({cornerX:F3},{cornerY:F3})");
+                    smHarvestPoint = new Vector2Dto(cornerX, cornerY, resourcePosition.Z);
+                }
             }
 
             return new HarvestReturnCargoPointDto
