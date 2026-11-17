@@ -891,8 +891,10 @@ namespace BabySharkBot.Managers
             // canon seats, but the underlying assignment labels are the 5x5
             // rotation roles (W1=T5, W2=T4, W3=T1, W4=T2), so the canon
             // display maps from the SEAT (StartLabel), which is stable.
-            // Seats 5-12 keep their assignment labels until each team is
+            // Seats 6-12 keep their assignment labels until each team is
             // re-choreographed and its new roles are canon.
+            // 2026-11-17 11:54 (owner): W5's choreographed role is S1 — the
+            // screen label must print 5-S1, not its assignment role 5-T3.
             if (Settings.Flip68BuildMode)
             {
                 var mapped = (worker.StartLabel ?? worker.Label) switch
@@ -901,6 +903,7 @@ namespace BabySharkBot.Managers
                     "W2" => "T1",
                     "W3" => "T2",
                     "W4" => "S3",
+                    "W5" => "S1",
                     _ => finalLabel
                 };
                 if (!string.Equals(mapped, finalLabel, StringComparison.Ordinal))
