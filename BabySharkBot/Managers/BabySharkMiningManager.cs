@@ -388,234 +388,47 @@ namespace BabySharkBot.Managers
             _workerInstructionDrawCount = 0;
             _initialMiningManeuvers = true;
             _openingFrame = -1;
-            _patternJitParkedTags.Clear();
-            _patternJitSbSmartFired = false;
-            _patternJitSaSmartFired = false;
-            _patternJitT2MeetFired = false;
-            _patternJitT2PushFired = false;
-            _patternJitT2ParkFired = false;
-            _patternJitT2TbTouchFrame = -1;
-            _patternJitTbTag = 0;
-            _patternJitTbCenter = null;
         }
 
-        // PatternJIT park set (owner spec 2026-11-10 08:00: "Send the 11 to a
-        // point that is out of the way like 5u North and 5u West of the
-        // hatchery, then I can better see what is going on"): tags of the 11
-        // bookless workers that already received their one-shot park Move.
-        private readonly HashSet<ulong> _patternJitParkedTags = new HashSet<ulong>();
+        // JIT collision tracking (--jitlog, owner spec 2026-11-14 14:36):
+        // log-only measurement layer for the JIT collision-avoidance system.
+        private readonly Dictionary<ulong, int> _jitGatherStart = new();
+        private readonly Dictionary<ulong, string> _jitGatherMin = new();
+        private readonly Dictionary<ulong, float> _jitPrevX = new();
+        private readonly Dictionary<ulong, float> _jitPrevY = new();
+        private readonly Dictionary<string, int> _jitPairLogged = new();
+        private readonly Dictionary<ulong, int> _jitApproachLogged = new();
+        // JIT action layer (--jitact): last frame each worker was redirected,
+        // bounds redirect ping-pong to one per JitActCooldownFrames.
+        private readonly Dictionary<ulong, int> _jitActCooldown = new();
+        // --tealf0 (owner spec 2026-11-14 19:23 + 20:07): Teal frame-zero
+        // bump state. T1 = the S1 role (angled start, bumped, loops TA);
+        // T3 = the T2 bumper role (mineral walk east, stop wall, then the
+        // TA wait point).
+        // Owner 2026-11-15 16:42/18:44: TB's SM harvest stand latched at f0
+        // — T3's post-bump break Move target is the stand + --t3tboff
+        // (--t3break=TB, default 0.2u W of the stand).
+        // Owner 2026-11-15 19:29 (--tealrev): TB's mineral center latched at
+        // f0 — T1's contact-frame Move target is the center + the thru
+        // offset (the TB-thru shape, mirroring T3's TA-thru move).
+        // Owner spec 2026-11-14 23:05: T3 takes over TA the frame T1 flips
+        // (timings mean no Teal worker needs to mine the same mineral twice).
+        // T1's book becomes TA -> TB after its first return.
+        // Teal juggle (owner 2026-11-15 00:32): T1 and T3 also alternate
+        // TA/TB every trip. T1 starts TA (first return -> TB); T3 takes TA
+        // at the takeover (its first return -> TB).
 
-        // --sbsmart=N: true once the direct Smart on SB has been fired.
-        private bool _patternJitSbSmartFired;
-        // --sasmart=N (bite 4): true once the direct Smart on SA (S1) fired.
-        private bool _patternJitSaSmartFired;
-        // --s2sa=N (owner spec 2026-11-11 09:13): true once the S2->SA Smart fired.
-        private bool _patternJitS2SaSmartFired;
-        // --t2bump (bite 5b): T2->S1 bump choreography state.
-        private bool _patternJitT2MeetFired;
-        private bool _patternJitT2PushFired;
-        private bool _patternJitT2ParkFired;
-        private int _patternJitT2TbTouchFrame = -1;
-        private ulong _patternJitTbTag;
-        private Vector2Dto _patternJitTbCenter;
-        // --moveprobe (owner spec 2026-11-11 08:36): f8 STOP T2 + Move S1 to
-        // the SA-offset point, f9 the same Move to T2.
-        private bool _patternJitProbeStopFired;
-        private bool _patternJitProbeT2MoveFired;
-        private Vector2Dto _patternJitProbePoint;
-        // --minofftest (owner question 2026-11-12 06:43): one parked worker
-        // per mineral gets a one-shot Move to center + (-1.05, +0.05) on SB,
-        // BB, BA, YB, YA; the probe logs where each actually comes to rest.
-        private bool _patternJitMinOffIssued;
-        private bool _patternJitMinOffSummaryPrinted;
-        private readonly List<(ulong Tag, string WorkerRole, string MineralLabel, float Tx, float Ty, bool Arrived)> _patternJitMinOffWorkers = new();
-        // --smartprobe=d (owner spec 2026-11-12 07:45): 8 workers, one per
-        // mineral, parked at ideal + d toward the hatchery, then Smarted.
-        private bool _smartProbeIssued;
-        private bool _smartProbeSummaryPrinted;
-        private readonly List<SmartProbeWorker> _smartProbeWorkers = new();
-        private readonly Dictionary<ulong, int> _smartProbeLeashLastFrame = new();
-        private readonly List<ulong> _smartProbeSuicideTags = new();
-        private float _smartProbeCornerX;
-        private float _smartProbeCornerY;
-        // --thruprobe=t (owner question 2026-11-12 09:54): thru-depth vs
-        // deceleration/wrap measurement, one worker per mineral.
-        private bool _thruProbeIssued;
-        private readonly List<ThruProbeWorker> _thruProbeWorkers = new();
-        // --standpast=d (owner question 2026-11-13 07:03): Move to stand + d
-        // toward center, log where the worker actually rests vs the stand.
-        private bool _standPastIssued;
-        private bool _standPastSummaryPrinted;
-        private readonly List<(ulong Tag, string Role, string MineralLabel, float StandX, float StandY, float Tx, float Ty, bool Arrived)> _standPastWorkers = new();
-        // --retprobe (owner spec 2026-11-13 08:04): S2-only SB return-leg
-        // ladder. State: 0 = moving to mineral thru, 1 = waiting for carry,
-        // 2 = returning (waiting for the D gate), 3 = waiting for deposit.
-        private bool _retProbeIssued;
-        private bool _retProbeDone;
-        private int _retProbeState;
-        private int _retProbeTrip;
-        private ulong _retProbeS2Tag;
-        private ulong _retProbeMineralTag;
-        private ulong _retProbeTownHallTag;
-        private float _retProbeStandX, _retProbeStandY;
-        private float _retProbeThruX, _retProbeThruY;
-        private float _retProbeRetThruX, _retProbeRetThruY;
-        private int _retProbeFlipFrame = -1;
-        private int _retProbeSmartFrame = -1;
-        private float _retProbeSmartX, _retProbeSmartY;
-        private bool _retProbeWasCarrying;
-        private readonly List<ulong> _retProbeSquadTags = new();
-        private readonly Dictionary<ulong, int> _retProbeLeashLastFrame = new();
-        private float _retProbeCornerX, _retProbeCornerY;
-        private static readonly float[] RetProbeLadder =
-            { 4.0f, 3.75f, 3.5f, 3.25f, 3.0f, 2.75f, 2.5f, 2.25f, 2.0f, 1.75f, 1.5f, 1.25f, 1.0f };
-        // --sbloop (owner spec 2026-11-13 08:40): continuous both-legs-tuned
-        // SB cycle. Reuses the retprobe geometry; separate state so the two
-        // probes can never run into each other.
-        private bool _sbLoopIssued;
-        private bool _sbLoopDone;
-        private int _sbLoopState; // 0 = approach, 1 = wait carry, 2 = return, 3 = wait deposit
-        private int _sbLoopTrip;
-        private ulong _sbLoopS2Tag;
-        private ulong _sbLoopMineralTag;
-        private ulong _sbLoopTownHallTag;
-        private float _sbLoopStandX, _sbLoopStandY;
-        private float _sbLoopThruX, _sbLoopThruY;
-        private float _sbLoopRetThruX, _sbLoopRetThruY;
-        private int _sbLoopFlipFrame = -1;
-        private int _sbLoopLastDepositFrame = -1;
-        private int _sbLoopHarvestFrame = -1;
-        private readonly List<ulong> _sbLoopSquadTags = new();
-        private readonly Dictionary<ulong, int> _sbLoopLeashLastFrame = new();
-        private float _sbLoopCornerX, _sbLoopCornerY;
-        private readonly Dictionary<ulong, int> _thruProbeLeashLastFrame = new();
-        private readonly List<ulong> _thruProbeSuicideTags = new();
-        private float _thruProbeCornerX;
-        private float _thruProbeCornerY;
-        private sealed class ThruProbeWorker
-        {
-            public ulong Tag;
-            public string Role = "";
-            public string MineralLabel = "";
-            public ulong MineralTag;
-            public float CenterX;
-            public float CenterY;
-            public float StandX;
-            public float StandY;
-            public float StandDist;   // stand distance from center
-            public float OriginX;
-            public float OriginY;
-            public float ThruX;
-            public float ThruY;
-            public int State;         // 0 = to origin, 1 = thru move, 2 = smarted, 3 = logged
-            public int ThruFrame = -1;
-            public int SmartFrame = -1;
-            public int HarvestFrame = -1;
-            public float MaxWrapAngle; // max angle (deg) from the stand bearing after thru issue; > 75 = around the back
-        }
-        private sealed class SmartProbeWorker
-        {
-            public ulong Tag;
-            public string Role = "";
-            public string MineralLabel = "";
-            public ulong MineralTag;
-            public float ParkX;
-            public float ParkY;
-            public float IdealX;
-            public float IdealY;
-            public int State; // 0 = moving to park, 1 = smarted, 2 = logged
-            public int SmartFrame = -1;
-            public float ParkRestX;
-            public float ParkRestY;
-            public bool ArrivedClean;
-        }
-        // Move-probe T2 TB leg + macro-hatchery journey (owner spec 2026-11-11
-        // 13:03): after the STOP T2 has no contact, so its post-stop Move is a
-        // THRU point 0.5u east / 0.6u north of TB's center; the Smart on TB is
-        // distance-gated by the §67 rule (fire at 1.0-1.3u from the seat). On
-        // the 1184 flip T2 does NOT return to its normal SMR — it deposits at
-        // the west-side return point (min stand->point + point->macro legs on
-        // the 2.85u return circle) and then Moves to the Macro Hatchery
-        // location. Frame + leg telemetry is printed for the macro hatchery
-        // test phase.
-        private bool _patternJitProbeT2SmartFired;
-        private ulong _patternJitProbeTbTag;
-        private Vector2Dto _patternJitProbeTbThru;
-        private Vector2Dto _patternJitProbeTbSeat;
-        private bool _patternJitProbeT2WasCarrying;
-        private int _patternJitProbeT2FlipFrame = -1;
-        private Vector2Dto _patternJitProbeWestReturn;
-        private bool _patternJitProbeReturnMoveFired;
-        private bool _patternJitProbeReturnSmartFired;
-        private int _patternJitProbeT2ReturnedFrame = -1;
-        private bool _patternJitProbeMacroMoveFired;
-        private int _patternJitProbeT2MacroArriveFrame = -1;
-        private float _patternJitProbeLeg1Units;
-        private float _patternJitProbeLeg2Units;
-        // Move-probe S3 stop-bump (owner spec 2026-11-11 13:41): S3 mineral
-        // walks to SB until it is 1u west of SA, Moves to S1's exact live
-        // seat position, Stops at contact, and gets a Smart on SA one frame
-        // after S1's 1184 flip.
-        private bool _patternJitProbeS3WalkFired;
-        private bool _patternJitProbeS3PeelFired;
-        private bool _patternJitProbeS3StoppedFired;
-        private bool _patternJitProbeS3SmartFired;
-        private bool _patternJitProbeS1WasCarrying;
-        private int _patternJitProbeS1FlipFrame = -1;
-        // S1 macro-hatchery journey (owner spec 2026-11-11 18:18): on the
-        // 1184 flip, S1 returns on the west-side circle point and Moves to
-        // the macro hatchery location, mirroring T2's §68 journey.
-        private Vector2Dto _patternJitProbeS1ReturnPoint;
-        private Vector2Dto _patternJitProbeS1ReturnThru;
-        private bool _patternJitProbeS1ReturnMoveLogged;
-        private bool _patternJitProbeS1ReturnSmartFired;
-        private int _patternJitProbeS1ReturnedFrame = -1;
-        private int _patternJitProbeS1MacroArriveFrame = -1;
-        private float _patternJitProbeS1Leg1Units;
-        private float _patternJitProbeS1Leg2Units;
-        // S1/S2 bump (owner spec 2026-11-11 21:47): S2's second SB speed-mine
-        // via the straight-line SMR (mining stand -> hatchery center on the
-        // 2.85u return circle); S1, free after its f70 flip (S3 owns SA),
-        // carries toward S2's harvest line (attempt 1: SMR + 1u east) and
-        // their tail-crossing on S2's mineral-walk back bumps both workers.
-        private bool _patternJitProbeS2WasCarrying;
-        private int _patternJitProbeS2FlipFrame = -1;
-        private float _patternJitProbeS2SeatX;
-        private float _patternJitProbeS2SeatY;
-        private Vector2Dto _patternJitProbeS2Smr;
-        private Vector2Dto _patternJitProbeS2SmrThru;
-        private bool _patternJitProbeS2ReturnMoveLogged;
-        private bool _patternJitProbeS2ReturnSmartFired;
-        private int _patternJitProbeS2ReturnedFrame = -1;
-        private bool _patternJitProbeS2BumpFired;
-        private float _patternJitProbeS2S1PrevDist = -1f;
-        private Vector2Dto _patternJitProbeSbSeatThru;
-        private bool _patternJitProbeS2SecondSmartFired;
-        private int _patternJitProbeS2SecondArrFrame = -1;
-        private Vector2Dto _patternJitProbeS1BumpTarget;
-        private int _patternJitProbeS1LineCrossFrame = -1;
-        private float _patternJitProbeS1PrevLineDist = float.NaN;
-        // --s1stopbump (owner spec 2026-11-13 13:57) state.
-        private bool _patternJitS1SbMoveIssued;
-        private bool _patternJitS1SbStopped;
-        private int _patternJitS1SbStoppedFrame = -1;
-        private int _patternJitS1SbBumpFrame = -1;
-        private bool _patternJitS1SbReturnMoveIssued;
-        private bool _patternJitS1SbReturnSmartFired;
-        private bool _patternJitS1SbSaMoveIssued;
-        private bool _patternJitS1SbSaSmartFired;
-        private int _patternJitS1SbSaArriveFrame = -1;
-        private int _patternJitS1SbS3FlipFrame = -1;
-        private bool _patternJitS1SbS3WasCarrying;
-        // --hatchbump (owner spec 2026-11-13 16:48) state.
-        private bool _patternJitHbS1SmartFired;
-        private int _patternJitHbS1DepositFrame = -1;
-        private bool _patternJitHbS2ThruIssued;
-        private int _patternJitHbS2ThruFrame = -1;
-        private bool _patternJitHbS1SaMoveIssued;
-        private bool _patternJitHbS1SaSmartFired;
-        private int _patternJitHbS1SaArrFrame = -1;
-        private float _patternJitHbMinDist = float.MaxValue;
+        // --tealtest (owner spec 2026-11-15 21:09): S3-joins-Teal sandwich
+        // state. Each worker's thru Move fires ONCE on its own frame (owner
+        // 19:56: never re-issue — the worker must reach cruising speed).
+        // T3's TA Smart is distance-gated (1.3u from the seat, the stage-3
+        // convention) and the suicide end fires on T3's first cargo flip.
+        // --t1tbflip (owner 21:59): T1's TB harvest + flip — the winner
+        // metric when the flag is on.
+        // Teal team (owner 22:24): T3 takes TA over when
+        // T1 flips; its own first TA flip is the default suicide trigger.
+        private const int JitActCooldownFrames = 60;
+        private const float JitActCruiseSpeed = 0.176f; // p90 measured, champion telemetry 2026-11-14
 
         public void OnStart(ResponseGameInfo gameInfo, ResponseData data, ResponsePing pingResponse, ResponseObservation observation, uint playerId, String opponentId)
         {
@@ -1064,6 +877,38 @@ namespace BabySharkBot.Managers
             // StartLabel is the canonical greedy list index: W1 is list/display 1,
             // W8/W12 is list/display 8/12. Never derive this prefix from observation order.
             var workerIndex = ParseWorkerIndex(worker.StartLabel ?? worker.Label);
+
+            // Teal team (owner spec 2026-11-16 06:04 "the new corrected
+            // labels on the workers"; 08:05 "I will expect to see W1 With
+            // its shiny new label 1-T3 and W2 with the label 2-T1 and W3
+            // as 3-T2 and W4 as 4-S3"): the screen label shows the NEW
+            // team role ONLY — no physical-role paren suffix on any of
+            // them. Canon mapping (owner 2026-11-16 14:49): W1 = T3 (TA second),
+            // W2 = T1 (TA first), W3 = T2
+            // (TB), W4 = S3 (parked). Teal 1/2/3 are canon.
+            //
+            // flip68 (owner spec 2026-11-16 19:06, build-owned books): same
+            // canon seats, but the underlying assignment labels are the 5x5
+            // rotation roles (W1=T5, W2=T4, W3=T1, W4=T2), so the canon
+            // display maps from the SEAT (StartLabel), which is stable.
+            // Seats 5-12 keep their assignment labels until each team is
+            // re-choreographed and its new roles are canon.
+            if (Settings.Flip68BuildMode)
+            {
+                var mapped = (worker.StartLabel ?? worker.Label) switch
+                {
+                    "W1" => "T3",
+                    "W2" => "T1",
+                    "W3" => "T2",
+                    "W4" => "S3",
+                    _ => finalLabel
+                };
+                if (!string.Equals(mapped, finalLabel, StringComparison.Ordinal))
+                {
+                    return workerIndex > 0 ? $"{workerIndex}-{mapped}" : mapped;
+                }
+            }
+
             return workerIndex > 0 ? $"{workerIndex}-{finalLabel}" : finalLabel;
         }
 
@@ -1240,10 +1085,13 @@ namespace BabySharkBot.Managers
             // every stage/harvest/return handoff.
             // 2026-11-11 (owner spec 13:03): the move probe's T2 macro-
             // hatchery journey runs to ~f208 (return Smart f118, deposit
-            // f121, macro arrival f208), so with --moveprobe the break
+            // f121, macro arrival f208), so under probe-driven runs the break
             // window covers the full journey.
-            var stepBreakWindow = Settings.StayMineralLoop ? 360 : Settings.SmHandoffMode ? 120 : Settings.EarlySuicideTestEnd ? (Settings.PatternJitMoveProbe ? 215 : 110) : 25;
-            if ((_currentFrame >= 5 && _currentFrame <= stepBreakWindow) || _anyWorkerRed)
+            var stepBreakWindow = Settings.StepBreakWindowOverride > 0 ? Settings.StepBreakWindowOverride : Settings.StayMineralLoop ? 927 : Settings.SmHandoffMode ? 120 : Settings.EarlySuicideTestEnd ? 110 : 25;
+            // Debugger.IsAttached guard: the break is a VS step-thru aid only.
+            // Headless (owner "run the test" from a shell) has no debugger —
+            // an unattached Break() raises the JIT-dialog/crashes the run.
+            if (Debugger.IsAttached && ((_currentFrame >= 5 && _currentFrame <= stepBreakWindow) || _anyWorkerRed))
             {
                Debugger.Break();
             }
@@ -1344,18 +1192,16 @@ namespace BabySharkBot.Managers
             actions.AddRange(UpdateB3ExtractorTrick(observation));
             var commandContexts = new List<InstructionCommandContext>();
             actions.AddRange(ExecuteRuntimeWorkerInstructions(observation, commandContexts));
-            actions.AddRange(IssuePatternJitSbSmart(commandContexts));
-            actions.AddRange(IssuePatternJitT2Bump(observation, commandContexts));
-            actions.AddRange(IssuePatternJitMoveProbe(commandContexts));
-            actions.AddRange(IssuePatternJitMinOffProbe(commandContexts));
-            actions.AddRange(IssuePatternJitSmartRangeProbe(commandContexts));
-            actions.AddRange(IssuePatternJitThruProbe(commandContexts));
-            actions.AddRange(IssuePatternJitStandPastProbe(commandContexts));
-            actions.AddRange(IssuePatternJitReturnProbe(commandContexts));
-            actions.AddRange(IssuePatternJitSbLoopProbe(commandContexts));
+            // 2026-11-16 (owner 19:06): in flip68 build mode the build owns ALL
+            // worker commands via the book; every PatternJIT side-driver is
+            // disabled, not deleted (deletion happens only after the flip68
+            // run is proven green).
+            if (!Settings.Flip68BuildMode)
+            {
             actions.AddRange(IssueReturnInterrupts(observation, actions, commandContexts));
             actions.AddRange(IssueWaitNudges(actions, commandContexts));
             actions.AddRange(IssuePreFlipQueuedReturns(actions, commandContexts));
+            }
 
             UpdateScoutedMinerals(observation);
             UpdateMineralReturnRate(observation);
@@ -1373,7 +1219,7 @@ namespace BabySharkBot.Managers
             // the game ends quickly and the run loop can restart. Returning
             // the end actions here also suppresses the books/trick driver, so
             // nothing re-issues the pool build or any mining command.
-            if (Settings.EarlySuicideTestEnd)
+            if (Settings.EarlySuicideTestEnd && !Settings.Flip68BuildMode)
             {
                 var endActions = TryBuildEarlySuicideTestEndActions(observation);
                 if (endActions != null)
@@ -1393,19 +1239,7 @@ namespace BabySharkBot.Managers
         {
             if (!_suicideTestEndTriggered)
             {
-                if (Settings.PatternJitMode)
-                {
-                    // PatternJIT bite 4 (owner spec 2026-11-10 18:48: "let all
-                    // 3 collect minerals", suicide at 200 — superseding bite
-                    // 3's "observe S2's first return"): S1+S3 speed-mine SA in
-                    // turns, S2 mines SB continuously; the run ends when the
-                    // bank reaches 200 so full-cycle telemetry is captured.
-                    if (_currentMinerals < 200 || _currentFrame <= 100)
-                    {
-                        return null;
-                    }
-                }
-                else if (Settings.EarlySuicideOnRoleReturn)
+                if (Settings.EarlySuicideOnRoleReturn)
                 {
                     // 2026-11-04 (owner spec 08:54): fire when BOTH T1 and Y1
                     // have RETURNED THEIR FIRST CARGO — the metric is the
@@ -1432,18 +1266,6 @@ namespace BabySharkBot.Managers
                 var t1m = _roleMilestones["T1"];
                 var y1m = _roleMilestones["Y1"];
                 _suicideBannerFrame = _currentFrame;
-                if (Settings.PatternJitMode && _roleMilestones.TryGetValue("S2", out var s2Banner))
-                {
-                    // Bite 4 banner: line1 S2 (SB solo), line2 S1+S3 (SA
-                    // turn-takers), line3 the 200-bank frame.
-                    _roleMilestones.TryGetValue("S1", out var s1Banner);
-                    _roleMilestones.TryGetValue("S3", out var s3Banner);
-                    _suicideBannerT1 = $"S2 SMH-arr f{s2Banner.ArrivedSmh} 1184-flip f{s2Banner.Flip1184} returned f{s2Banner.Returned}";
-                    _suicideBannerY1 = $"S1 arr f{s1Banner?.ArrivedSmh ?? -1} flip f{s1Banner?.Flip1184 ?? -1} ret f{s1Banner?.Returned ?? -1} | S3 arr f{s3Banner?.ArrivedSmh ?? -1} flip f{s3Banner?.Flip1184 ?? -1} ret f{s3Banner?.Returned ?? -1}";
-                    _suicideBannerBank = $"bank-200 f{_bank200Frame}";
-                    Console.WriteLine($"[SUICIDE-END] frame={_currentFrame} bank={_currentMinerals} bank-200 f{_bank200Frame} trigger=200-mineral bank (bite 4) | S2 SMH-arr f{s2Banner.ArrivedSmh} 1184-flip f{s2Banner.Flip1184} returned f{s2Banner.Returned} | S1 SMH-arr f{s1Banner?.ArrivedSmh ?? -1} 1184-flip f{s1Banner?.Flip1184 ?? -1} returned f{s1Banner?.Returned ?? -1} | S3 SMH-arr f{s3Banner?.ArrivedSmh ?? -1} 1184-flip f{s3Banner?.Flip1184 ?? -1} returned f{s3Banner?.Returned ?? -1} — cancelling pool, all drones attacking own hatchery");
-                }
-                else
                 {
                     _suicideBannerT1 = $"T1 SMH-arr f{t1m.ArrivedSmh} 1184-flip f{t1m.Flip1184} returned f{t1m.Returned}";
                     _suicideBannerY1 = $"Y1 SMH-arr f{y1m.ArrivedSmh} 1184-flip f{y1m.Flip1184} returned f{y1m.Returned}";
@@ -1510,17 +1332,6 @@ namespace BabySharkBot.Managers
             }
             if (!_roleMilestoneTagsResolved)
             {
-                // PatternJIT (owner spec 2026-11-09 17:59): track S2 too — the
-                // suicide trigger is S2's first 1184 flip. Bite 2 (owner spec
-                // 2026-11-10 15:27): also track S1 (natural SA stand off one
-                // f0 Smart — the SMH-arr print IS the reference measurement)
-                // and S3 (mineral-walk arrival at SB for path telemetry).
-                if (Settings.PatternJitMode)
-                {
-                    if (!_roleMilestones.ContainsKey("S2")) _roleMilestones["S2"] = new RoleMilestone();
-                    if (!_roleMilestones.ContainsKey("S1")) _roleMilestones["S1"] = new RoleMilestone();
-                    if (!_roleMilestones.ContainsKey("S3")) _roleMilestones["S3"] = new RoleMilestone();
-                }
                 var startIndex = Globals.CurrentStartIndex >= 0
                     ? Globals.CurrentStartIndex
                     : Settings.CurrentSpawnIndex;
@@ -1544,15 +1355,6 @@ namespace BabySharkBot.Managers
 
             foreach (var kvp in _roleMilestones)
             {
-                // PatternJIT: only the S1/S2/S3 milestones matter (the others
-                // would false-positive "SMH-arr f1" off the spawn auto-harvest).
-                if (Settings.PatternJitMode
-                    && !string.Equals(kvp.Key, "S2", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(kvp.Key, "S1", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(kvp.Key, "S3", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
                 var m = kvp.Value;
                 if (m.Tag == 0 || m.Returned >= 0)
                 {
@@ -1593,8 +1395,7 @@ namespace BabySharkBot.Managers
                     // worker to be within 2.0u of the mineral its 1183 order
                     // targets — real seats: S2 1.48u from SB, S1 0.89u from SA,
                     // S3's true wait spot 1.41u from SB.
-                    if (ability == 1183 && m.HasLastPos && speed < 0.05f
-                        && (!Settings.PatternJitMode || (_currentFrame > 2 && IsSeatedAtOrderTargetMineral(unit))))
+                    if (ability == 1183 && m.HasLastPos && speed < 0.05f)
                     {
                         m.ArrivedSmh = _currentFrame;
                         Console.WriteLine($"[SUICIDE-END MILESTONE] {kvp.Key} SMH-arr f{_currentFrame} pos=({unit.Pos.X:F2},{unit.Pos.Y:F2})");
@@ -1616,31 +1417,6 @@ namespace BabySharkBot.Managers
                 m.HasLastPos = true;
             }
         }
-
-        // PatternJIT bite 2: SMH-arr distance gate — the worker must be within
-        // 2.0u of the mineral its 1183 order targets, or "stationary with a
-        // gather order" is just the walk's slow first frames (S3 false-positived
-        // f3 at the spawn, 7.5u from SB; real seats: S2 1.48u, S1 0.89u, S3's
-        // true wait spot 1.41u from the target mineral center).
-        private static bool IsSeatedAtOrderTargetMineral(Unit unit)
-        {
-            var targetTag = unit?.Orders?.FirstOrDefault()?.TargetUnitTag ?? 0;
-            if (targetTag == 0)
-            {
-                return false;
-            }
-            var minerals = Globals.CurrentObservation?.Minerals;
-            if (minerals == null
-                || !minerals.TryGetValue(targetTag, out var mineral)
-                || mineral?.Position == null)
-            {
-                return false;
-            }
-            var dx = unit.Pos.X - mineral.Position.X;
-            var dy = unit.Pos.Y - mineral.Position.Y;
-            return dx * dx + dy * dy <= 4.0f;
-        }
-
         private void RegisterCurrentSpawnLabels(int startIndex, List<WorkerEntryDto> liveWorkers)
         {
             // BuildManager owns worker labels. MiningManager only consumes the
@@ -1904,7 +1680,6 @@ namespace BabySharkBot.Managers
                         if (assignment == null) continue;
 
                         OrderedMineral taMineral = null;
-                        OrderedMineral tbMineral = null;
                         if (assignment.Minerals != null)
                         {
                             foreach (var mineral in assignment.Minerals)
@@ -1927,27 +1702,16 @@ namespace BabySharkBot.Managers
                                 {
                                     taMineral = mineral;
                                 }
-                                if (string.Equals(mineral.Label, "TB", StringComparison.OrdinalIgnoreCase)
-                                    || string.Equals(mineral.FinalLabel, "TB", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    tbMineral = mineral;
-                                }
                             }
                         }
 
-                        // SM Return -> SM Harvest line in the mineral's own color
-                        // (TA per owner spec 2026-10-26 18:45; TB added per owner
-                        // rule 3, 2026-10-29 — the TB line must clear TA's bulge).
-                        foreach (var lineMineral in new[] { taMineral, tbMineral })
-                        {
-                            if (lineMineral?.SmReturnPoint == null || lineMineral.SmHarvestPoint == null) continue;
-                            var lineColor = ProcessVisableUnits.GetFinalLabelColor(
-                                string.IsNullOrWhiteSpace(lineMineral.FinalLabel) ? lineMineral.Label : lineMineral.FinalLabel);
-                            ManagerDebugService.DrawLine(
-                                new Point { X = lineMineral.SmReturnPoint.X, Y = lineMineral.SmReturnPoint.Y, Z = ResolveBumpVizGroundZ(start) },
-                                new Point { X = lineMineral.SmHarvestPoint.X, Y = lineMineral.SmHarvestPoint.Y, Z = lineMineral.Position.Z },
-                                lineColor);
-                        }
+                        // Owner 2026-11-15 18:30: the TA/TB SM Return -> SM
+                        // Harvest static lines are REMOVED — both render in
+                        // TA teal and their SmReturnPoint ends sit on the
+                        // hatchery circle in the worker spawn cluster, so
+                        // they read as "lines from T1/T3 start". (Was: owner
+                        // spec 2026-10-26 18:45 + rule 3 2026-10-29.) The
+                        // live position -> move-target lines are untouched.
 
                         // Choreography guide lines (owner spec 2026-10-26 18:45,
                         // green line re-anchored on TA mineral per 20:47 Paint):
@@ -2084,11 +1848,11 @@ namespace BabySharkBot.Managers
 
                     var propSmh = isSe ? (128.469f, 18.296f) : (23.529f, 133.706f);
                     var propSmr = isSe ? (127.948f, 21.635f) : (24.052f, 130.365f);
+                    // Owner 2026-11-15 18:30: the proposed TB pair's teal LINE
+                    // is removed with the TA/TB SMR->SMH lines above (same
+                    // "line from the spawn cluster" read). The hatch crosses
+                    // stay.
                     var tbColor = ProcessVisableUnits.GetFinalLabelColor("TB");
-                    ManagerDebugService.DrawLine(
-                        new Point { X = propSmr.Item1, Y = propSmr.Item2, Z = gz },
-                        new Point { X = propSmh.Item1, Y = propSmh.Item2, Z = MineralZOf("TB") },
-                        tbColor);
                     DrawBumpVizHatch(propSmh.Item1, propSmh.Item2, MineralZOf("TB"), tbColor);
                     DrawBumpVizHatch(propSmr.Item1, propSmr.Item2, gz, tbColor);
                 }
@@ -2766,30 +2530,6 @@ namespace BabySharkBot.Managers
 
                 runtimeWorker.Position = assignedWorker.CurrentXY ?? runtimeWorker.Position;
 
-                // Owner spec 2026-11-11 18:18 (S1 only): once S1's 1184 flip
-                // fires, the probe's post-flip choreography owns it (21:47:
-                // the SB-line bump — previously the macro journey). The
-                // {SA,SB} book's SB chapter fought the probe's Move and
-                // dragged S1 ~40f off course (run 182729).
-                // S3 has no book in this mode at all (owner spec 20:48).
-                if (Settings.PatternJitMoveProbe
-                    && _patternJitProbeS1FlipFrame >= 0
-                    && string.Equals(assignedWorker.Role, "S1", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                // Owner spec 2026-11-11 21:47: same for S2 — from its 1184
-                // flip the probe owns the straight-line SB SMR return, the
-                // mineral-walk back, and the S1 bump. The {SB,SA} book would
-                // return S2 on the pair line instead.
-                if (Settings.PatternJitMoveProbe
-                    && _patternJitProbeS2FlipFrame >= 0
-                    && string.Equals(assignedWorker.Role, "S2", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
                 // 13-B3 extractor trick (run 2026-10-15 23:09): while the book is
                 // gate-held on the VaWalkRedirect row, a collision detour would
                 // replace the ONE walk gather with a detour SMART (frame 890: B3's
@@ -2885,28 +2625,7 @@ namespace BabySharkBot.Managers
 
                     if (runtimeWorker.CurInstrIdx >= runtimeWorker.Instructions.Count)
                     {
-                        // PatternJIT (owner spec 2026-11-09 17:59): 11 of 12
-                        // workers carry NO book by design (added one bite at a
-                        // time) — an empty list is the harness state, not a
-                        // failure. Stay silent for it.
-                        if (Settings.PatternJitMode && runtimeWorker.Instructions.Count == 0)
-                        {
-                            // Owner spec 2026-11-10 08:00: "Send the 11 to a
-                            // point that is out of the way like 5u North and
-                            // 5u West of the hatchery" — one-shot park Move so
-                            // S2's book is the only motion on screen. Without
-                            // this they idle on the engine's auto-harvest and
-                            // clutter the mineral line.
-                            TryParkPatternJitWorkerOnce(runtimeWorker, actions, contexts);
-                            break;
-                        }
-                        // --sbsmart=N experiment book (a single Move row):
-                        // exhaustion after that row is BY DESIGN — the direct
-                        // Smart comes from IssuePatternJitSbSmart. No report.
-                        if (!(Settings.PatternJitMode && Settings.PatternJitSbSmartFrame >= 0))
-                        {
-                            ReportBookExhaustedOnce(runtimeWorker, "instruction list ended without a jump row");
-                        }
+                        ReportBookExhaustedOnce(runtimeWorker, "instruction list ended without a jump row");
                         break;
                     }
 
@@ -2926,6 +2645,27 @@ namespace BabySharkBot.Managers
                     {
                         ReportInstructionFailure(runtimeWorker, "current instruction is null", null);
                         break;
+                    }
+
+                    // flip68 gate-worker condition (owner spec 2026-11-16 19:11):
+                    // a COMMAND row gated on another worker is simply not due
+                    // while the gate is unmet — skip it (never blocking) and
+                    // continue with the next row. Wait rows are EXCLUDED: the
+                    // control-row pass above owns gated waits (unmet = hold) —
+                    // without the exclusion the wait is re-read here as a
+                    // command and skipped, which silently passed W1's
+                    // gate-wait at f9 and fired the takeover Smart nine
+                    // seconds early (run 20261116202540). GateBankMinerals
+                    // rows (owner spec 2026-11-17 06:20, bank-200 suicide)
+                    // are evaluated by the same check even though they carry
+                    // no GateWorkerTag.
+                    if (instruction.Command != WorkerInstructionCommand.Wait
+                        && (instruction.GateWorkerTag != 0 || instruction.GateBankMinerals >= 0)
+                        && !IsGateWorkerSatisfied(instruction))
+                    {
+                        runtimeWorker.CurInstrIdx++;
+                        runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
+                        continue;
                     }
 
                     // Absolute frame floor (owner spec 2026-10-22, jitRMFineTune):
@@ -3491,6 +3231,68 @@ namespace BabySharkBot.Managers
             return false;
         }
 
+        // flip68 gate-worker condition (owner spec 2026-11-16 19:11): the row
+        // passes when the gate worker's CURRENT observed ability matches
+        // GateWorkerAbilityId (or AbilityId2). 1183 = harvest gather, 1184 =
+        // harvest return (the flip). The gate worker's runtime state is
+        // synced every frame before any book executes, so the read is
+        // same-frame fresh.
+        //
+        // LATCHING (run 20261116203903 diagnosis): satisfaction is a
+        // one-time EVENT, like the owner's "build a spawning pool at 200
+        // bank" model — once the flip (1184) has been observed the condition
+        // stays met for the rest of the game. Without the latch the gate
+        // only matches on frames the gate worker's CURRENT ability is
+        // exactly 1184 (~30-frame return window); every book whose walk
+        // reached its gated tail row after that window closed skipped the
+        // row as unmet and walked off the end of the book (f120 "instruction
+        // list ended" for all 12 workers). The latch key is the observed
+        // (tag, ability) pair, so a row gating on a different ability of the
+        // same worker is unaffected.
+        private readonly HashSet<(ulong Tag, int AbilityId)> _gateWorkerEventLatch = new();
+        // flip68 bank gate (owner spec 2026-11-17 06:20): one-time EVENT latch
+        // per threshold value — once the bank has been observed at/above the
+        // gate the condition stays met (the bank may later be spent down).
+        private readonly HashSet<int> _gateBankEventLatch = new();
+
+        private bool IsGateWorkerSatisfied(WorkerInstruction instruction)
+        {
+            if (instruction == null)
+            {
+                return false;
+            }
+            if (instruction.GateBankMinerals >= 0)
+            {
+                if (_currentMinerals >= instruction.GateBankMinerals)
+                {
+                    _gateBankEventLatch.Add(instruction.GateBankMinerals);
+                    return true;
+                }
+                return _gateBankEventLatch.Contains(instruction.GateBankMinerals);
+            }
+            if (instruction.GateWorkerTag == 0)
+            {
+                return true;
+            }
+            if (!Settings.RuntimeWorkers.TryGetValue(instruction.GateWorkerTag, out var gateWorker) || gateWorker == null)
+            {
+                return false;
+            }
+            if (gateWorker.CurrentAbilityId == instruction.GateWorkerAbilityId)
+            {
+                _gateWorkerEventLatch.Add((instruction.GateWorkerTag, instruction.GateWorkerAbilityId));
+                return true;
+            }
+            if (instruction.GateWorkerAbilityId2 >= 0 && gateWorker.CurrentAbilityId == instruction.GateWorkerAbilityId2)
+            {
+                _gateWorkerEventLatch.Add((instruction.GateWorkerTag, instruction.GateWorkerAbilityId2));
+                return true;
+            }
+            return _gateWorkerEventLatch.Contains((instruction.GateWorkerTag, instruction.GateWorkerAbilityId))
+                || (instruction.GateWorkerAbilityId2 >= 0
+                    && _gateWorkerEventLatch.Contains((instruction.GateWorkerTag, instruction.GateWorkerAbilityId2)));
+        }
+
         private bool AdvanceSatisfiedControlInstructions(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker)
         {
             while (runtimeWorker.CurInstrIdx >= 0 && runtimeWorker.CurInstrIdx < runtimeWorker.Instructions.Count)
@@ -3500,6 +3302,46 @@ namespace BabySharkBot.Managers
                 {
                     ReportInstructionFailure(runtimeWorker, "control instruction is null", null);
                     return false;
+                }
+
+                // flip68 gate-worker condition on a CONTROL row: a gated Wait
+                // HOLDS the book (returns waiting) until the gate passes — the
+                // T3 takeover parks on it until T1 flips. A gated Jump is not
+                // due while unmet — fall through to the next row, so a normal
+                // cycle continues and only the gate's target (the suicide
+                // tail) is reached once the gate passes.
+                if ((instruction.GateWorkerTag != 0 || instruction.GateBankMinerals >= 0) && !IsGateWorkerSatisfied(instruction))
+                {
+                    if (instruction.Command == WorkerInstructionCommand.Wait)
+                    {
+                        return true;
+                    }
+                    runtimeWorker.CurInstrIdx++;
+                    runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
+                    continue;
+                }
+
+                // flip68 gate MET on a Wait that carries no other pass
+                // condition: the gate IS the condition — pass the row outright
+                // (the generic pass check below would hold it forever: no
+                // frame/ability signature, no handoff edge). The Mti update a
+                // normal Wait pass performs is copied. Bank gates included
+                // (owner spec 2026-11-17 06:20, bank-200 suicide).
+                if ((instruction.GateWorkerTag != 0 || instruction.GateBankMinerals >= 0)
+                    && instruction.Command == WorkerInstructionCommand.Wait
+                    && instruction.RelativeFrame < 0
+                    && instruction.TargetAbilityId < 0
+                    && !instruction.HarvestReleaseGate
+                    && instruction.RequireMinerals < 0
+                    && instruction.RequireFrame < 0)
+                {
+                    if (instruction.NextTargetIndex >= 0 && instruction.NextTargetIndex < assignedWorker.MiningTargets.Count)
+                    {
+                        assignedWorker.Mti = instruction.NextTargetIndex;
+                    }
+                    runtimeWorker.CurInstrIdx++;
+                    runtimeWorker.InstructionStartFrame = Settings.GetRelativeFrame(_currentFrame);
+                    continue;
                 }
 
                 var relativeFrame = Settings.GetRelativeFrame(_currentFrame) - runtimeWorker.InstructionStartFrame;
@@ -3789,6 +3631,20 @@ namespace BabySharkBot.Managers
                     runtimeWorker.UnitTag,
                     assignedWorker?.MiningTargets?.FirstOrDefault(candidate => candidate != null && candidate.ResourceUnitId == instruction.TargetId)?.TownHallUnitId ?? 0,
                     instruction.Queue),
+                // flip68 suicide row (owner spec 2026-11-16 19:11): ATTACK the
+                // row's target unit (own hatchery). Terminal — the book ends
+                // after the row and nothing re-issues, so the attack persists.
+                WorkerInstructionCommand.Attack when instruction.TargetId != 0 => CreateInstructionAttackAction(
+                    runtimeWorker.UnitTag,
+                    instruction.TargetId,
+                    instruction.Queue),
+                // flip68 raw point ability (owner spec 2026-11-17 06:00):
+                // 4-T2's Spray (3684) at its park point after the Move row.
+                WorkerInstructionCommand.RawAbility when instruction.RawAbilityId >= 0 && targetPoint != null => CreateInstructionPointAbilityAction(
+                    runtimeWorker.UnitTag,
+                    instruction.RawAbilityId,
+                    new Point2D { X = targetPoint.X, Y = targetPoint.Y },
+                    instruction.Queue),
                 WorkerInstructionCommand.Stop => CreateInstructionStopAction(runtimeWorker.UnitTag),
                 WorkerInstructionCommand.StoreTargetPoint => null,
                 WorkerInstructionCommand.UseTargetPoint => StoreReferencedTargetPoint(runtimeWorker, targetPoint, instruction),
@@ -4004,6 +3860,15 @@ namespace BabySharkBot.Managers
 
         private Vector2Dto? ResolveInstructionPoint(RuntimeWorkerState runtimeWorker, AssignedWorkerDto assignedWorker, WorkerInstruction instruction)
         {
+            // flip68 build rows (owner spec 2026-11-16 19:11): a literal fixed
+            // point wins over every enum resolution — the build is
+            // map/start-specific and pins exact coordinates. Checked BEFORE
+            // the None guard: literal rows carry Point = None.
+            if (instruction != null && instruction.LiteralX.HasValue && instruction.LiteralY.HasValue)
+            {
+                return new Vector2Dto(instruction.LiteralX.Value, instruction.LiteralY.Value, 0);
+            }
+
             if (instruction == null || instruction.Point == WorkerInstructionPoint.None || assignedWorker == null)
             {
                 return null;
@@ -4407,23 +4272,6 @@ namespace BabySharkBot.Managers
                 WorkerInstructionPoint.BumpHarvestCircle => ResolveBumpHarvestCirclePoint(assignedWorker, target),
                 WorkerInstructionPoint.BumpCcaWaitCircle when teamAssignment != null
                     => ResolveCcaWaitPoint(teamAssignment, assignedWorker.Role),
-                // PatternJIT bite 4 (owner spec 2026-11-10 18:48): S3's wait
-                // spot off SA while S1 harvests — fixed point from
-                // Settings.PatternJitSa3WaitX/Y (default derived in
-                // ApplyPatternJitSaStand: 2.0u from the stand toward the
-                // hatchery; --sasawait= overrides).
-                WorkerInstructionPoint.PatternJitSaWait
-                    => new Vector2Dto(Settings.PatternJitSa3WaitX, Settings.PatternJitSa3WaitY, 0f),
-                // PatternJIT bite 5b (owner spec 2026-11-10 21:35): S1's f0
-                // angled bump line (T2 bump) — fixed point from
-                // Settings.PatternJitS1BumpThruX/Y (computed in
-                // BabySharkBot.ComputePatternJitT2BumpGeometry).
-                WorkerInstructionPoint.PatternJitS1BumpThru
-                    => new Vector2Dto(Settings.PatternJitS1BumpThruX, Settings.PatternJitS1BumpThruY, 0f),
-                // PatternJIT owner probe (owner spec 2026-11-11 07:56):
-                // S1's literal frame-0 Move target from --s1f0=X,Y.
-                WorkerInstructionPoint.PatternJitS1F0Point
-                    => new Vector2Dto(Settings.PatternJitS1F0X, Settings.PatternJitS1F0Y, 0f),
                 _ => null
             };
         }
@@ -6346,74 +6194,6 @@ namespace BabySharkBot.Managers
             }
 
             var selfRole = assignedWorker?.Role ?? string.Empty;
-
-            // PatternJIT bite 5c juggler (owner spec 2026-11-10 21:00): on
-            // the shared SA/SB corridor the partner is ANY other juggler
-            // worker carrying cargo inbound on the lane — "the harvester
-            // going to a mineral will mineral walk until both workers have
-            // their tails in the same space at the same time, then the
-            // harvester switches back to a move thru point which should push
-            // both faster." Pick the carrier met FIRST along the lane (the
-            // smallest in-lane projection that is still ahead of or level
-            // with the walker); a carrier already behind the walker has
-            // already been crossed and must not hold the gate.
-            if (Settings.PatternJitJuggler
-                && (selfRole.Equals("S1", StringComparison.OrdinalIgnoreCase)
-                    || selfRole.Equals("S2", StringComparison.OrdinalIgnoreCase)
-                    || selfRole.Equals("S3", StringComparison.OrdinalIgnoreCase)))
-            {
-                var startIndexJ = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                var jugglerWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndexJ);
-                RuntimeWorkerState bestPartner = null;
-                var bestS = float.MaxValue;
-                var anyCarrier = false;
-                foreach (var candidate in jugglerWorkers ?? Enumerable.Empty<AssignedWorkerDto>())
-                {
-                    if (candidate == null || candidate.UnitID == runtimeWorker.UnitTag
-                        || !(candidate.Role?.Equals("S1", StringComparison.OrdinalIgnoreCase) == true
-                            || candidate.Role?.Equals("S2", StringComparison.OrdinalIgnoreCase) == true
-                            || candidate.Role?.Equals("S3", StringComparison.OrdinalIgnoreCase) == true))
-                    {
-                        continue;
-                    }
-                    if (!Settings.RuntimeWorkers.TryGetValue(candidate.UnitID, out var candidateRt)
-                        || candidateRt == null || !candidateRt.IsCarrying
-                        || !HasNonZeroPoint(candidateRt.Position))
-                    {
-                        continue;
-                    }
-                    var sCandidate = (candidateRt.Position.X - hatcheryEnd.X) * ux
-                        + (candidateRt.Position.Y - hatcheryEnd.Y) * uy;
-                    // Already delivered (behind the return point): nothing to bump.
-                    if (sCandidate < 0f)
-                    {
-                        continue;
-                    }
-                    anyCarrier = true;
-                    // The carrier met FIRST along the lane is the nearest one
-                    // still ahead of (or level with) the walker; carriers
-                    // already behind have been crossed and must not hold the
-                    // gate.
-                    if (sCandidate >= sSelf && sCandidate < bestS)
-                    {
-                        bestS = sCandidate;
-                        bestPartner = candidateRt;
-                    }
-                }
-                // No inbound carrier on the lane: run the normal leg.
-                if (!anyCarrier)
-                {
-                    _crossBumpGateAnchor.Remove(runtimeWorker.UnitTag);
-                    return runtimeWorker.Position;
-                }
-                if (bestPartner != null)
-                {
-                    return null; // carrier still ahead — keep the mineral walk
-                }
-                Console.WriteLine($"[CROSS-BUMP] frame={Settings.GetRelativeFrame(_currentFrame)} walker={runtimeWorker.UnitTag} role={selfRole} sSelf={sSelf:F2} pos=({runtimeWorker.Position.X:F2},{runtimeWorker.Position.Y:F2}) — all carriers crossed");
-                _crossBumpGateAnchor.Remove(runtimeWorker.UnitTag);
-                return runtimeWorker.Position;
-            }
 
             string partnerRole = null;
             if (selfRole.Equals("T1", StringComparison.OrdinalIgnoreCase))
@@ -9148,2584 +8928,41 @@ namespace BabySharkBot.Managers
                 ActionRaw = new ActionRaw { UnitCommand = command }
             };
         }
-
-        // --sbsmart=N (owner spec 2026-11-10 09:22: "f22 issue a Smart on SB,
-        // run test again with f21, f20, f19"): PatternJIT experiment — at
-        // exactly frame N the book worker (S2, the only worker with
-        // MiningTargets in bite 1) gets a DIRECT Smart on its SB mineral. The
-        // book holds only the frame-0 Move (BuildStayMinThruStartup), so the
-        // harvest-command frame is fully controlled by N.
-        // Bite 4 (owner spec 2026-11-10 18:48: "have S1 and S3 Speed mine SA,
-        // each time adjust the approach a little"): S1 gets the same
-        // direct-Smart treatment on SA at --sasmart=N; S2's SB shot is
-        // unchanged. S3 is NOT shot here — its book holds a HarvestReleaseGate
-        // Wait + Gather Smart, so it takes its turn when S1 has accumulated
-        // 32 harvest frames.
-        private List<SC2Action> IssuePatternJitSbSmart(List<InstructionCommandContext> contexts)
+        // Row-for-row WorkerInstruction copy for the new-S3 book inheritance
+        // (owner spec 2026-11-16 12:58). Flat DTO — an initializer copy; the
+        // source list is cleared right after the handoff, so sharing row
+        // references would dangle.
+        private static WorkerInstruction CopyWorkerInstruction(WorkerInstruction src)
         {
-            var result = new List<SC2Action>();
-            if (!Settings.PatternJitMode)
+            return new WorkerInstruction
             {
-                return result;
-            }
-            // S2-on-SA battery (--s2sa=N): the direct Smart aims S2 at SA;
-            // the default S2->SB shot must NOT fire (it would yank S2 to SB).
-            if (Settings.PatternJitSbSmartFrame >= 0 && Settings.PatternJitS2SaSmartFrame < 0
-                && _currentFrame == Settings.PatternJitSbSmartFrame && !_patternJitSbSmartFired)
-            {
-                _patternJitSbSmartFired = true;
-                AddPatternJitSmartForRole(result, contexts, "S2", "SB", "SbMineral");
-            }
-            if (Settings.PatternJitS2SaSmartFrame >= 0 && _currentFrame == Settings.PatternJitS2SaSmartFrame && !_patternJitS2SaSmartFired)
-            {
-                _patternJitS2SaSmartFired = true;
-                AddPatternJitSmartForRole(result, contexts, "S2", "SA", "SaMineral");
-            }
-            if (Settings.PatternJitSaSmartFrame >= 0 && _currentFrame == Settings.PatternJitSaSmartFrame && !_patternJitSaSmartFired)
-            {
-                _patternJitSaSmartFired = true;
-                AddPatternJitSmartForRole(result, contexts, "S1", "SA", "SaMineral");
-            }
-            return result;
-        }
-
-        // Bite 2 fix (owner spec 2026-11-10 15:27): with several workers
-        // carrying target lists, "first worker with any target" can Smart the
-        // WRONG worker — select by role.
-        private void AddPatternJitSmartForRole(List<SC2Action> result, List<InstructionCommandContext> contexts, string role, string label, string pointLabel)
-        {
-            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-            var bookWorker = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex)
-                ?.FirstOrDefault(w => w != null
-                    && string.Equals(w.Role, role, StringComparison.OrdinalIgnoreCase)
-                    && w.MiningTargets != null && w.MiningTargets.Count > 0);
-            var mineralTag = bookWorker?.MiningTargets?.FirstOrDefault()?.ResourceUnitId ?? 0;
-            if (bookWorker == null || mineralTag == 0)
-            {
-                return;
-            }
-            var command = new ActionRawUnitCommand
-            {
-                AbilityId = (int)Abilities.SMART,
-                TargetUnitTag = mineralTag,
-                QueueCommand = false
-            };
-            command.UnitTags.Add(bookWorker.UnitID);
-            result.Add(new SC2Action
-            {
-                ActionRaw = new ActionRaw { UnitCommand = command }
-            });
-            contexts?.Add(new InstructionCommandContext
-            {
-                WorkerTag = bookWorker.UnitID,
-                InstructionSet = $"patternjit-{label.ToLowerInvariant()}smart",
-                InstructionIndex = -1,
-                InstructionCommand = "Smart",
-                InstructionPoint = pointLabel
-            });
-            Console.WriteLine($"[PATTERN-JIT {label} SMART] frame={_currentFrame} worker={bookWorker.UnitID} mineral={mineralTag}");
-            // Owner metric (2026-11-13 10:22): "the closer S1 ends up on the
-            // smart Frame the better" — log the worker's live position and
-            // its distance to the mineral's §77 stand at the Smart frame.
-            var liveSnap = Globals.CurrentObservation;
-            var standMineral = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
-                ?.FirstOrDefault(m => string.Equals(m?.FinalLabel, label, StringComparison.OrdinalIgnoreCase));
-            if (liveSnap?.SelfUnits != null && standMineral?.Position != null
-                && liveSnap.SelfUnits.TryGetValue(bookWorker.UnitID, out var smartLive) && smartLive?.Position != null)
-            {
-                var soff = PatternJitStandOffset(label);
-                var ssx = standMineral.Position.X + soff.Dx;
-                var ssy = standMineral.Position.Y + soff.Dy;
-                var sdx = smartLive.Position.X - ssx;
-                var sdy = smartLive.Position.Y - ssy;
-                Console.WriteLine($"[SMART-METRIC] {role} frame={_currentFrame} pos=({smartLive.Position.X:F3},{smartLive.Position.Y:F3}) stand=({ssx:F3},{ssy:F3}) dist={(float)Math.Sqrt(sdx * sdx + sdy * sdy):F3}u");
-            }
-        }
-
-        // §77 engine-verified stand offsets per mineral label (west = -x).
-        private static (float Dx, float Dy) PatternJitStandOffset(string label)
-        {
-            return label switch
-            {
-                "TA" => (0.21f, 0.86f),
-                "TB" => (0.32f, 0.79f),
-                "SA" => (-0.31f, 0.86f),
-                "SB" => (-1.30f, 0.72f),
-                "BB" => (-1.34f, 0.53f),
-                "BA" => (-1.35f, 0.30f),
-                "YB" => (-1.35f, 0.08f),
-                "YA" => (-1.35f, 0.08f),
-                _ => (0f, 0f),
+                InstructionSet = src.InstructionSet,
+                Command = src.Command,
+                Point = src.Point,
+                TargetId = src.TargetId,
+                RelativeFrame = src.RelativeFrame,
+                PreviousAbilityId = src.PreviousAbilityId,
+                TargetAbilityId = src.TargetAbilityId,
+                TargetAbilityId2 = src.TargetAbilityId2,
+                RequireResources = src.RequireResources,
+                PositionTolerance = src.PositionTolerance,
+                Queue = src.Queue,
+                NoCondition = src.NoCondition,
+                StoreTargetPoint = src.StoreTargetPoint,
+                TargetPointReference = src.TargetPointReference,
+                NextTargetIndex = src.NextTargetIndex,
+                JumpToInstructionIndex = src.JumpToInstructionIndex,
+                NextInstructionSet = src.NextInstructionSet,
+                InvertGate = src.InvertGate,
+                JumpToPreviousRow = src.JumpToPreviousRow,
+                HarvestReleaseGate = src.HarvestReleaseGate,
+                HarvestReleaseFreeOnly = src.HarvestReleaseFreeOnly,
+                HarvestReleaseFramesOnly = src.HarvestReleaseFramesOnly,
+                RequireMinerals = src.RequireMinerals,
+                RequireFrame = src.RequireFrame,
+                AbilityIdOverride = src.AbilityIdOverride
             };
         }
-
-        // --t2bump (owner spec 2026-11-10 21:00/21:35, bite 5b): the T2->S1
-        // bump choreography driver. T2 mineral-walks toward SB from f0 (the
-        // park-branch one-shot Smart), S1's book opened with the angled
-        // bump-thru Move. This method fires the three timed steps:
-        //   meet frame:      S1 AND T2 Move to the SAME stand-thru point
-        //                    ("T2 gives a brief push by switching to a move
-        //                    to the same point as S1");
-        //   meet + --t2push: T2 breaks off with a Smart on TB;
-        //   TB touch + 5f:   T2 Moves to the park point ("Do not let T2 mine
-        //                    more than 5 frames, Move it to the suicide squad
-        //                    after it touches TB").
-        private List<SC2Action> IssuePatternJitT2Bump(ResponseObservation observation, List<InstructionCommandContext> contexts)
-        {
-            var result = new List<SC2Action>();
-            if (!Settings.PatternJitMode || !Settings.PatternJitT2Bump)
-            {
-                return result;
-            }
-            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
-            var s1 = assignedWorkers?.FirstOrDefault(w => string.Equals(w?.Role, "S1", StringComparison.OrdinalIgnoreCase));
-            var t2 = assignedWorkers?.FirstOrDefault(w => string.Equals(w?.Role, "T2", StringComparison.OrdinalIgnoreCase));
-            if (s1 == null || t2 == null)
-            {
-                return result;
-            }
-
-            // Meet frame: both Move to the shared stand-thru point (T2's push).
-            if (!_patternJitT2MeetFired && _currentFrame >= Settings.PatternJitT2MeetFrame
-                && Settings.PatternJitSaStandThruX >= 0f)
-            {
-                _patternJitT2MeetFired = true;
-                var meetPoint = new Point2D { X = Settings.PatternJitSaStandThruX, Y = Settings.PatternJitSaStandThruY };
-                var s1Move = CreateInstructionMoveAction(s1.UnitID, meetPoint, false);
-                var t2Move = CreateInstructionMoveAction(t2.UnitID, meetPoint, false);
-                if (s1Move != null)
-                {
-                    result.Add(s1Move);
-                }
-                if (t2Move != null)
-                {
-                    result.Add(t2Move);
-                }
-                contexts?.Add(new InstructionCommandContext
-                {
-                    WorkerTag = s1.UnitID,
-                    InstructionSet = "patternjit-t2bump",
-                    InstructionIndex = -1,
-                    InstructionCommand = "Move",
-                    InstructionPoint = "SaStandThru"
-                });
-                contexts?.Add(new InstructionCommandContext
-                {
-                    WorkerTag = t2.UnitID,
-                    InstructionSet = "patternjit-t2bump",
-                    InstructionIndex = -1,
-                    InstructionCommand = "Move",
-                    InstructionPoint = "SaStandThru"
-                });
-                Console.WriteLine($"[PATTERN-JIT T2 BUMP MEET] frame={_currentFrame} S1={s1.UnitID} T2={t2.UnitID} -> stand-thru ({meetPoint.X:F3},{meetPoint.Y:F3})");
-            }
-
-            // Push end: T2 breaks off to TB with a Smart.
-            if (_patternJitT2MeetFired && !_patternJitT2PushFired
-                && _currentFrame >= Settings.PatternJitT2MeetFrame + Settings.PatternJitT2PushFrames)
-            {
-                var tb = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
-                    ?.FirstOrDefault(m => string.Equals(m?.FinalLabel, "TB", StringComparison.OrdinalIgnoreCase));
-                if (tb != null && tb.UnitTag != 0)
-                {
-                    _patternJitT2PushFired = true;
-                    _patternJitTbTag = tb.UnitTag;
-                    _patternJitTbCenter = tb.Position;
-                    var breakoff = new ActionRawUnitCommand
-                    {
-                        AbilityId = (int)Abilities.SMART,
-                        TargetUnitTag = tb.UnitTag,
-                        QueueCommand = false
-                    };
-                    breakoff.UnitTags.Add(t2.UnitID);
-                    result.Add(new SC2Action
-                    {
-                        ActionRaw = new ActionRaw { UnitCommand = breakoff }
-                    });
-                    contexts?.Add(new InstructionCommandContext
-                    {
-                        WorkerTag = t2.UnitID,
-                        InstructionSet = "patternjit-t2bump",
-                        InstructionIndex = -1,
-                        InstructionCommand = "Smart",
-                        InstructionPoint = "TbMineral"
-                    });
-                    Console.WriteLine($"[PATTERN-JIT T2 BUMP BREAKOFF] frame={_currentFrame} T2={t2.UnitID} -> TB mineral={tb.UnitTag}");
-                }
-            }
-
-            // TB touch: 5 frames after T2 reaches TB's harvest range, Move it
-            // to the park point with the rest of the suicide squad.
-            if (_patternJitT2PushFired && !_patternJitT2ParkFired && _patternJitTbCenter != null)
-            {
-                var t2Unit = observation?.Observation?.RawData?.Units?.FirstOrDefault(u => u != null && u.Tag == t2.UnitID);
-                if (t2Unit != null)
-                {
-                    var dx = t2Unit.Pos.X - _patternJitTbCenter.X;
-                    var dy = t2Unit.Pos.Y - _patternJitTbCenter.Y;
-                    var dist = Math.Sqrt(dx * dx + dy * dy);
-                    if (_patternJitT2TbTouchFrame < 0 && dist <= 1.5)
-                    {
-                        _patternJitT2TbTouchFrame = _currentFrame;
-                        Console.WriteLine($"[PATTERN-JIT T2 TB TOUCH] frame={_currentFrame} pos=({t2Unit.Pos.X:F2},{t2Unit.Pos.Y:F2})");
-                    }
-                    if (_patternJitT2TbTouchFrame >= 0 && _currentFrame >= _patternJitT2TbTouchFrame + 5)
-                    {
-                        _patternJitT2ParkFired = true;
-                        var hatchery = Settings.CurrentSpawnLocation;
-                        if (hatchery != null)
-                        {
-                            var parkPoint = new Point2D { X = hatchery.X - 5f, Y = hatchery.Y + 5f };
-                            var parkMove = CreateInstructionMoveAction(t2.UnitID, parkPoint, false);
-                            if (parkMove != null)
-                            {
-                                result.Add(parkMove);
-                            }
-                            contexts?.Add(new InstructionCommandContext
-                            {
-                                WorkerTag = t2.UnitID,
-                                InstructionSet = "patternjit-t2bump",
-                                InstructionIndex = -1,
-                                InstructionCommand = "Move",
-                                InstructionPoint = "ParkPoint"
-                            });
-                            Console.WriteLine($"[PATTERN-JIT T2 PARK] frame={_currentFrame} T2={t2.UnitID} -> park ({parkPoint.X:F2},{parkPoint.Y:F2})");
-                        }
-                    }
-                }
-            }
-            return result;
-        }
-
-        // PatternJIT move probe (owner spec 2026-11-11 08:36): "On Frame 8
-        // issue a stop to T2 and a move to S1 to 0.5 West and 0.6 North of
-        // SA, on frame 9 issue that move to T2." The point is computed from
-        // SA's live center + (ProbeDx, ProbeDy) so the probe survives map
-        // shifts; defaults are exactly the owner's offsets (-0.5, +0.6).
-        private List<SC2Action> IssuePatternJitMoveProbe(List<InstructionCommandContext> contexts)
-        {
-            var result = new List<SC2Action>();
-            if (!Settings.PatternJitMode || !Settings.PatternJitMoveProbe)
-            {
-                return result;
-            }
-            // --probeframes=-1,N (owner spec 2026-11-11 10:44: "a series of
-            // tests without the stop"): stop frame -1 skips the STOP — T2
-            // goes straight from the BA mineral walk to the probe Move.
-            var stopDisabled = Settings.PatternJitProbeStopFrame < 0;
-            // No early-exit: the T2 TB loop (owner spec 18:18) runs until
-            // suicide, and the S1/S2 bump stages (owner spec 21:47) self-
-            // guard on their own flags.
-
-            var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-            var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
-            var s1 = assignedWorkers?.FirstOrDefault(w => string.Equals(w?.Role, "S1", StringComparison.OrdinalIgnoreCase));
-            var t2 = assignedWorkers?.FirstOrDefault(w => string.Equals(w?.Role, "T2", StringComparison.OrdinalIgnoreCase));
-            var s3 = assignedWorkers?.FirstOrDefault(w => string.Equals(w?.Role, "S3", StringComparison.OrdinalIgnoreCase));
-            if (s1 == null || t2 == null)
-            {
-                return result;
-            }
-
-            if (_patternJitProbePoint == null)
-            {
-                var sa = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
-                    ?.FirstOrDefault(m => string.Equals(m?.FinalLabel, "SA", StringComparison.OrdinalIgnoreCase));
-                if (sa?.Position == null)
-                {
-                    return result;
-                }
-                _patternJitProbePoint = new Vector2Dto(
-                    sa.Position.X + Settings.PatternJitProbeDx,
-                    sa.Position.Y + Settings.PatternJitProbeDy,
-                    sa.Position.Z);
-            }
-
-            // --sustainpush (owner spec 2026-11-13 12:10): instead of a
-            // stop bump, T2 gets a Move to E{dx}u/S{dy}u of S1's LIVE
-            // position every frame of the probe window (probeframes A,B =
-            // push window A..B), so the two workers keep pushing against
-            // each other. No STOP to T2, no S1 redirect Move.
-            if (Settings.PatternJitSustainPush
-                && _currentFrame >= Settings.PatternJitProbeStopFrame
-                && _currentFrame <= Settings.PatternJitProbeT2MoveFrame)
-            {
-                var pushSnap = Globals.CurrentObservation;
-                WorkerEntryDto s1Live = null;
-                pushSnap?.SelfUnits?.TryGetValue(s1.UnitID, out s1Live);
-                if (s1Live?.Position != null)
-                {
-                    var pushPoint = new Point2D
-                    {
-                        X = s1Live.Position.X + Settings.PatternJitPushDx,
-                        Y = s1Live.Position.Y + Settings.PatternJitPushDy
-                    };
-                    var t2Push = CreateInstructionMoveAction(t2.UnitID, pushPoint, false);
-                    if (t2Push != null)
-                    {
-                        result.Add(t2Push);
-                    }
-                    contexts?.Add(new InstructionCommandContext
-                    {
-                        WorkerTag = t2.UnitID,
-                        InstructionSet = "patternjit-sustainpush",
-                        InstructionIndex = -1,
-                        InstructionCommand = "Move",
-                        InstructionPoint = "SustainPushS1"
-                    });
-                    Console.WriteLine($"[PATTERN-JIT SUSTAIN PUSH] frame={_currentFrame} Move T2={t2.UnitID} -> ({pushPoint.X:F3},{pushPoint.Y:F3}) (S1 live {s1Live.Position.X:F3},{s1Live.Position.Y:F3})");
-                }
-            }
-
-            // S1's redirect Move is S1's own choreography — it fires even in
-            // the no-stop series (one frame before T2's bump Move); only the
-            // STOP to T2 is disabled by --probeframes=-1,N. Sustain-push
-            // replaces only T2's STOP (owner spec 2026-11-13 12:10) — S1
-            // still gets its redirect at the window-start frame.
-            var s1MoveFrame = Settings.PatternJitS1RedirectFrame >= 0
-                ? Settings.PatternJitS1RedirectFrame
-                : stopDisabled
-                    ? Settings.PatternJitProbeT2MoveFrame - 1
-                    : Settings.PatternJitProbeStopFrame;
-            if (!_patternJitProbeStopFired && _currentFrame >= s1MoveFrame)
-            {
-                _patternJitProbeStopFired = true;
-                if (!stopDisabled && !Settings.PatternJitSustainPush)
-                {
-                    var stop = CreateInstructionStopAction(t2.UnitID);
-                    if (stop != null)
-                    {
-                        result.Add(stop);
-                    }
-                    contexts?.Add(new InstructionCommandContext
-                    {
-                        WorkerTag = t2.UnitID,
-                        InstructionSet = "patternjit-moveprobe",
-                        InstructionIndex = -1,
-                        InstructionCommand = "Stop",
-                        InstructionPoint = "ProbeStop"
-                    });
-                }
-                var probePoint = new Point2D { X = _patternJitProbePoint.X, Y = _patternJitProbePoint.Y };
-                var s1Move = CreateInstructionMoveAction(s1.UnitID, probePoint, false);
-                if (s1Move != null)
-                {
-                    result.Add(s1Move);
-                }
-                contexts?.Add(new InstructionCommandContext
-                {
-                    WorkerTag = s1.UnitID,
-                    InstructionSet = "patternjit-moveprobe",
-                    InstructionIndex = -1,
-                    InstructionCommand = "Move",
-                    InstructionPoint = "SaProbePoint"
-                });
-                Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} {(stopDisabled ? "(no stop)" : $"STOP T2={t2.UnitID};")} Move S1={s1.UnitID} -> ({probePoint.X:F3},{probePoint.Y:F3})");
-            }
-
-            // In sustain-push mode the peel fires one frame after the push
-            // window closes so it never shares a frame with the last push.
-            var tbPeelFrame = Settings.PatternJitSustainPush
-                ? Settings.PatternJitProbeT2MoveFrame + 1
-                : Settings.PatternJitProbeT2MoveFrame;
-            if (!_patternJitProbeT2MoveFired && _currentFrame >= tbPeelFrame)
-            {
-                // Owner spec 2026-11-11 13:03: "After the Stop T2 has no
-                // contact, Change T2's Move thru to E 0.5u/ N 0.6 of TB" —
-                // the f9 Move no longer follows S1's probe point; T2 peels
-                // off to a thru point 0.5u east / 0.6u north of TB's center
-                // (inside the footprint, so the worker crosses the SMH stand
-                // at cruise instead of decelerating onto it).
-                var tbMineral = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
-                    ?.FirstOrDefault(m => string.Equals(m?.FinalLabel, "TB", StringComparison.OrdinalIgnoreCase));
-                if (tbMineral?.Position == null)
-                {
-                    return result; // mineral labels not ready — retry next frame
-                }
-                _patternJitProbeT2MoveFired = true;
-                _patternJitProbeTbTag = tbMineral.UnitTag;
-                _patternJitProbeTbThru = new Vector2Dto(
-                    tbMineral.Position.X + 0.5f,
-                    tbMineral.Position.Y + 0.6f,
-                    tbMineral.Position.Z);
-                // Seat estimate for the §67 distance gate: TB's SMH stand when
-                // known, else the footprint point on the hatchery ray (1.45u).
-                if (HasNonZeroPoint(tbMineral.SmHarvestPoint))
-                {
-                    _patternJitProbeTbSeat = tbMineral.SmHarvestPoint;
-                }
-                else
-                {
-                    var hatchery0 = Settings.CurrentSpawnLocation;
-                    var sdx = hatchery0.X - tbMineral.Position.X;
-                    var sdy = hatchery0.Y - tbMineral.Position.Y;
-                    var slen = (float)Math.Sqrt(sdx * sdx + sdy * sdy);
-                    _patternJitProbeTbSeat = slen >= 0.0001f
-                        ? new Vector2Dto(tbMineral.Position.X + sdx / slen * 1.45f, tbMineral.Position.Y + sdy / slen * 1.45f, tbMineral.Position.Z)
-                        : new Vector2Dto(tbMineral.Position.X, tbMineral.Position.Y, tbMineral.Position.Z);
-                }
-                var tbThruPoint = new Point2D { X = _patternJitProbeTbThru.X, Y = _patternJitProbeTbThru.Y };
-                var t2Move = CreateInstructionMoveAction(t2.UnitID, tbThruPoint, false);
-                if (t2Move != null)
-                {
-                    result.Add(t2Move);
-                }
-                contexts?.Add(new InstructionCommandContext
-                {
-                    WorkerTag = t2.UnitID,
-                    InstructionSet = "patternjit-moveprobe",
-                    InstructionIndex = -1,
-                    InstructionCommand = "Move",
-                    InstructionPoint = "TbProbeThru"
-                });
-                Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} Move T2={t2.UnitID} -> TB thru ({tbThruPoint.X:F3},{tbThruPoint.Y:F3}) seat est ({_patternJitProbeTbSeat.X:F3},{_patternJitProbeTbSeat.Y:F3})");
-            }
-
-            // ── T2 TB harvest + macro-hatchery journey (owner spec 2026-11-11
-            // 13:03) ─────────────────────────────────────────────────────
-            if (_patternJitProbeT2MoveFired && _patternJitProbeT2MacroArriveFrame < 0)
-            {
-                var snapshot = Globals.CurrentObservation;
-                WorkerEntryDto t2Entry = null;
-                snapshot?.SelfUnits?.TryGetValue(t2.UnitID, out t2Entry);
-                if (t2Entry?.Position != null)
-                {
-                    var carrying = t2Entry.IsCarrying;
-                    var t2x = t2Entry.Position.X;
-                    var t2y = t2Entry.Position.Y;
-
-                    // Stage 1: distance-gated Smart on TB (§67 rule: fire at
-                    // 1.0-1.3u from the seat while closing).
-                    if (!_patternJitProbeT2SmartFired && !carrying && _patternJitProbeTbSeat != null)
-                    {
-                        var sdx = t2x - _patternJitProbeTbSeat.X;
-                        var sdy = t2y - _patternJitProbeTbSeat.Y;
-                        var seatDist = (float)Math.Sqrt(sdx * sdx + sdy * sdy);
-                        if (seatDist <= 1.3f)
-                        {
-                            _patternJitProbeT2SmartFired = true;
-                            var smart = new ActionRawUnitCommand
-                            {
-                                AbilityId = (int)Abilities.SMART,
-                                TargetUnitTag = _patternJitProbeTbTag,
-                                QueueCommand = false
-                            };
-                            smart.UnitTags.Add(t2.UnitID);
-                            result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = smart } });
-                            contexts?.Add(new InstructionCommandContext
-                            {
-                                WorkerTag = t2.UnitID,
-                                InstructionSet = "patternjit-moveprobe",
-                                InstructionIndex = -1,
-                                InstructionCommand = "Smart",
-                                InstructionPoint = "TbMineral"
-                            });
-                            Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} Smart T2={t2.UnitID} -> TB={_patternJitProbeTbTag} at {seatDist:F2}u from seat");
-                        }
-                    }
-
-                    // Stage 2 (owner spec 2026-11-11 18:18): "Have T2 mine
-                    // TB until suicide." Simple loop — on the 1184 flip,
-                    // Smart-return to the hatchery; on the deposit edge,
-                    // Smart back onto TB. S1 runs the macro journey now.
-                    if (!_patternJitProbeT2WasCarrying && carrying)
-                    {
-                        if (_patternJitProbeT2FlipFrame < 0)
-                        {
-                            _patternJitProbeT2FlipFrame = _currentFrame;
-                        }
-                        var t2Hatchery = Globals.CurrentObservation?.SelfUnits?.Values.FirstOrDefault(u => u != null
-                            && u.UnitType == (uint)UnitTypes.ZERG_HATCHERY);
-                        if (t2Hatchery != null)
-                        {
-                            var returnSmart = new ActionRawUnitCommand
-                            {
-                                AbilityId = (int)Abilities.SMART,
-                                TargetUnitTag = t2Hatchery.UnitTag,
-                                QueueCommand = false
-                            };
-                            returnSmart.UnitTags.Add(t2.UnitID);
-                            result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = returnSmart } });
-                            contexts?.Add(new InstructionCommandContext
-                            {
-                                WorkerTag = t2.UnitID,
-                                InstructionSet = "patternjit-moveprobe",
-                                InstructionIndex = -1,
-                                InstructionCommand = "Smart",
-                                InstructionPoint = "HatcheryReturn"
-                            });
-                            Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} T2 1184-FLIP pos=({t2x:F2},{t2y:F2}) -> Smart return hatchery={t2Hatchery.UnitTag}");
-                        }
-                    }
-                    if (_patternJitProbeT2WasCarrying && !carrying && _patternJitProbeT2FlipFrame >= 0 && _patternJitProbeTbTag != 0)
-                    {
-                        var backToTb = new ActionRawUnitCommand
-                        {
-                            AbilityId = (int)Abilities.SMART,
-                            TargetUnitTag = _patternJitProbeTbTag,
-                            QueueCommand = false
-                        };
-                        backToTb.UnitTags.Add(t2.UnitID);
-                        result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = backToTb } });
-                        contexts?.Add(new InstructionCommandContext
-                        {
-                            WorkerTag = t2.UnitID,
-                            InstructionSet = "patternjit-moveprobe",
-                            InstructionIndex = -1,
-                            InstructionCommand = "Smart",
-                            InstructionPoint = "TbMineral"
-                        });
-                        Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} T2 RETURNED cargo ({_currentFrame - _patternJitProbeT2FlipFrame}f since flip) -> Smart TB={_patternJitProbeTbTag}");
-                    }
-
-                    _patternJitProbeT2WasCarrying = carrying;
-                }
-            }
-
-            // ── S1/S2 bump: S2's second SB speed-mine (owner spec
-            // 2026-11-11 21:47) ─────────────────────────────────────────
-            // S2's return SMR + Move-thru sit on the straight line from S2's
-            // SB mining stand through the hatchery center (2.85u return
-            // circle) — return as soon and as far out as possible for the
-            // shortest turnaround. S1 (free after its f70 flip; S3 owns SA)
-            // carries toward S2's harvest line as close to the hatchery as
-            // possible, like an SB->SA switcher returning at the SMR S2 just
-            // used — attempt 1 targets the SMR + 1u east, and the frame S1
-            // crosses the SB->hatchery line is logged. After depositing, S2
-            // mineral-walks back toward SB through S1; when their tails share
-            // the same spot, S2 gets a Move (collision back on) and the push
-            // accelerates S2 toward SB and S1 toward the SMR. The S1->macro
-            // journey chapter (18:18) is retired — its data is in §72/§73.
-            var s2 = assignedWorkers?.FirstOrDefault(w => string.Equals(w?.Role, "S2", StringComparison.OrdinalIgnoreCase));
-            var sbMineralBump = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
-                ?.FirstOrDefault(m => string.Equals(m?.FinalLabel, "SB", StringComparison.OrdinalIgnoreCase));
-            var hatcheryUnitB = Globals.CurrentObservation?.SelfUnits?.Values.FirstOrDefault(u => u != null
-                && u.UnitType == (uint)UnitTypes.ZERG_HATCHERY);
-            var hatcheryB = Settings.CurrentSpawnLocation;
-            WorkerEntryDto s1ReturnEntry = null;
-            Globals.CurrentObservation?.SelfUnits?.TryGetValue(s1.UnitID, out s1ReturnEntry);
-            WorkerEntryDto s2Entry = null;
-            if (s2 != null)
-            {
-                Globals.CurrentObservation?.SelfUnits?.TryGetValue(s2.UnitID, out s2Entry);
-            }
-
-            // ── S2 stages ──────────────────────────────────────────────
-            if (s2 != null && s2Entry != null && sbMineralBump != null && hatcheryB != null)
-            {
-                var s2x = s2Entry.Position.X;
-                var s2y = s2Entry.Position.Y;
-                var s2Carrying = s2Entry.IsCarrying;
-
-                // S2-a: 1184 flip -> remember the mining stand, compute the
-                // straight-line SMR (stand -> hatchery center, 2.85u circle)
-                // and the Move-thru 0.3u inside it.
-                if (!_patternJitProbeS2WasCarrying && s2Carrying && _patternJitProbeS2FlipFrame < 0)
-                {
-                    _patternJitProbeS2FlipFrame = _currentFrame;
-                    _patternJitProbeS2SeatX = s2x;
-                    _patternJitProbeS2SeatY = s2y;
-                    const float returnRadius = 2.85f;
-                    var ldx = s2x - hatcheryB.X;
-                    var ldy = s2y - hatcheryB.Y;
-                    var llen = (float)Math.Sqrt(ldx * ldx + ldy * ldy);
-                    if (llen >= 0.0001f)
-                    {
-                        var ux = ldx / llen;
-                        var uy = ldy / llen;
-                        _patternJitProbeS2Smr = new Vector2Dto(hatcheryB.X + ux * returnRadius, hatcheryB.Y + uy * returnRadius, 0);
-                        _patternJitProbeS2SmrThru = new Vector2Dto(hatcheryB.X + ux * (returnRadius - 0.3f), hatcheryB.Y + uy * (returnRadius - 0.3f), 0);
-                        Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} S2 1184-FLIP seat=({s2x:F2},{s2y:F2}) -> SB straight-line SMR ({_patternJitProbeS2Smr.X:F3},{_patternJitProbeS2Smr.Y:F3}) thru ({_patternJitProbeS2SmrThru.X:F3},{_patternJitProbeS2SmrThru.Y:F3})");
-                    }
-                }
-
-                // S2-b: return leg — Move thru every frame, Smart return at
-                // 1.3u from the SMR.
-                if (_patternJitProbeS2Smr != null && s2Carrying && _patternJitProbeS2ReturnedFrame < 0)
-                {
-                    var rx = s2x - _patternJitProbeS2Smr.X;
-                    var ry = s2y - _patternJitProbeS2Smr.Y;
-                    var rDist = (float)Math.Sqrt(rx * rx + ry * ry);
-                    if (rDist <= 1.3f && !_patternJitProbeS2ReturnSmartFired)
-                    {
-                        if (hatcheryUnitB != null)
-                        {
-                            _patternJitProbeS2ReturnSmartFired = true;
-                            var smart = new ActionRawUnitCommand
-                            {
-                                AbilityId = (int)Abilities.SMART,
-                                TargetUnitTag = hatcheryUnitB.UnitTag,
-                                QueueCommand = false
-                            };
-                            smart.UnitTags.Add(s2.UnitID);
-                            result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = smart } });
-                            contexts?.Add(new InstructionCommandContext
-                            {
-                                WorkerTag = s2.UnitID,
-                                InstructionSet = "patternjit-moveprobe",
-                                InstructionIndex = -1,
-                                InstructionCommand = "Smart",
-                                InstructionPoint = "SbSmrHatchery"
-                            });
-                            Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} Smart return S2={s2.UnitID} -> hatchery={hatcheryUnitB.UnitTag} at {rDist:F2}u from SB SMR");
-                        }
-                    }
-                    else if (!_patternJitProbeS2ReturnSmartFired)
-                    {
-                        var rMove = CreateInstructionMoveAction(s2.UnitID, new Point2D { X = _patternJitProbeS2SmrThru.X, Y = _patternJitProbeS2SmrThru.Y }, false);
-                        if (rMove != null)
-                        {
-                            result.Add(rMove);
-                        }
-                        if (!_patternJitProbeS2ReturnMoveLogged)
-                        {
-                            _patternJitProbeS2ReturnMoveLogged = true;
-                            contexts?.Add(new InstructionCommandContext
-                            {
-                                WorkerTag = s2.UnitID,
-                                InstructionSet = "patternjit-moveprobe",
-                                InstructionIndex = -1,
-                                InstructionCommand = "Move",
-                                InstructionPoint = "SbSmrThru"
-                            });
-                        }
-                    }
-                }
-
-                // S2-c: deposit edge -> mineral-walk back toward SB (Smart on
-                // SB = pass through workers). In --hatchbump mode NO command
-                // this frame: the Move thru goes out next frame (one command
-                // per worker per frame) so it collides with the planted S1.
-                if (_patternJitProbeS2WasCarrying && !s2Carrying && _patternJitProbeS2FlipFrame >= 0 && _patternJitProbeS2ReturnedFrame < 0)
-                {
-                    _patternJitProbeS2ReturnedFrame = _currentFrame;
-                    if (!Settings.PatternJitHatchBump)
-                    {
-                    var walkBack = new ActionRawUnitCommand
-                    {
-                        AbilityId = (int)Abilities.SMART,
-                        TargetUnitTag = sbMineralBump.UnitTag,
-                        QueueCommand = false
-                    };
-                    walkBack.UnitTags.Add(s2.UnitID);
-                    result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = walkBack } });
-                    contexts?.Add(new InstructionCommandContext
-                    {
-                        WorkerTag = s2.UnitID,
-                        InstructionSet = "patternjit-moveprobe",
-                        InstructionIndex = -1,
-                        InstructionCommand = "Smart",
-                        InstructionPoint = "SbMineralWalkBack"
-                    });
-                    Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} S2 RETURNED ({_currentFrame - _patternJitProbeS2FlipFrame}f leg) -> mineral-walk back to SB={sbMineralBump.UnitTag}");
-                    }
-                    else
-                    {
-                        Console.WriteLine($"[PATTERN-JIT HATCH BUMP] frame={_currentFrame} S2 RETURNED ({_currentFrame - _patternJitProbeS2FlipFrame}f leg) — thru Move next frame");
-                    }
-                }
-
-                // --hatchbump S2-c2: one frame after deposit, Move thru toward
-                // the SB stand (0.5u past) — S1 is planted at the deposit
-                // spot as the wall. Track the S1<->S2 minimum distance.
-                if (Settings.PatternJitHatchBump && _patternJitProbeS2ReturnedFrame >= 0 && s1ReturnEntry != null)
-                {
-                    var pdx = s2x - s1ReturnEntry.Position.X;
-                    var pdy = s2y - s1ReturnEntry.Position.Y;
-                    var pDist = (float)Math.Sqrt(pdx * pdx + pdy * pdy);
-                    if (pDist < _patternJitHbMinDist)
-                    {
-                        if (_patternJitHbMinDist < float.MaxValue && _patternJitHbMinDist - pDist > 0.3f)
-                        {
-                            Console.WriteLine($"[PATTERN-JIT HATCH BUMP] frame={_currentFrame} S1<->S2 dist {pDist:F2}u");
-                        }
-                        _patternJitHbMinDist = pDist;
-                    }
-                    if (!_patternJitHbS2ThruIssued && _currentFrame > _patternJitProbeS2ReturnedFrame)
-                    {
-                        _patternJitHbS2ThruIssued = true;
-                        _patternJitHbS2ThruFrame = _currentFrame;
-                        var cdx = _patternJitProbeS2SeatX - hatcheryB.X;
-                        var cdy = _patternJitProbeS2SeatY - hatcheryB.Y;
-                        var clen = (float)Math.Sqrt(cdx * cdx + cdy * cdy);
-                        _patternJitProbeSbSeatThru = clen >= 0.0001f
-                            ? new Vector2Dto(_patternJitProbeS2SeatX + cdx / clen * 0.5f, _patternJitProbeS2SeatY + cdy / clen * 0.5f, 0)
-                            : new Vector2Dto(_patternJitProbeS2SeatX, _patternJitProbeS2SeatY, 0);
-                        var thruMove = CreateInstructionMoveAction(s2.UnitID, new Point2D { X = _patternJitProbeSbSeatThru.X, Y = _patternJitProbeSbSeatThru.Y }, false);
-                        if (thruMove != null)
-                        {
-                            result.Add(thruMove);
-                        }
-                        contexts?.Add(new InstructionCommandContext
-                        {
-                            WorkerTag = s2.UnitID,
-                            InstructionSet = "patternjit-hatchbump",
-                            InstructionIndex = -1,
-                            InstructionCommand = "Move",
-                            InstructionPoint = "SbSeatThruHatchBump"
-                        });
-                        // S2-e takes over from here.
-                        _patternJitProbeS2BumpFired = true;
-                        Console.WriteLine($"[PATTERN-JIT HATCH BUMP] frame={_currentFrame} S2 move-thru -> SB stand thru ({_patternJitProbeSbSeatThru.X:F3},{_patternJitProbeSbSeatThru.Y:F3}) — S1 planted at {_patternJitHbMinDist:F2}u");
-                    }
-                }
-
-                // S2-d: tails-align bump — S2 mineral-walking back, S1
-                // inbound; when the S2<->S1 distance bottoms out and starts
-                // growing (or hits 0.55u), switch S2 to a Move toward the SB
-                // stand thru (0.5u past the stand) — collision back on, the
-                // push accelerates both. Disabled in --hatchbump mode: the
-                // thru Move is frame-exact there (deposit+1, owner spec
-                // 2026-11-13 16:48) and S2-d would fire it a frame early.
-                if (!Settings.PatternJitHatchBump && _patternJitProbeS2ReturnedFrame >= 0 && !_patternJitProbeS2BumpFired && s1ReturnEntry != null)
-                {
-                    var bdx = s2x - s1ReturnEntry.Position.X;
-                    var bdy = s2y - s1ReturnEntry.Position.Y;
-                    var bDist = (float)Math.Sqrt(bdx * bdx + bdy * bdy);
-                    var crossed = _patternJitProbeS2S1PrevDist > 0f && bDist > _patternJitProbeS2S1PrevDist && bDist < 1.5f;
-                    if (bDist <= 0.55f || crossed)
-                    {
-                        _patternJitProbeS2BumpFired = true;
-                        var cdx = _patternJitProbeS2SeatX - hatcheryB.X;
-                        var cdy = _patternJitProbeS2SeatY - hatcheryB.Y;
-                        var clen = (float)Math.Sqrt(cdx * cdx + cdy * cdy);
-                        _patternJitProbeSbSeatThru = clen >= 0.0001f
-                            ? new Vector2Dto(_patternJitProbeS2SeatX + cdx / clen * 0.5f, _patternJitProbeS2SeatY + cdy / clen * 0.5f, 0)
-                            : new Vector2Dto(_patternJitProbeS2SeatX, _patternJitProbeS2SeatY, 0);
-                        var bumpMove = CreateInstructionMoveAction(s2.UnitID, new Point2D { X = _patternJitProbeSbSeatThru.X, Y = _patternJitProbeSbSeatThru.Y }, false);
-                        if (bumpMove != null)
-                        {
-                            result.Add(bumpMove);
-                        }
-                        contexts?.Add(new InstructionCommandContext
-                        {
-                            WorkerTag = s2.UnitID,
-                            InstructionSet = "patternjit-moveprobe",
-                            InstructionIndex = -1,
-                            InstructionCommand = "Move",
-                            InstructionPoint = "SbSeatThruBump"
-                        });
-                        Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} BUMP: S2 tails-align with S1 at {bDist:F2}u pos=({s2x:F2},{s2y:F2}) -> Move SB stand thru ({_patternJitProbeSbSeatThru.X:F3},{_patternJitProbeSbSeatThru.Y:F3})");
-                    }
-                    _patternJitProbeS2S1PrevDist = bDist;
-                }
-
-                // S2-e: post-bump — keep Moving to the stand thru, Smart on SB
-                // at 1.3u from the stand, then log the second SMH arrival.
-                if (_patternJitProbeS2BumpFired && _patternJitProbeS2SecondArrFrame < 0)
-                {
-                    var sdx2 = s2x - _patternJitProbeS2SeatX;
-                    var sdy2 = s2y - _patternJitProbeS2SeatY;
-                    var seatDist = (float)Math.Sqrt(sdx2 * sdx2 + sdy2 * sdy2);
-                    if (seatDist <= 1.3f && !_patternJitProbeS2SecondSmartFired)
-                    {
-                        _patternJitProbeS2SecondSmartFired = true;
-                        var smart2 = new ActionRawUnitCommand
-                        {
-                            AbilityId = (int)Abilities.SMART,
-                            TargetUnitTag = sbMineralBump.UnitTag,
-                            QueueCommand = false
-                        };
-                        smart2.UnitTags.Add(s2.UnitID);
-                        result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = smart2 } });
-                        contexts?.Add(new InstructionCommandContext
-                        {
-                            WorkerTag = s2.UnitID,
-                            InstructionSet = "patternjit-moveprobe",
-                            InstructionIndex = -1,
-                            InstructionCommand = "Smart",
-                            InstructionPoint = "SbMineral"
-                        });
-                        Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} Smart S2 -> SB (second mine) at {seatDist:F2}u from the stand");
-                    }
-                    else if (!_patternJitProbeS2SecondSmartFired && _patternJitProbeSbSeatThru != null)
-                    {
-                        var contMove = CreateInstructionMoveAction(s2.UnitID, new Point2D { X = _patternJitProbeSbSeatThru.X, Y = _patternJitProbeSbSeatThru.Y }, false);
-                        if (contMove != null)
-                        {
-                            result.Add(contMove);
-                        }
-                    }
-                    if (seatDist <= 0.35f)
-                    {
-                        _patternJitProbeS2SecondArrFrame = _currentFrame;
-                        Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} S2 SECOND SB SMH-arr pos=({s2x:F2},{s2y:F2}) — turnaround {_currentFrame - _patternJitProbeS2ReturnedFrame}f from deposit");
-                    }
-                }
-
-                _patternJitProbeS2WasCarrying = s2Carrying;
-            }
-
-            // ── S1 stages ──────────────────────────────────────────────
-            if (s1ReturnEntry != null && hatcheryB != null)
-            {
-                var s1x = s1ReturnEntry.Position.X;
-                var s1y = s1ReturnEntry.Position.Y;
-                var s1Carrying = s1ReturnEntry.IsCarrying;
-
-                // S1-a: 1184 flip edge.
-                if (!_patternJitProbeS1WasCarrying && s1Carrying && _patternJitProbeS1FlipFrame < 0)
-                {
-                    _patternJitProbeS1FlipFrame = _currentFrame;
-                    Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} S1 1184-FLIP pos=({s1x:F2},{s1y:F2})");
-                }
-
-                // --hatchbump (owner spec 2026-11-13 16:48): S1 and S2 in
-                // the same spot at the same time at the hatchery. S1 Moves
-                // to S2's deposit point (seat->hatchery ray at 2.82u),
-                // Smart-returns at the 1.15u gate, then IDLES there. One
-                // frame after S2's move-thru (deposit+1) S1 gets a Move
-                // thru to the SA stand (deposit+2), Smart SA at 1.15u.
-                if (Settings.PatternJitHatchBump && _patternJitProbeS1FlipFrame >= 0 && _patternJitProbeS2Smr != null)
-                {
-                    var hbSnap = Globals.CurrentObservation;
-                    if (s3 != null && _patternJitS1SbS3FlipFrame < 0)
-                    {
-                        WorkerEntryDto s3Live = null;
-                        hbSnap?.SelfUnits?.TryGetValue(s3.UnitID, out s3Live);
-                        if (s3Live != null)
-                        {
-                            if (!_patternJitS1SbS3WasCarrying && s3Live.IsCarrying)
-                            {
-                                _patternJitS1SbS3FlipFrame = _currentFrame;
-                            }
-                            _patternJitS1SbS3WasCarrying = s3Live.IsCarrying;
-                        }
-                    }
-                    var saMinHb = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
-                        ?.FirstOrDefault(m => string.Equals(m?.FinalLabel, "SA", StringComparison.OrdinalIgnoreCase));
-
-                    // The spot: S2's deposit point — seat->hatchery ray at
-                    // 2.82u (§81 measured deposit (129.46,22.48)).
-                    var hdx = _patternJitProbeS2SeatX - hatcheryB.X;
-                    var hdy = _patternJitProbeS2SeatY - hatcheryB.Y;
-                    var hlen = (float)Math.Sqrt(hdx * hdx + hdy * hdy);
-                    var spotX = hatcheryB.X + hdx / hlen * 2.82f;
-                    var spotY = hatcheryB.Y + hdy / hlen * 2.82f;
-
-                    if (s1Carrying && _patternJitHbS1DepositFrame < 0)
-                    {
-                        var spx = s1x - spotX;
-                        var spy = s1y - spotY;
-                        var spDist = (float)Math.Sqrt(spx * spx + spy * spy);
-                        // Owner correction 2026-11-13 17:53 ("Please correct
-                        // S1" + annotation "S2 and S1 both move thru this
-                        // spot"): the 1.15u Smart gate let the engine slide
-                        // the landing 0.5u off the spot. Hold the Move until
-                        // ~1 frame before arrival (0.25u), THEN Smart — the
-                        // deposit lands exactly on the spot.
-                        // --s1stopat=N (owner spec 18:19): frame-exact
-                        // variant — Move to the spot until frame N, STOP at
-                        // N, Smart return at N+1.
-                        if (Settings.PatternJitS1StopAtFrame >= 0 && !_patternJitHbS1SmartFired)
-                        {
-                            if (_currentFrame < Settings.PatternJitS1StopAtFrame)
-                            {
-                                var hmv0 = CreateInstructionMoveAction(s1.UnitID, new Point2D { X = spotX, Y = spotY }, false);
-                                if (hmv0 != null)
-                                {
-                                    result.Add(hmv0);
-                                }
-                            }
-                            else if (_currentFrame == Settings.PatternJitS1StopAtFrame)
-                            {
-                                var hst = CreateInstructionStopAction(s1.UnitID);
-                                if (hst != null)
-                                {
-                                    result.Add(hst);
-                                }
-                                contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-hatchbump", InstructionIndex = -1, InstructionCommand = "Stop", InstructionPoint = "SpotArrival" });
-                                Console.WriteLine($"[PATTERN-JIT HATCH BUMP] frame={_currentFrame} STOP S1 at ({s1x:F3},{s1y:F3}) — {spDist:F2}u from the spot");
-                            }
-                            else if (hatcheryUnitB != null)
-                            {
-                                _patternJitHbS1SmartFired = true;
-                                var hsm0 = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, TargetUnitTag = hatcheryUnitB.UnitTag, QueueCommand = false };
-                                hsm0.UnitTags.Add(s1.UnitID);
-                                result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = hsm0 } });
-                                contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-hatchbump", InstructionIndex = -1, InstructionCommand = "Smart", InstructionPoint = "HatcheryAfterStop" });
-                                Console.WriteLine($"[PATTERN-JIT HATCH BUMP] frame={_currentFrame} Smart return S1 after stop — at ({s1x:F3},{s1y:F3}), {spDist:F2}u from the spot");
-                            }
-                        }
-                        else if (spDist <= 0.25f && !_patternJitHbS1SmartFired && hatcheryUnitB != null)
-                        {
-                            _patternJitHbS1SmartFired = true;
-                            var hsm = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, TargetUnitTag = hatcheryUnitB.UnitTag, QueueCommand = false };
-                            hsm.UnitTags.Add(s1.UnitID);
-                            result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = hsm } });
-                            contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-hatchbump", InstructionIndex = -1, InstructionCommand = "Smart", InstructionPoint = "HatcheryDepositSpot" });
-                            Console.WriteLine($"[PATTERN-JIT HATCH BUMP] frame={_currentFrame} Smart return S1 at {spDist:F2}u from the deposit spot ({spotX:F3},{spotY:F3})");
-                        }
-                        else if (!_patternJitHbS1SmartFired)
-                        {
-                            var hmv = CreateInstructionMoveAction(s1.UnitID, new Point2D { X = spotX, Y = spotY }, false);
-                            if (hmv != null)
-                            {
-                                result.Add(hmv);
-                            }
-                        }
-                    }
-                    if (_patternJitProbeS1WasCarrying && !s1Carrying && _patternJitHbS1DepositFrame < 0)
-                    {
-                        _patternJitHbS1DepositFrame = _currentFrame;
-                        Console.WriteLine($"[PATTERN-JIT HATCH BUMP] frame={_currentFrame} S1 DEPOSITED at ({s1x:F2},{s1y:F2}) — planted, spot was ({spotX:F3},{spotY:F3})");
-                    }
-
-                    // S1's move-thru: one frame after S2's thru (deposit+2).
-                    if (_patternJitHbS2ThruIssued && _currentFrame > _patternJitHbS2ThruFrame && !_patternJitHbS1SaMoveIssued)
-                    {
-                        _patternJitHbS1SaMoveIssued = true;
-                        contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-hatchbump", InstructionIndex = -1, InstructionCommand = "Move", InstructionPoint = "SaStandThru" });
-                        Console.WriteLine($"[PATTERN-JIT HATCH BUMP] frame={_currentFrame} S1 move-thru -> SA stand (one frame after S2's thru)");
-                    }
-                    if (_patternJitHbS1SaMoveIssued && !_patternJitHbS1SaSmartFired && saMinHb?.Position != null)
-                    {
-                        var stx = saMinHb.Position.X - 0.31f;
-                        var sty = saMinHb.Position.Y + 0.86f;
-                        var sx2 = s1x - stx;
-                        var sy2 = s1y - sty;
-                        var sdist = (float)Math.Sqrt(sx2 * sx2 + sy2 * sy2);
-                        if (sdist <= 1.15f)
-                        {
-                            _patternJitHbS1SaSmartFired = true;
-                            var hsm2 = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, TargetUnitTag = saMinHb.UnitTag, QueueCommand = false };
-                            hsm2.UnitTags.Add(s1.UnitID);
-                            result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = hsm2 } });
-                            contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-hatchbump", InstructionIndex = -1, InstructionCommand = "Smart", InstructionPoint = "SaMineral" });
-                            Console.WriteLine($"[PATTERN-JIT HATCH BUMP] frame={_currentFrame} Smart S1 -> SA at {sdist:F2}u from the stand");
-                        }
-                        else
-                        {
-                            var hmv2 = CreateInstructionMoveAction(s1.UnitID, new Point2D { X = stx, Y = sty }, false);
-                            if (hmv2 != null)
-                            {
-                                result.Add(hmv2);
-                            }
-                        }
-                    }
-                    if (_patternJitHbS1SaMoveIssued && _patternJitHbS1SaArrFrame < 0 && saMinHb?.Position != null)
-                    {
-                        var ax = s1x - (saMinHb.Position.X - 0.31f);
-                        var ay = s1y - (saMinHb.Position.Y + 0.86f);
-                        if (ax * ax + ay * ay <= 0.35f * 0.35f)
-                        {
-                            _patternJitHbS1SaArrFrame = _currentFrame;
-                            var s3flip = _patternJitS1SbS3FlipFrame;
-                            var verdict = s3flip < 0
-                                ? "S3 not flipped yet"
-                                : s3flip - _currentFrame >= 1
-                                    ? $"IN POSITION {s3flip - _currentFrame}f before S3 flip f{s3flip}"
-                                    : $"LATE — S3 flipped f{s3flip}";
-                            Console.WriteLine($"[PATTERN-JIT HATCH BUMP] frame={_currentFrame} S1 AT SA STAND pos=({s1x:F2},{s1y:F2}) — {verdict}");
-                        }
-                    }
-                }
-
-                // --s1stopbump (owner spec 2026-11-13 13:57): ONE stop bump —
-                // intercept S2's return line, STOP as a wall, then turn NW:
-                // SA-side return, then Move to the SA stand and Smart SA.
-                // Measures whether S1 is in position to harvest SA when S3
-                // flips.
-                if (Settings.PatternJitS1StopBump && _patternJitProbeS1FlipFrame >= 0 && _patternJitProbeS2Smr != null)
-                {
-                    var sbSnap = Globals.CurrentObservation;
-                    WorkerEntryDto s2Live = null;
-                    sbSnap?.SelfUnits?.TryGetValue(s2.UnitID, out s2Live);
-                    if (s3 != null && _patternJitS1SbS3FlipFrame < 0)
-                    {
-                        WorkerEntryDto s3Live = null;
-                        sbSnap?.SelfUnits?.TryGetValue(s3.UnitID, out s3Live);
-                        if (s3Live != null)
-                        {
-                            if (!_patternJitS1SbS3WasCarrying && s3Live.IsCarrying)
-                            {
-                                _patternJitS1SbS3FlipFrame = _currentFrame;
-                                Console.WriteLine($"[PATTERN-JIT S1 STOP-BUMP] frame={_currentFrame} S3 1184-FLIP recorded");
-                            }
-                            _patternJitS1SbS3WasCarrying = s3Live.IsCarrying;
-                        }
-                    }
-                    var saMin = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
-                        ?.FirstOrDefault(m => string.Equals(m?.FinalLabel, "SA", StringComparison.OrdinalIgnoreCase));
-
-                    // Intercept: fraction t along S2's return line seat -> SMR.
-                    var t = Settings.PatternJitS1BumpPos;
-                    var ix = _patternJitProbeS2SeatX + (_patternJitProbeS2Smr.X - _patternJitProbeS2SeatX) * t;
-                    var iy = _patternJitProbeS2SeatY + (_patternJitProbeS2Smr.Y - _patternJitProbeS2SeatY) * t;
-
-                    if (s1Carrying && _patternJitProbeS1ReturnedFrame < 0)
-                    {
-                        // D20: S1's {SA,SB} book re-asserts its queued
-                        // [1183,16,1183,1184] every frame — one-shot probe
-                        // commands get stomped. Every stage below re-issues
-                        // its command EVERY frame until the next state gate
-                        // (the working S1-b pattern).
-                        var idx = s1x - ix;
-                        var idy = s1y - iy;
-                        var atIntercept = idx * idx + idy * idy <= 0.35f * 0.35f;
-                        if (atIntercept && !_patternJitS1SbStopped)
-                        {
-                            _patternJitS1SbStopped = true;
-                            _patternJitS1SbStoppedFrame = _currentFrame;
-                            contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-s1stopbump", InstructionIndex = -1, InstructionCommand = "Stop", InstructionPoint = "S2LineWall" });
-                            Console.WriteLine($"[PATTERN-JIT S1 STOP-BUMP] frame={_currentFrame} STOP S1 as wall at ({s1x:F2},{s1y:F2})");
-                        }
-                        // 3: contact — S2 within 0.9u => bump frame; the NW
-                        // return Move starts the NEXT frame (one command per
-                        // worker per frame). Fail-open after 25 planted
-                        // frames in case S2 slips past.
-                        if (_patternJitS1SbStopped && _patternJitS1SbBumpFrame < 0)
-                        {
-                            var contacted = false;
-                            if (s2Live?.Position != null)
-                            {
-                                var bx = s1x - s2Live.Position.X;
-                                var by = s1y - s2Live.Position.Y;
-                                contacted = bx * bx + by * by <= 0.9f * 0.9f;
-                            }
-                            if (contacted || _currentFrame - _patternJitS1SbStoppedFrame >= 25)
-                            {
-                                _patternJitS1SbBumpFrame = _currentFrame;
-                                Console.WriteLine($"[PATTERN-JIT S1 STOP-BUMP] frame={_currentFrame} {(contacted ? $"BUMP contact S1({s1x:F2},{s1y:F2}) S2({s2Live.Position.X:F2},{s2Live.Position.Y:F2})" : "FAIL-OPEN: no contact in 25f, releasing S1")}");
-                            }
-                        }
-
-                        // Command for THIS frame — exactly one per frame,
-                        // priority by stage.
-                        if (_patternJitS1SbBumpFrame >= 0 && _currentFrame > _patternJitS1SbBumpFrame && !_patternJitS1SbReturnSmartFired && saMin?.Position != null)
-                        {
-                            // 4: turn NW — SA-side return thru (hatchery->SA
-                            // ray at 2.75u), Smart at the 3.0u gate.
-                            var hx = s1x - hatcheryB.X;
-                            var hy = s1y - hatcheryB.Y;
-                            var hdist = (float)Math.Sqrt(hx * hx + hy * hy);
-                            if (hdist <= 3.0f)
-                            {
-                                _patternJitS1SbReturnSmartFired = true;
-                                var sm = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, TargetUnitTag = hatcheryUnitB.UnitTag, QueueCommand = false };
-                                sm.UnitTags.Add(s1.UnitID);
-                                result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = sm } });
-                                contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-s1stopbump", InstructionIndex = -1, InstructionCommand = "Smart", InstructionPoint = "HatcherySaSide" });
-                                Console.WriteLine($"[PATTERN-JIT S1 STOP-BUMP] frame={_currentFrame} Smart return S1 at {hdist:F2}u from hatchery center");
-                            }
-                            else
-                            {
-                                var rx = saMin.Position.X - hatcheryB.X;
-                                var ry = saMin.Position.Y - hatcheryB.Y;
-                                var rlen = (float)Math.Sqrt(rx * rx + ry * ry);
-                                var tx2 = hatcheryB.X + rx / rlen * 2.75f;
-                                var ty2 = hatcheryB.Y + ry / rlen * 2.75f;
-                                var rm = CreateInstructionMoveAction(s1.UnitID, new Point2D { X = tx2, Y = ty2 }, false);
-                                if (rm != null)
-                                {
-                                    result.Add(rm);
-                                }
-                                if (!_patternJitS1SbReturnMoveIssued)
-                                {
-                                    _patternJitS1SbReturnMoveIssued = true;
-                                    contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-s1stopbump", InstructionIndex = -1, InstructionCommand = "Move", InstructionPoint = "SaSideReturnThru" });
-                                    Console.WriteLine($"[PATTERN-JIT S1 STOP-BUMP] frame={_currentFrame} S1 turns NW -> SA-side return thru ({tx2:F3},{ty2:F3})");
-                                }
-                            }
-                        }
-                        else if (_patternJitS1SbStopped && _patternJitS1SbBumpFrame < 0)
-                        {
-                            // Planted: re-issue STOP every frame so the book
-                            // can't walk S1 off the wall.
-                            var st = CreateInstructionStopAction(s1.UnitID);
-                            if (st != null)
-                            {
-                                result.Add(st);
-                            }
-                        }
-                        else if (!_patternJitS1SbStopped)
-                        {
-                            // 1: Move to the intercept (re-issued every frame).
-                            var im = CreateInstructionMoveAction(s1.UnitID, new Point2D { X = ix, Y = iy }, false);
-                            if (im != null)
-                            {
-                                result.Add(im);
-                            }
-                            if (!_patternJitS1SbMoveIssued)
-                            {
-                                _patternJitS1SbMoveIssued = true;
-                                contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-s1stopbump", InstructionIndex = -1, InstructionCommand = "Move", InstructionPoint = "S2LineIntercept" });
-                                Console.WriteLine($"[PATTERN-JIT S1 STOP-BUMP] frame={_currentFrame} Move S1 -> intercept ({ix:F3},{iy:F3}) t={t:F2}");
-                            }
-                        }
-                    }
-
-                    // 5: deposit edge -> Move to the SA stand (§77 offset).
-                    if (_patternJitProbeS1WasCarrying && !s1Carrying && _patternJitProbeS1ReturnedFrame < 0 && saMin?.Position != null)
-                    {
-                        _patternJitProbeS1ReturnedFrame = _currentFrame;
-                        _patternJitS1SbSaMoveIssued = true;
-                        contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-s1stopbump", InstructionIndex = -1, InstructionCommand = "Move", InstructionPoint = "SaStand" });
-                        Console.WriteLine($"[PATTERN-JIT S1 STOP-BUMP] frame={_currentFrame} S1 RETURNED (leg {_patternJitProbeS1ReturnedFrame - _patternJitProbeS1FlipFrame}f) -> Move SA stand ({saMin.Position.X - 0.31f:F3},{saMin.Position.Y + 0.86f:F3})");
-                    }
-
-                    // 6: Smart SA at the 1.15u gate; 7: stand-arrival verdict.
-                    // The stand Move is re-issued EVERY frame until the gate
-                    // (D20: the book re-asserts otherwise).
-                    if (_patternJitS1SbSaMoveIssued && !_patternJitS1SbSaSmartFired && saMin?.Position != null)
-                    {
-                        var sx2 = s1x - (saMin.Position.X - 0.31f);
-                        var sy2 = s1y - (saMin.Position.Y + 0.86f);
-                        var sdist = (float)Math.Sqrt(sx2 * sx2 + sy2 * sy2);
-                        if (sdist <= 1.15f)
-                        {
-                            _patternJitS1SbSaSmartFired = true;
-                            var sm3 = new ActionRawUnitCommand { AbilityId = (int)Abilities.SMART, TargetUnitTag = saMin.UnitTag, QueueCommand = false };
-                            sm3.UnitTags.Add(s1.UnitID);
-                            result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = sm3 } });
-                            contexts?.Add(new InstructionCommandContext { WorkerTag = s1.UnitID, InstructionSet = "patternjit-s1stopbump", InstructionIndex = -1, InstructionCommand = "Smart", InstructionPoint = "SaMineral" });
-                            Console.WriteLine($"[PATTERN-JIT S1 STOP-BUMP] frame={_currentFrame} Smart S1 -> SA at {sdist:F2}u from the stand");
-                        }
-                        else
-                        {
-                            var sm2 = CreateInstructionMoveAction(s1.UnitID, new Point2D { X = saMin.Position.X - 0.31f, Y = saMin.Position.Y + 0.86f }, false);
-                            if (sm2 != null)
-                            {
-                                result.Add(sm2);
-                            }
-                        }
-                    }
-                    if (_patternJitS1SbSaMoveIssued && _patternJitS1SbSaArriveFrame < 0 && saMin?.Position != null)
-                    {
-                        var sx3 = s1x - (saMin.Position.X - 0.31f);
-                        var sy3 = s1y - (saMin.Position.Y + 0.86f);
-                        if (sx3 * sx3 + sy3 * sy3 <= 0.35f * 0.35f)
-                        {
-                            _patternJitS1SbSaArriveFrame = _currentFrame;
-                            var s3flip = _patternJitS1SbS3FlipFrame;
-                            var verdict = s3flip < 0
-                                ? "S3 not flipped yet"
-                                : s3flip - _currentFrame >= 1
-                                    ? $"IN POSITION {s3flip - _currentFrame}f before S3 flip f{s3flip}"
-                                    : $"LATE — S3 flipped f{s3flip}";
-                            Console.WriteLine($"[PATTERN-JIT S1 STOP-BUMP] frame={_currentFrame} S1 AT SA STAND pos=({s1x:F2},{s1y:F2}) — {verdict}");
-                        }
-                    }
-                }
-
-                // S1-b: while carrying, Move toward the SMR + 1u east
-                // (attempt 1). The SMR exists from S2's f67 flip — before
-                // S1's f70 flip. Log the frame S1 crosses the SB->hatchery
-                // line, and Smart-return when within 1.3u of the SMR (the
-                // bump may push S1 into range early). Disabled when
-                // --s1stopbump or --hatchbump drives S1's whole post-flip
-                // choreography.
-                if (!Settings.PatternJitS1StopBump && !Settings.PatternJitHatchBump && _patternJitProbeS1FlipFrame >= 0 && _patternJitProbeS2Smr != null && s1Carrying && _patternJitProbeS1ReturnedFrame < 0)
-                {
-                    if (_patternJitProbeS1BumpTarget == null)
-                    {
-                        _patternJitProbeS1BumpTarget = new Vector2Dto(_patternJitProbeS2Smr.X + Settings.PatternJitS1BumpOffsetEast, _patternJitProbeS2Smr.Y, 0);
-                        Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} S1 bump target = SMR+{Settings.PatternJitS1BumpOffsetEast:F2}u east ({_patternJitProbeS1BumpTarget.X:F3},{_patternJitProbeS1BumpTarget.Y:F3})");
-                    }
-
-                    // Distance-gated Smart return at the SMR. MOVE AND SMART
-                    // ARE MUTUALLY EXCLUSIVE each frame (else-if): run 2203xx
-                    // showed the f98 Smart swallowed when it shared the batch
-                    // with the bump-target Move — S1's order history never
-                    // gained the 1184 and it stood at the target carrying
-                    // forever. Same lesson as S3's Stop+Smart (§73/D20).
-                    var drx = s1x - _patternJitProbeS2Smr.X;
-                    var dry = s1y - _patternJitProbeS2Smr.Y;
-                    var dDist = (float)Math.Sqrt(drx * drx + dry * dry);
-                    if (dDist <= 1.3f && !_patternJitProbeS1ReturnSmartFired)
-                    {
-                        if (hatcheryUnitB != null)
-                        {
-                            _patternJitProbeS1ReturnSmartFired = true;
-                            var smart3 = new ActionRawUnitCommand
-                            {
-                                AbilityId = (int)Abilities.SMART,
-                                TargetUnitTag = hatcheryUnitB.UnitTag,
-                                QueueCommand = false
-                            };
-                            smart3.UnitTags.Add(s1.UnitID);
-                            result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = smart3 } });
-                            contexts?.Add(new InstructionCommandContext
-                            {
-                                WorkerTag = s1.UnitID,
-                                InstructionSet = "patternjit-moveprobe",
-                                InstructionIndex = -1,
-                                InstructionCommand = "Smart",
-                                InstructionPoint = "SbSmrHatchery"
-                            });
-                            Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} Smart return S1={s1.UnitID} -> hatchery at {dDist:F2}u from SB SMR");
-                        }
-                    }
-                    else if (!_patternJitProbeS1ReturnSmartFired)
-                    {
-                        var s1Move = CreateInstructionMoveAction(s1.UnitID, new Point2D { X = _patternJitProbeS1BumpTarget.X, Y = _patternJitProbeS1BumpTarget.Y }, false);
-                        if (s1Move != null)
-                        {
-                            result.Add(s1Move);
-                        }
-                        if (!_patternJitProbeS1ReturnMoveLogged)
-                        {
-                            _patternJitProbeS1ReturnMoveLogged = true;
-                            contexts?.Add(new InstructionCommandContext
-                            {
-                                WorkerTag = s1.UnitID,
-                                InstructionSet = "patternjit-moveprobe",
-                                InstructionIndex = -1,
-                                InstructionCommand = "Move",
-                                InstructionPoint = "SbSmrBumpTarget"
-                            });
-                        }
-                    }
-
-                    // Line-crossing measurement: signed perpendicular distance
-                    // to the SB-stand -> hatchery-center line.
-                    var lx = hatcheryB.X - _patternJitProbeS2SeatX;
-                    var ly = hatcheryB.Y - _patternJitProbeS2SeatY;
-                    var llen2 = (float)Math.Sqrt(lx * lx + ly * ly);
-                    if (llen2 >= 0.0001f && _patternJitProbeS1LineCrossFrame < 0)
-                    {
-                        var sd = (lx * (s1y - _patternJitProbeS2SeatY) - ly * (s1x - _patternJitProbeS2SeatX)) / llen2;
-                        if (!float.IsNaN(_patternJitProbeS1PrevLineDist)
-                            && ((_patternJitProbeS1PrevLineDist <= 0f && sd > 0f) || (_patternJitProbeS1PrevLineDist >= 0f && sd < 0f)))
-                        {
-                            _patternJitProbeS1LineCrossFrame = _currentFrame;
-                            Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} S1 CROSSED the SB->hatchery line at ({s1x:F3},{s1y:F3})");
-                        }
-                        _patternJitProbeS1PrevLineDist = sd;
-                    }
-                }
-
-                // S1-c: deposit edge -> log the leg, then Move 2u north of the
-                // SMR (off the corridor) so S2's next return stays clean.
-                if (!Settings.PatternJitS1StopBump && _patternJitProbeS1WasCarrying && !s1Carrying && _patternJitProbeS1FlipFrame >= 0 && _patternJitProbeS1ReturnedFrame < 0)
-                {
-                    _patternJitProbeS1ReturnedFrame = _currentFrame;
-                    Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} S1 RETURNED cargo at SB SMR (leg {_patternJitProbeS1ReturnedFrame - _patternJitProbeS1FlipFrame}f)");
-                    if (_patternJitProbeS2Smr != null)
-                    {
-                        var park = CreateInstructionMoveAction(s1.UnitID, new Point2D { X = _patternJitProbeS2Smr.X, Y = _patternJitProbeS2Smr.Y + 2f }, false);
-                        if (park != null)
-                        {
-                            result.Add(park);
-                        }
-                    }
-                }
-
-                _patternJitProbeS1WasCarrying = s1Carrying;
-            }
-
-            // ── S3 stop-bump (owner spec 2026-11-11 13:41) ──────────────
-            // "Mineral Walk S3 to SB until it is 1u West of SA, Then move to
-            // S1's Current and exact position where it has stood to mine SA,
-            // issue a stop command to S3. When S1 flips give S1 it's move to
-            // the return move thru point and then give S3 a smart on SA the
-            // next frame." S1's return move-thru is already issued by its
-            // book from the flip frame (verified in the §68a telemetry); the
-            // probe drives only S3.
-            if (s3 != null && Settings.PatternJitS3StopBump)
-            {
-                var saMineral = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
-                    ?.FirstOrDefault(m => string.Equals(m?.FinalLabel, "SA", StringComparison.OrdinalIgnoreCase));
-                var snapshot3 = Globals.CurrentObservation;
-                WorkerEntryDto s3Entry = null;
-                snapshot3?.SelfUnits?.TryGetValue(s3.UnitID, out s3Entry);
-                WorkerEntryDto s1Entry = null;
-                snapshot3?.SelfUnits?.TryGetValue(s1.UnitID, out s1Entry);
-
-                // Stage 1: f0 mineral walk to SB.
-                if (!_patternJitProbeS3WalkFired)
-                {
-                    var sbMineral = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex)
-                        ?.FirstOrDefault(m => string.Equals(m?.FinalLabel, "SB", StringComparison.OrdinalIgnoreCase));
-                    if (sbMineral != null && sbMineral.UnitTag != 0)
-                    {
-                        _patternJitProbeS3WalkFired = true;
-                        var walk = new ActionRawUnitCommand
-                        {
-                            AbilityId = (int)Abilities.SMART,
-                            TargetUnitTag = sbMineral.UnitTag,
-                            QueueCommand = false
-                        };
-                        walk.UnitTags.Add(s3.UnitID);
-                        result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = walk } });
-                        contexts?.Add(new InstructionCommandContext
-                        {
-                            WorkerTag = s3.UnitID,
-                            InstructionSet = "patternjit-moveprobe",
-                            InstructionIndex = -1,
-                            InstructionCommand = "Smart",
-                            InstructionPoint = "SbMineralWalk"
-                        });
-                        Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} S3={s3.UnitID} mineral walk -> SB={sbMineral.UnitTag}");
-                    }
-                }
-                // Stage 2: peel off the walk 1u west of SA — Move to S1's
-                // exact live seat position. S3 spawns WEST of SA (125.5) and
-                // walks EAST toward SB, so the trigger is the eastbound
-                // crossing of the SA.x-1 meridian (>=, not <=).
-                else if (!_patternJitProbeS3PeelFired && s3Entry?.Position != null && saMineral?.Position != null)
-                {
-                    if (s3Entry.Position.X >= saMineral.Position.X - 1.0f && s1Entry?.Position != null)
-                    {
-                        _patternJitProbeS3PeelFired = true;
-                        var seatPoint = new Point2D { X = s1Entry.Position.X, Y = s1Entry.Position.Y };
-                        var peelMove = CreateInstructionMoveAction(s3.UnitID, seatPoint, false);
-                        if (peelMove != null)
-                        {
-                            result.Add(peelMove);
-                        }
-                        contexts?.Add(new InstructionCommandContext
-                        {
-                            WorkerTag = s3.UnitID,
-                            InstructionSet = "patternjit-moveprobe",
-                            InstructionIndex = -1,
-                            InstructionCommand = "Move",
-                            InstructionPoint = "S1SeatExact"
-                        });
-                        Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} S3={s3.UnitID} 1u west of SA -> Move to S1's exact seat ({seatPoint.X:F3},{seatPoint.Y:F3})");
-                    }
-                }
-                // Stage 3: Stop S3 at contact with S1. Run 140312 finding:
-                // stopping at 0.9u while S3 still carries 0.130 u/f lets the
-                // body SLIDE ~1.2u (decel ~0.01 u/f^2) into a 0.10u deep
-                // overlap on S1's seat — and with S3's Smart active that
-                // overlap is what grinds S1's exit to a 0.010 launch (the
-                // §68a f107). Idle bodies shove aside cleanly (battery runs
-                // launched 0.121 with idle T2 touching at 0.38u). Gate at
-                // 2.3u: slide from cruise 0.176 is ~1.55u, so S3 comes to
-                // rest ~0.75u from S1 — touching, not overlapping.
-                else if (_patternJitProbeS3PeelFired && !_patternJitProbeS3StoppedFired
-                    && _patternJitProbeS1FlipFrame < 0
-                    && s3Entry?.Position != null && s1Entry?.Position != null)
-                {
-                    var cdx = s3Entry.Position.X - s1Entry.Position.X;
-                    var cdy = s3Entry.Position.Y - s1Entry.Position.Y;
-                    var contact = (float)Math.Sqrt(cdx * cdx + cdy * cdy);
-                    if (contact <= 2.3f)
-                    {
-                        _patternJitProbeS3StoppedFired = true;
-                        var stop = CreateInstructionStopAction(s3.UnitID);
-                        if (stop != null)
-                        {
-                            result.Add(stop);
-                        }
-                        contexts?.Add(new InstructionCommandContext
-                        {
-                            WorkerTag = s3.UnitID,
-                            InstructionSet = "patternjit-moveprobe",
-                            InstructionIndex = -1,
-                            InstructionCommand = "Stop",
-                            InstructionPoint = "S1SeatContact"
-                        });
-                        Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} STOP S3={s3.UnitID} at {contact:F2}u from S1, pos=({s3Entry.Position.X:F3},{s3Entry.Position.Y:F3})");
-                    }
-                }
-                else if (_patternJitProbeS3StoppedFired && !_patternJitProbeS3SmartFired
-                    && _currentFrame < 65)
-                {
-                    // Hold the stop-bump position against idle auto-gather.
-                    // Ends at f64: a Stop in the same batch as the f65 Smart
-                    // swallows it (run 205751 — S3 never gained the gather).
-                    var holdStop = CreateInstructionStopAction(s3.UnitID);
-                    if (holdStop != null)
-                    {
-                        result.Add(holdStop);
-                    }
-                }
-
-                // Stage 4 (owner spec 2026-11-11 20:48): Smart S3 on SA at
-                // frame 65 — the frame S1 reaches 32 harvest frames. S3 stands
-                // on S1's exact seat until it can harvest. Run 205751 showed
-                // a ONE-SHOT f65 Smart while S1 still occupies the seat never
-                // becomes an order (S3's order history never gained the gather
-                // — it stood at (130.5,19.25) for 1600+ frames): the batch
-                // also carried the hold-Stop that frame, and the occupied-seat
-                // wait never wakes on S1's commanded exit. So: no Stop on or
-                // after f65, and the Smart is RE-ISSUED every frame until two
-                // frames after S1's flip vacates the seat.
-                if (_currentFrame >= 65 && saMineral != null && saMineral.UnitTag != 0
-                    && (!_patternJitProbeS3SmartFired
-                        || _patternJitProbeS1FlipFrame < 0
-                        || _currentFrame <= _patternJitProbeS1FlipFrame + 2))
-                {
-                    var firstFire = !_patternJitProbeS3SmartFired;
-                    _patternJitProbeS3SmartFired = true;
-                    var smart = new ActionRawUnitCommand
-                    {
-                        AbilityId = (int)Abilities.SMART,
-                        TargetUnitTag = saMineral.UnitTag,
-                        QueueCommand = false
-                    };
-                    smart.UnitTags.Add(s3.UnitID);
-                    result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = smart } });
-                    if (firstFire)
-                    {
-                        contexts?.Add(new InstructionCommandContext
-                        {
-                            WorkerTag = s3.UnitID,
-                            InstructionSet = "patternjit-moveprobe",
-                            InstructionIndex = -1,
-                            InstructionCommand = "Smart",
-                            InstructionPoint = "SaMineral"
-                        });
-                        Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} Smart S3={s3.UnitID} -> SA={saMineral.UnitTag} (f65 gate, re-issued until S1 flip+2)");
-                    }
-                }
-                else if (_patternJitProbeS3SmartFired && _patternJitProbeS1FlipFrame >= 0
-                    && _currentFrame == _patternJitProbeS1FlipFrame + 3)
-                {
-                    Console.WriteLine($"[PATTERN-JIT MOVE PROBE] frame={_currentFrame} S3 Smart re-issue ends (S1 flipped f{_patternJitProbeS1FlipFrame}, seat free)");
-                }
-            }
-            return result;
-        }
-
-        // --minofftest (owner question 2026-11-12 06:43): "Can a worker be
-        // given a move to N 0.05 / W 1.05 of Minerals SB BB BA YB YA?" One
-        // parked worker per mineral gets a one-shot unqueued Move to
-        // center + (-1.05, +0.05) (west = -x, north = +y). Each frame the
-        // probe logs arrival (within 0.25u) and at f300 dumps every tracked
-        // worker's rest position vs target, so we see whether the engine
-        // accepts, clamps, or slides a stand point 0.05u off the footprint.
-        private List<SC2Action> IssuePatternJitMinOffProbe(List<InstructionCommandContext> contexts)
-        {
-            var result = new List<SC2Action>();
-            if (!Settings.PatternJitMode || !Settings.PatternJitMinOffTest)
-            {
-                return result;
-            }
-
-            // Fire at f1+: the book loop issues its own park Move on f0 and
-            // two commands to the same worker on the same frame get swallowed.
-            if (!_patternJitMinOffIssued && _currentFrame >= 1)
-            {
-                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
-                var mainMinerals = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex);
-                if (assignedWorkers == null || mainMinerals == null)
-                {
-                    return result; // map data not ready — retry next frame
-                }
-
-                var targetLabels = new[] { "SB", "BB", "BA", "YB", "YA" };
-                var minerals = targetLabels
-                    .Select(l => mainMinerals.FirstOrDefault(m => string.Equals(m?.FinalLabel, l, StringComparison.OrdinalIgnoreCase)))
-                    .ToList();
-                if (minerals.Any(m => m?.Position == null))
-                {
-                    return result; // labels not resolved yet — retry next frame
-                }
-
-                // Parked workers = no choreography role in the current profile.
-                var parked = assignedWorkers
-                    .Where(w => w != null && w.UnitID != 0
-                        && !string.Equals(w.Role, "S1", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "S2", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "S3", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "T2", StringComparison.OrdinalIgnoreCase))
-                    .Take(5)
-                    .ToList();
-                if (parked.Count < 5)
-                {
-                    return result; // wait for full assignment
-                }
-
-                _patternJitMinOffIssued = true;
-                for (var i = 0; i < 5; i++)
-                {
-                    var worker = parked[i];
-                    var mineral = minerals[i];
-                    var tx = mineral.Position.X - 1.05f;
-                    var ty = mineral.Position.Y + 0.05f;
-                    var move = CreateInstructionMoveAction(worker.UnitID, new Point2D { X = tx, Y = ty }, false);
-                    if (move != null)
-                    {
-                        result.Add(move);
-                    }
-                    _patternJitMinOffWorkers.Add((worker.UnitID, worker.Role ?? "", targetLabels[i], tx, ty, false));
-                    contexts?.Add(new InstructionCommandContext
-                    {
-                        WorkerTag = worker.UnitID,
-                        InstructionSet = "patternjit-minofftest",
-                        InstructionIndex = -1,
-                        InstructionCommand = "Move",
-                        InstructionPoint = $"{targetLabels[i]}MinOff"
-                    });
-                    Console.WriteLine($"[MIN-OFF-TEST] frame={_currentFrame} Move {worker.Role}={worker.UnitID} -> {targetLabels[i]}+(W1.05,N0.05)=({tx:F3},{ty:F3})");
-                }
-                return result;
-            }
-
-            // Arrival tracking.
-            var snapshot = Globals.CurrentObservation;
-            if (snapshot?.SelfUnits != null)
-            {
-                for (var i = 0; i < _patternJitMinOffWorkers.Count; i++)
-                {
-                    var entry = _patternJitMinOffWorkers[i];
-                    if (entry.Arrived || !snapshot.SelfUnits.TryGetValue(entry.Tag, out var live) || live?.Position == null)
-                    {
-                        continue;
-                    }
-                    var dx = live.Position.X - entry.Tx;
-                    var dy = live.Position.Y - entry.Ty;
-                    var err = (float)Math.Sqrt(dx * dx + dy * dy);
-                    if (err <= 0.25f)
-                    {
-                        _patternJitMinOffWorkers[i] = (entry.Tag, entry.WorkerRole, entry.MineralLabel, entry.Tx, entry.Ty, true);
-                        Console.WriteLine($"[MIN-OFF-TEST] frame={_currentFrame} ARRIVED {entry.MineralLabel} worker={entry.WorkerRole} target=({entry.Tx:F3},{entry.Ty:F3}) rest=({live.Position.X:F3},{live.Position.Y:F3}) err={err:F3}u");
-                    }
-                }
-            }
-
-            // f300 summary: rest position vs target for every tracked worker.
-            if (!_patternJitMinOffSummaryPrinted && _currentFrame >= 300)
-            {
-                _patternJitMinOffSummaryPrinted = true;
-                foreach (var entry in _patternJitMinOffWorkers)
-                {
-                    if (snapshot?.SelfUnits != null && snapshot.SelfUnits.TryGetValue(entry.Tag, out var live) && live?.Position != null)
-                    {
-                        var dx = live.Position.X - entry.Tx;
-                        var dy = live.Position.Y - entry.Ty;
-                        var err = (float)Math.Sqrt(dx * dx + dy * dy);
-                        Console.WriteLine($"[MIN-OFF-TEST SUMMARY] {entry.MineralLabel} worker={entry.WorkerRole} target=({entry.Tx:F3},{entry.Ty:F3}) rest=({live.Position.X:F3},{live.Position.Y:F3}) err={err:F3}u arrived={entry.Arrived}");
-                    }
-                    else
-                    {
-                        Console.WriteLine($"[MIN-OFF-TEST SUMMARY] {entry.MineralLabel} worker={entry.WorkerRole} target=({entry.Tx:F3},{entry.Ty:F3}) rest=UNKNOWN arrived={entry.Arrived}");
-                    }
-                }
-            }
-            return result;
-        }
-
-        // --smartprobe=d (owner spec 2026-11-12 07:45): "Put S1 S2 S3 and T2
-        // on suicide Squad. Use the other 8. Don't break the existing books.
-        // ... park each at increasing distances from the ideal point towards
-        // the center of the hatchery and then give them Smart commands to see
-        // where they either move to or do not move to harvest."
-        // Ideal points (owner-measured): TA/TB = center+(E0.3,N0.5),
-        // SA = center+(W0.3,N0.5), SB/BB/BA/YB/YA = center+(W1.0,N0.0).
-        // Park = ideal + d * unit(hatcheryCenter - ideal). On arrival the
-        // worker gets a Smart on its mineral; 35 frames later we log where it
-        // actually harvests from and how far it walked from the park point.
-        // The 4 book workers are leashed to the 5W/5N park corner so their
-        // books (still intact) cannot drag them back into the test area.
-        private List<SC2Action> IssuePatternJitSmartRangeProbe(List<InstructionCommandContext> contexts)
-        {
-            var result = new List<SC2Action>();
-            if (!Settings.PatternJitMode || !Settings.PatternJitSmartProbe)
-            {
-                return result;
-            }
-
-            if (!_smartProbeIssued && _currentFrame >= 1)
-            {
-                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
-                var mainMinerals = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex);
-                if (assignedWorkers == null || mainMinerals == null)
-                {
-                    return result; // map data not ready — retry next frame
-                }
-
-                var labelOrder = new[] { "TA", "TB", "SA", "SB", "BB", "BA", "YB", "YA" };
-                var minerals = labelOrder
-                    .Select(l => mainMinerals.FirstOrDefault(m => string.Equals(m?.FinalLabel, l, StringComparison.OrdinalIgnoreCase)))
-                    .ToList();
-                if (minerals.Any(m => m?.Position == null))
-                {
-                    return result; // labels not resolved yet — retry next frame
-                }
-
-                var probeWorkers = assignedWorkers
-                    .Where(w => w != null && w.UnitID != 0
-                        && !string.Equals(w.Role, "S1", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "S2", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "S3", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "T2", StringComparison.OrdinalIgnoreCase))
-                    .Take(8)
-                    .ToList();
-                if (probeWorkers.Count < 8)
-                {
-                    return result; // wait for full assignment
-                }
-
-                var hatchery = Settings.CurrentSpawnLocation;
-                _smartProbeCornerX = hatchery.X - 5f;
-                _smartProbeCornerY = hatchery.Y + 5f;
-                var d = Settings.PatternJitSmartProbeDist;
-                _smartProbeIssued = true;
-
-                for (var i = 0; i < 8; i++)
-                {
-                    var worker = probeWorkers[i];
-                    var mineral = minerals[i];
-                    // Owner's per-mineral ideal offsets (west = -x, north = +y).
-                    float ox = -1.0f, oy = 0.0f;
-                    if (labelOrder[i] == "TA" || labelOrder[i] == "TB") { ox = 0.3f; oy = 0.5f; }
-                    else if (labelOrder[i] == "SA") { ox = -0.3f; oy = 0.5f; }
-                    var idealX = mineral.Position.X + ox;
-                    var idealY = mineral.Position.Y + oy;
-                    var dx = hatchery.X - idealX;
-                    var dy = hatchery.Y - idealY;
-                    var len = (float)Math.Sqrt(dx * dx + dy * dy);
-                    var parkX = len >= 0.0001f ? idealX + dx / len * d : idealX;
-                    var parkY = len >= 0.0001f ? idealY + dy / len * d : idealY;
-
-                    var move = CreateInstructionMoveAction(worker.UnitID, new Point2D { X = parkX, Y = parkY }, false);
-                    if (move != null)
-                    {
-                        result.Add(move);
-                    }
-                    _smartProbeWorkers.Add(new SmartProbeWorker
-                    {
-                        Tag = worker.UnitID,
-                        Role = worker.Role ?? "",
-                        MineralLabel = labelOrder[i],
-                        MineralTag = mineral.UnitTag,
-                        ParkX = parkX,
-                        ParkY = parkY,
-                        IdealX = idealX,
-                        IdealY = idealY
-                    });
-                    contexts?.Add(new InstructionCommandContext
-                    {
-                        WorkerTag = worker.UnitID,
-                        InstructionSet = "patternjit-smartprobe",
-                        InstructionIndex = -1,
-                        InstructionCommand = "Move",
-                        InstructionPoint = $"{labelOrder[i]}SmartProbe"
-                    });
-                    Console.WriteLine($"[SMART-PROBE] frame={_currentFrame} d={d:F1} Move {worker.Role}={worker.UnitID} -> {labelOrder[i]} park=({parkX:F3},{parkY:F3}) ideal=({idealX:F3},{idealY:F3})");
-                }
-
-                // Suicide squad: S1/S2/S3/T2 parked in the corner, leashed.
-                foreach (var w in assignedWorkers.Where(w => w != null && w.UnitID != 0
-                    && (string.Equals(w.Role, "S1", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(w.Role, "S2", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(w.Role, "S3", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(w.Role, "T2", StringComparison.OrdinalIgnoreCase))))
-                {
-                    var park = CreateInstructionMoveAction(w.UnitID, new Point2D { X = _smartProbeCornerX, Y = _smartProbeCornerY }, false);
-                    if (park != null)
-                    {
-                        result.Add(park);
-                    }
-                    _smartProbeSuicideTags.Add(w.UnitID);
-                    Console.WriteLine($"[SMART-PROBE] frame={_currentFrame} suicide-squad {w.Role}={w.UnitID} -> corner ({_smartProbeCornerX:F3},{_smartProbeCornerY:F3})");
-                }
-                return result;
-            }
-
-            if (!_smartProbeIssued)
-            {
-                return result;
-            }
-
-            var snapshot = Globals.CurrentObservation;
-            if (snapshot?.SelfUnits == null)
-            {
-                return result;
-            }
-
-            // Leash the suicide squad: any book instruction that drags them
-            // more than 1.5u off the corner gets overridden (max 1/frame each).
-            foreach (var tag in _smartProbeSuicideTags)
-            {
-                if (!snapshot.SelfUnits.TryGetValue(tag, out var sq) || sq?.Position == null)
-                {
-                    continue;
-                }
-                var sdx = sq.Position.X - _smartProbeCornerX;
-                var sdy = sq.Position.Y - _smartProbeCornerY;
-                var sdist = (float)Math.Sqrt(sdx * sdx + sdy * sdy);
-                if (sdist > 1.5f
-                    && (!_smartProbeLeashLastFrame.TryGetValue(tag, out var lastLeash) || _currentFrame > lastLeash))
-                {
-                    _smartProbeLeashLastFrame[tag] = _currentFrame;
-                    var leash = CreateInstructionMoveAction(tag, new Point2D { X = _smartProbeCornerX, Y = _smartProbeCornerY }, false);
-                    if (leash != null)
-                    {
-                        result.Add(leash);
-                        Console.WriteLine($"[SMART-PROBE] frame={_currentFrame} leash tag={tag} back to corner (was {sdist:F2}u off)");
-                    }
-                }
-            }
-
-            foreach (var w in _smartProbeWorkers)
-            {
-                if (w.State == 2 || !snapshot.SelfUnits.TryGetValue(w.Tag, out var live) || live?.Position == null)
-                {
-                    continue;
-                }
-                if (w.State == 0)
-                {
-                    var dx = live.Position.X - w.ParkX;
-                    var dy = live.Position.Y - w.ParkY;
-                    var err = (float)Math.Sqrt(dx * dx + dy * dy);
-                    // Smart on arrival, or at f90 as a stuck-fallback (park
-                    // point may be inside the collision circle at small d).
-                    if (err <= 0.25f || _currentFrame >= 90)
-                    {
-                        w.State = 1;
-                        w.SmartFrame = _currentFrame;
-                        w.ParkRestX = live.Position.X;
-                        w.ParkRestY = live.Position.Y;
-                        w.ArrivedClean = err <= 0.25f;
-                        var smart = CreateInstructionGatherAction(w.Tag, w.MineralTag, false);
-                        if (smart != null)
-                        {
-                            result.Add(smart);
-                        }
-                        contexts?.Add(new InstructionCommandContext
-                        {
-                            WorkerTag = w.Tag,
-                            InstructionSet = "patternjit-smartprobe",
-                            InstructionIndex = -1,
-                            InstructionCommand = "Smart",
-                            InstructionPoint = $"{w.MineralLabel}SmartProbe"
-                        });
-                        Console.WriteLine($"[SMART-PROBE] frame={_currentFrame} Smart {w.Role} -> {w.MineralLabel} from parkRest=({w.ParkRestX:F3},{w.ParkRestY:F3}) arrived={w.ArrivedClean}");
-                    }
-                }
-                else if (w.State == 1 && _currentFrame >= w.SmartFrame + 35)
-                {
-                    w.State = 2;
-                    var mdx = live.Position.X - w.ParkRestX;
-                    var mdy = live.Position.Y - w.ParkRestY;
-                    var moved = (float)Math.Sqrt(mdx * mdx + mdy * mdy);
-                    var idx = live.Position.X - w.IdealX;
-                    var idy = live.Position.Y - w.IdealY;
-                    var idealErr = (float)Math.Sqrt(idx * idx + idy * idy);
-                    Console.WriteLine($"[SMART-PROBE RESULT] {w.MineralLabel} worker={w.Role} d={Settings.PatternJitSmartProbeDist:F1} parkRest=({w.ParkRestX:F3},{w.ParkRestY:F3}) harvestStand=({live.Position.X:F3},{live.Position.Y:F3}) moved={moved:F3}u idealErr={idealErr:F3}u arrived={w.ArrivedClean}");
-                }
-            }
-
-            if (!_smartProbeSummaryPrinted && _currentFrame >= 200 && _smartProbeWorkers.All(w => w.State == 2))
-            {
-                _smartProbeSummaryPrinted = true;
-                Console.WriteLine($"[SMART-PROBE SUMMARY] d={Settings.PatternJitSmartProbeDist:F1} complete, all 8 workers logged");
-            }
-            return result;
-        }
-
-        // --thruprobe=t (owner question 2026-11-12 09:54): "In the past when
-        // the move thru was too far away the worker tried to detour around
-        // the back of the mineral. ... If we give them a 0.05 off the mineral
-        // do we lose to deceleration?" One worker per mineral: cold-start Move
-        // to an origin 4u from the §77 stand on the hatchery line, then Move
-        // to a thru point t units past the stand toward the mineral center,
-        // Smart at the §67 gate (1.15u from the stand). Logs the thru->Smart,
-        // Smart->harvest, and thru->harvest frame legs plus a wrap detector
-        // (worker ever farther from center than the stand + 0.6u = it went
-        // around the back). S1/S2/S3/T2 leashed to the park corner.
-        private List<SC2Action> IssuePatternJitThruProbe(List<InstructionCommandContext> contexts)
-        {
-            var result = new List<SC2Action>();
-            if (!Settings.PatternJitMode || !Settings.PatternJitThruProbe)
-            {
-                return result;
-            }
-
-            if (!_thruProbeIssued && _currentFrame >= 1)
-            {
-                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
-                var mainMinerals = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex);
-                if (assignedWorkers == null || mainMinerals == null)
-                {
-                    return result;
-                }
-
-                var labelOrder = new[] { "TA", "TB", "SA", "SB", "BB", "BA", "YB", "YA" };
-                var standOffsets = new (float Dx, float Dy)[]
-                {
-                    (0.21f, 0.86f), (0.32f, 0.79f), (-0.31f, 0.86f),
-                    (-1.30f, 0.72f), (-1.34f, 0.53f), (-1.35f, 0.30f), (-1.35f, 0.08f), (-1.35f, 0.08f),
-                };
-                var minerals = labelOrder
-                    .Select(l => mainMinerals.FirstOrDefault(m => string.Equals(m?.FinalLabel, l, StringComparison.OrdinalIgnoreCase)))
-                    .ToList();
-                if (minerals.Any(m => m?.Position == null))
-                {
-                    return result;
-                }
-
-                var probeWorkers = assignedWorkers
-                    .Where(w => w != null && w.UnitID != 0
-                        && !string.Equals(w.Role, "S1", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "S2", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "S3", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "T2", StringComparison.OrdinalIgnoreCase))
-                    .Take(8)
-                    .ToList();
-                if (probeWorkers.Count < 8)
-                {
-                    return result;
-                }
-
-                var hatchery = Settings.CurrentSpawnLocation;
-                _thruProbeCornerX = hatchery.X - 5f;
-                _thruProbeCornerY = hatchery.Y + 5f;
-                var t = Settings.PatternJitThruProbeDepth;
-                _thruProbeIssued = true;
-
-                for (var i = 0; i < 8; i++)
-                {
-                    var worker = probeWorkers[i];
-                    var mineral = minerals[i];
-                    var standX = mineral.Position.X + standOffsets[i].Dx;
-                    var standY = mineral.Position.Y + standOffsets[i].Dy;
-                    var cdx = mineral.Position.X - standX;
-                    var cdy = mineral.Position.Y - standY;
-                    var clen = (float)Math.Sqrt(cdx * cdx + cdy * cdy);
-                    // thru = stand + t toward center; origin = stand + 4u toward hatchery
-                    var thruX = standX + (clen >= 0.0001f ? cdx / clen * t : 0f);
-                    var thruY = standY + (clen >= 0.0001f ? cdy / clen * t : 0f);
-                    var hdx = hatchery.X - standX;
-                    var hdy = hatchery.Y - standY;
-                    var hlen = (float)Math.Sqrt(hdx * hdx + hdy * hdy);
-                    var originX = hlen >= 0.0001f ? standX + hdx / hlen * 4.0f : standX;
-                    var originY = hlen >= 0.0001f ? standY + hdy / hlen * 4.0f : standY;
-
-                    var move = CreateInstructionMoveAction(worker.UnitID, new Point2D { X = originX, Y = originY }, false);
-                    if (move != null)
-                    {
-                        result.Add(move);
-                    }
-                    _thruProbeWorkers.Add(new ThruProbeWorker
-                    {
-                        Tag = worker.UnitID,
-                        Role = worker.Role ?? "",
-                        MineralLabel = labelOrder[i],
-                        MineralTag = mineral.UnitTag,
-                        CenterX = mineral.Position.X,
-                        CenterY = mineral.Position.Y,
-                        StandX = standX,
-                        StandY = standY,
-                        StandDist = clen,
-                        OriginX = originX,
-                        OriginY = originY,
-                        ThruX = thruX,
-                        ThruY = thruY
-                    });
-                    Console.WriteLine($"[THRU-PROBE] frame={_currentFrame} t={t:F2} {worker.Role} -> {labelOrder[i]} origin=({originX:F3},{originY:F3}) stand=({standX:F3},{standY:F3}) thru=({thruX:F3},{thruY:F3})");
-                }
-
-                foreach (var w in assignedWorkers.Where(w => w != null && w.UnitID != 0
-                    && (string.Equals(w.Role, "S1", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(w.Role, "S2", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(w.Role, "S3", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(w.Role, "T2", StringComparison.OrdinalIgnoreCase))))
-                {
-                    var park = CreateInstructionMoveAction(w.UnitID, new Point2D { X = _thruProbeCornerX, Y = _thruProbeCornerY }, false);
-                    if (park != null)
-                    {
-                        result.Add(park);
-                    }
-                    _thruProbeSuicideTags.Add(w.UnitID);
-                }
-                return result;
-            }
-
-            if (!_thruProbeIssued)
-            {
-                return result;
-            }
-
-            var snapshot = Globals.CurrentObservation;
-            if (snapshot?.SelfUnits == null)
-            {
-                return result;
-            }
-
-            // Leash the suicide squad (see smartprobe).
-            foreach (var tag in _thruProbeSuicideTags)
-            {
-                if (!snapshot.SelfUnits.TryGetValue(tag, out var sq) || sq?.Position == null)
-                {
-                    continue;
-                }
-                var sdx = sq.Position.X - _thruProbeCornerX;
-                var sdy = sq.Position.Y - _thruProbeCornerY;
-                if ((float)Math.Sqrt(sdx * sdx + sdy * sdy) > 1.5f
-                    && (!_thruProbeLeashLastFrame.TryGetValue(tag, out var lastLeash) || _currentFrame > lastLeash))
-                {
-                    _thruProbeLeashLastFrame[tag] = _currentFrame;
-                    var leash = CreateInstructionMoveAction(tag, new Point2D { X = _thruProbeCornerX, Y = _thruProbeCornerY }, false);
-                    if (leash != null)
-                    {
-                        result.Add(leash);
-                    }
-                }
-            }
-
-            foreach (var w in _thruProbeWorkers)
-            {
-                if (w.State == 3 || !snapshot.SelfUnits.TryGetValue(w.Tag, out var live) || live?.Position == null)
-                {
-                    continue;
-                }
-
-                // Wrap detector: angle between (worker - center) and
-                // (stand - center) bearings. Around-the-back = the worker
-                // swings past ~75 deg off the stand bearing.
-                if (w.State >= 1)
-                {
-                    var cdx = live.Position.X - w.CenterX;
-                    var cdy = live.Position.Y - w.CenterY;
-                    var sdx = w.StandX - w.CenterX;
-                    var sdy = w.StandY - w.CenterY;
-                    var clen = (float)Math.Sqrt(cdx * cdx + cdy * cdy);
-                    var slen = (float)Math.Sqrt(sdx * sdx + sdy * sdy);
-                    if (clen > 0.001f && slen > 0.001f)
-                    {
-                        var cos = (cdx * sdx + cdy * sdy) / (clen * slen);
-                        cos = Math.Max(-1f, Math.Min(1f, cos));
-                        var angle = (float)(Math.Acos(cos) * 180.0 / Math.PI);
-                        if (angle > w.MaxWrapAngle)
-                        {
-                            w.MaxWrapAngle = angle;
-                        }
-                    }
-                }
-
-                if (w.State == 0)
-                {
-                    var dx = live.Position.X - w.OriginX;
-                    var dy = live.Position.Y - w.OriginY;
-                    if ((float)Math.Sqrt(dx * dx + dy * dy) <= 0.25f || _currentFrame >= 90)
-                    {
-                        w.State = 1;
-                        w.ThruFrame = _currentFrame;
-                        w.MaxWrapAngle = 0f;
-                        var thruMove = CreateInstructionMoveAction(w.Tag, new Point2D { X = w.ThruX, Y = w.ThruY }, false);
-                        if (thruMove != null)
-                        {
-                            result.Add(thruMove);
-                        }
-                    }
-                }
-                else if (w.State == 1)
-                {
-                    var dx = live.Position.X - w.StandX;
-                    var dy = live.Position.Y - w.StandY;
-                    if ((float)Math.Sqrt(dx * dx + dy * dy) <= 1.15f)
-                    {
-                        w.State = 2;
-                        w.SmartFrame = _currentFrame;
-                        var smart = CreateInstructionGatherAction(w.Tag, w.MineralTag, false);
-                        if (smart != null)
-                        {
-                            result.Add(smart);
-                        }
-                    }
-                }
-                else if (w.State == 2)
-                {
-                    var harvesting = live.OrderAbilityIds != null && live.OrderAbilityIds.Contains(1183);
-                    if (harvesting)
-                    {
-                        w.State = 3;
-                        w.HarvestFrame = _currentFrame;
-                        var wrap = w.MaxWrapAngle > 75f;
-                        Console.WriteLine($"[THRU-PROBE RESULT] {w.MineralLabel} worker={w.Role} t={Settings.PatternJitThruProbeDepth:F2} thru->smart={w.SmartFrame - w.ThruFrame}f smart->harvest={w.HarvestFrame - w.SmartFrame}f thru->harvest={w.HarvestFrame - w.ThruFrame}f maxWrapAngle={w.MaxWrapAngle:F0}deg wrap={wrap}");
-                    }
-                }
-            }
-            return result;
-        }
-
-        // --standpast=d (owner question 2026-11-13 07:03): "the worker sticks
-        // out .035 in every direction, if I read this right then we can tell
-        // a worker to move to 0.25 past where we want it to stand, is this
-        // correct?" One worker per mineral gets a plain Move to
-        // stand + d * unit(center - stand); rest position is logged vs the
-        // stand. If rest ~= stand, aiming past the stand is a valid way to
-        // place a worker exactly on it.
-        private List<SC2Action> IssuePatternJitStandPastProbe(List<InstructionCommandContext> contexts)
-        {
-            var result = new List<SC2Action>();
-            if (!Settings.PatternJitMode || !Settings.PatternJitStandPastProbe)
-            {
-                return result;
-            }
-
-            if (!_standPastIssued && _currentFrame >= 1)
-            {
-                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
-                var mainMinerals = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex);
-                if (assignedWorkers == null || mainMinerals == null)
-                {
-                    return result;
-                }
-
-                var labelOrder = new[] { "TA", "TB", "SA", "SB", "BB", "BA", "YB", "YA" };
-                var standOffsets = new (float Dx, float Dy)[]
-                {
-                    (0.21f, 0.86f), (0.32f, 0.79f), (-0.31f, 0.86f),
-                    (-1.30f, 0.72f), (-1.34f, 0.53f), (-1.35f, 0.30f), (-1.35f, 0.08f), (-1.35f, 0.08f),
-                };
-                var minerals = labelOrder
-                    .Select(l => mainMinerals.FirstOrDefault(m => string.Equals(m?.FinalLabel, l, StringComparison.OrdinalIgnoreCase)))
-                    .ToList();
-                if (minerals.Any(m => m?.Position == null))
-                {
-                    return result;
-                }
-                var probeWorkers = assignedWorkers
-                    .Where(w => w != null && w.UnitID != 0
-                        && !string.Equals(w.Role, "S1", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "S2", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "S3", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(w.Role, "T2", StringComparison.OrdinalIgnoreCase))
-                    .Take(8)
-                    .ToList();
-                if (probeWorkers.Count < 8)
-                {
-                    return result;
-                }
-
-                var d = Settings.PatternJitStandPastDist;
-                _standPastIssued = true;
-                for (var i = 0; i < 8; i++)
-                {
-                    var worker = probeWorkers[i];
-                    var mineral = minerals[i];
-                    var standX = mineral.Position.X + standOffsets[i].Dx;
-                    var standY = mineral.Position.Y + standOffsets[i].Dy;
-                    var cdx = mineral.Position.X - standX;
-                    var cdy = mineral.Position.Y - standY;
-                    var clen = (float)Math.Sqrt(cdx * cdx + cdy * cdy);
-                    var tx = clen >= 0.0001f ? standX + cdx / clen * d : standX;
-                    var ty = clen >= 0.0001f ? standY + cdy / clen * d : standY;
-                    var move = CreateInstructionMoveAction(worker.UnitID, new Point2D { X = tx, Y = ty }, false);
-                    if (move != null)
-                    {
-                        result.Add(move);
-                    }
-                    _standPastWorkers.Add((worker.UnitID, worker.Role ?? "", labelOrder[i], standX, standY, tx, ty, false));
-                    Console.WriteLine($"[STAND-PAST] frame={_currentFrame} d={d:F2} Move {worker.Role} -> {labelOrder[i]} target=({tx:F3},{ty:F3}) stand=({standX:F3},{standY:F3})");
-                }
-                return result;
-            }
-
-            if (!_standPastIssued)
-            {
-                return result;
-            }
-
-            var snapshot = Globals.CurrentObservation;
-            if (snapshot?.SelfUnits == null)
-            {
-                return result;
-            }
-            for (var i = 0; i < _standPastWorkers.Count; i++)
-            {
-                var entry = _standPastWorkers[i];
-                if (entry.Arrived || !snapshot.SelfUnits.TryGetValue(entry.Tag, out var live) || live?.Position == null)
-                {
-                    continue;
-                }
-                var tdx = live.Position.X - entry.Tx;
-                var tdy = live.Position.Y - entry.Ty;
-                if ((float)Math.Sqrt(tdx * tdx + tdy * tdy) <= 0.30f || _currentFrame >= 120)
-                {
-                    _standPastWorkers[i] = (entry.Tag, entry.Role, entry.MineralLabel, entry.StandX, entry.StandY, entry.Tx, entry.Ty, true);
-                    var sdx = live.Position.X - entry.StandX;
-                    var sdy = live.Position.Y - entry.StandY;
-                    var standErr = (float)Math.Sqrt(sdx * sdx + sdy * sdy);
-                    Console.WriteLine($"[STAND-PAST RESULT] {entry.MineralLabel} worker={entry.Role} d={Settings.PatternJitStandPastDist:F2} rest=({live.Position.X:F3},{live.Position.Y:F3}) stand=({entry.StandX:F3},{entry.StandY:F3}) standErr={standErr:F3}u");
-                }
-            }
-            return result;
-        }
-
-        // --retprobe (owner spec 2026-11-13 08:04): "Put 11 on Suicide squad
-        // and S2 worker on SB. ... Each trip move the move thru point so the
-        // [Smart return fires] less far each time, closer to the Mineral. We
-        // want to find at what point the worker returns without moving, where
-        // it moves to when it moves, and when to issue a Smart Return so that
-        // the return cargo leg takes as few frames as possible."
-        // S2 speed-mines SB (thru = stand+0.25, Smart at the 1.15u gate). On
-        // each carry flip it Moves to a fixed return thru (2.41u circle on the
-        // stand bearing) and the Smart-return fires when the worker's distance
-        // to the hatchery center drops below the ladder value D_k (4.0 -> 1.0,
-        // step 0.25). Per trip: flip->smart, smart->deposit, flip->deposit,
-        // deposit position, post-Smart glide. After the ladder the probe
-        // attacks its own hatchery to end the game (bank never reaches 200
-        // with one miner).
-        private List<SC2Action> IssuePatternJitReturnProbe(List<InstructionCommandContext> contexts)
-        {
-            var result = new List<SC2Action>();
-            if (!Settings.PatternJitMode || !Settings.PatternJitReturnProbe)
-            {
-                return result;
-            }
-
-            var snapshot = Globals.CurrentObservation;
-
-            if (!_retProbeIssued && _currentFrame >= 1)
-            {
-                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
-                var mainMinerals = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex);
-                if (assignedWorkers == null || mainMinerals == null || snapshot?.CurrentTownHalls == null || snapshot.CurrentTownHalls.Count == 0)
-                {
-                    return result;
-                }
-                var s2 = assignedWorkers.FirstOrDefault(w => string.Equals(w?.Role, "S2", StringComparison.OrdinalIgnoreCase));
-                var sb = mainMinerals.FirstOrDefault(m => string.Equals(m?.FinalLabel, "SB", StringComparison.OrdinalIgnoreCase));
-                if (s2 == null || sb?.Position == null)
-                {
-                    return result;
-                }
-                _retProbeTownHallTag = snapshot.CurrentTownHalls.Keys.First();
-                var hatchery = Settings.CurrentSpawnLocation;
-                _retProbeStandX = sb.Position.X - 1.30f;
-                _retProbeStandY = sb.Position.Y + 0.72f;
-                var cdx = sb.Position.X - _retProbeStandX;
-                var cdy = sb.Position.Y - _retProbeStandY;
-                var clen = (float)Math.Sqrt(cdx * cdx + cdy * cdy);
-                _retProbeThruX = _retProbeStandX + cdx / clen * 0.25f;
-                _retProbeThruY = _retProbeStandY + cdy / clen * 0.25f;
-                // Return thru: 0.5u inside the 2.91u deposit circle on the stand bearing.
-                var hdx = _retProbeStandX - hatchery.X;
-                var hdy = _retProbeStandY - hatchery.Y;
-                var hlen = (float)Math.Sqrt(hdx * hdx + hdy * hdy);
-                _retProbeRetThruX = hatchery.X + hdx / hlen * 2.41f;
-                _retProbeRetThruY = hatchery.Y + hdy / hlen * 2.41f;
-                _retProbeCornerX = hatchery.X - 5f;
-                _retProbeCornerY = hatchery.Y + 5f;
-                _retProbeS2Tag = s2.UnitID;
-                _retProbeMineralTag = sb.UnitTag;
-                _retProbeIssued = true;
-                _retProbeState = 0;
-                _retProbeTrip = 0;
-
-                var move = CreateInstructionMoveAction(s2.UnitID, new Point2D { X = _retProbeThruX, Y = _retProbeThruY }, false);
-                if (move != null)
-                {
-                    result.Add(move);
-                }
-                foreach (var w in assignedWorkers.Where(w => w != null && w.UnitID != 0 && w.UnitID != s2.UnitID))
-                {
-                    var park = CreateInstructionMoveAction(w.UnitID, new Point2D { X = _retProbeCornerX, Y = _retProbeCornerY }, false);
-                    if (park != null)
-                    {
-                        result.Add(park);
-                    }
-                    _retProbeSquadTags.Add(w.UnitID);
-                }
-                Console.WriteLine($"[RET-PROBE] frame={_currentFrame} S2={s2.UnitID} SB stand=({_retProbeStandX:F3},{_retProbeStandY:F3}) thru=({_retProbeThruX:F3},{_retProbeThruY:F3}) retThru=({_retProbeRetThruX:F3},{_retProbeRetThruY:F3}) townHall={_retProbeTownHallTag} squad={_retProbeSquadTags.Count}");
-                return result;
-            }
-
-            if (!_retProbeIssued || snapshot?.SelfUnits == null)
-            {
-                return result;
-            }
-
-            // Leash the suicide squad.
-            foreach (var tag in _retProbeSquadTags)
-            {
-                if (!snapshot.SelfUnits.TryGetValue(tag, out var sq) || sq?.Position == null)
-                {
-                    continue;
-                }
-                var sdx = sq.Position.X - _retProbeCornerX;
-                var sdy = sq.Position.Y - _retProbeCornerY;
-                if ((float)Math.Sqrt(sdx * sdx + sdy * sdy) > 1.5f
-                    && (!_retProbeLeashLastFrame.TryGetValue(tag, out var lastLeash) || _currentFrame > lastLeash))
-                {
-                    _retProbeLeashLastFrame[tag] = _currentFrame;
-                    var leash = CreateInstructionMoveAction(tag, new Point2D { X = _retProbeCornerX, Y = _retProbeCornerY }, false);
-                    if (leash != null)
-                    {
-                        result.Add(leash);
-                    }
-                }
-            }
-
-            // Ladder complete: end the game (one miner never reaches bank 200).
-            if (_retProbeDone)
-            {
-                var allTags = _retProbeSquadTags.ToList();
-                allTags.Add(_retProbeS2Tag);
-                var command = new ActionRawUnitCommand
-                {
-                    AbilityId = SuicideAttackAbilityId,
-                    TargetUnitTag = _retProbeTownHallTag,
-                    QueueCommand = false
-                };
-                command.UnitTags.AddRange(allTags);
-                result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = command } });
-                return result;
-            }
-
-            if (!snapshot.SelfUnits.TryGetValue(_retProbeS2Tag, out var live) || live?.Position == null)
-            {
-                return result;
-            }
-
-            var hatcheryPos = Settings.CurrentSpawnLocation;
-            if (_retProbeState == 0)
-            {
-                // Approaching the mineral: Smart at the 1.15u gate.
-                var dx = live.Position.X - _retProbeStandX;
-                var dy = live.Position.Y - _retProbeStandY;
-                if ((float)Math.Sqrt(dx * dx + dy * dy) <= 1.15f)
-                {
-                    _retProbeState = 1;
-                    var smart = CreateInstructionGatherAction(_retProbeS2Tag, _retProbeMineralTag, false);
-                    if (smart != null)
-                    {
-                        result.Add(smart);
-                    }
-                }
-            }
-            else if (_retProbeState == 1)
-            {
-                if (live.IsCarrying)
-                {
-                    _retProbeState = 2;
-                    _retProbeFlipFrame = _currentFrame;
-                    var retMove = CreateInstructionMoveAction(_retProbeS2Tag, new Point2D { X = _retProbeRetThruX, Y = _retProbeRetThruY }, false);
-                    if (retMove != null)
-                    {
-                        result.Add(retMove);
-                    }
-                }
-            }
-            else if (_retProbeState == 2)
-            {
-                var dx = live.Position.X - hatcheryPos.X;
-                var dy = live.Position.Y - hatcheryPos.Y;
-                var dist = (float)Math.Sqrt(dx * dx + dy * dy);
-                var gate = RetProbeLadder[Math.Min(_retProbeTrip, RetProbeLadder.Length - 1)];
-                if (dist <= gate)
-                {
-                    _retProbeState = 3;
-                    _retProbeSmartFrame = _currentFrame;
-                    _retProbeSmartX = live.Position.X;
-                    _retProbeSmartY = live.Position.Y;
-                    var retSmart = CreateInstructionReturnAction(_retProbeS2Tag, _retProbeTownHallTag, false);
-                    if (retSmart != null)
-                    {
-                        result.Add(retSmart);
-                    }
-                }
-            }
-            else if (_retProbeState == 3)
-            {
-                if (!live.IsCarrying)
-                {
-                    var glide = (float)Math.Sqrt(
-                        (live.Position.X - _retProbeSmartX) * (live.Position.X - _retProbeSmartX)
-                        + (live.Position.Y - _retProbeSmartY) * (live.Position.Y - _retProbeSmartY));
-                    var gate = RetProbeLadder[Math.Min(_retProbeTrip, RetProbeLadder.Length - 1)];
-                    Console.WriteLine($"[RET-PROBE RESULT] trip={_retProbeTrip} D={gate:F2} flip->smart={_retProbeSmartFrame - _retProbeFlipFrame}f smart->deposit={_currentFrame - _retProbeSmartFrame}f flip->deposit={_currentFrame - _retProbeFlipFrame}f deposit=({live.Position.X:F3},{live.Position.Y:F3}) postSmartGlide={glide:F3}u");
-                    _retProbeTrip++;
-                    if (_retProbeTrip >= RetProbeLadder.Length)
-                    {
-                        _retProbeDone = true;
-                        Console.WriteLine($"[RET-PROBE] frame={_currentFrame} ladder complete");
-                    }
-                    else
-                    {
-                        // Next trip: back to the mineral.
-                        _retProbeState = 0;
-                        var move = CreateInstructionMoveAction(_retProbeS2Tag, new Point2D { X = _retProbeThruX, Y = _retProbeThruY }, false);
-                        if (move != null)
-                        {
-                            result.Add(move);
-                        }
-                    }
-                }
-            }
-            return result;
-        }
-
-        // --sbloop (owner spec 2026-11-13 08:40): continuous S2 SB speed
-        // mining with both tuned legs — thru = stand+0.25u toward center,
-        // harvest Smart at the 1.15u gate; return thru = 2.41u circle on the
-        // stand bearing, Smart-return at 3.0u from the hatchery center.
-        // Logs per trip: outbound leg (deposit->flip), return leg
-        // (flip->deposit), full cycle (deposit->deposit). After 12 trips the
-        // probe attacks its own hatchery to end the game.
-        private List<SC2Action> IssuePatternJitSbLoopProbe(List<InstructionCommandContext> contexts)
-        {
-            var result = new List<SC2Action>();
-            if (!Settings.PatternJitMode || !Settings.PatternJitSbLoop)
-            {
-                return result;
-            }
-
-            var snapshot = Globals.CurrentObservation;
-
-            if (!_sbLoopIssued && _currentFrame >= 1)
-            {
-                var startIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                var assignedWorkers = _mapData?.AssignedWorkers?.ElementAtOrDefault(startIndex);
-                var mainMinerals = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(startIndex);
-                if (assignedWorkers == null || mainMinerals == null || snapshot?.CurrentTownHalls == null || snapshot.CurrentTownHalls.Count == 0)
-                {
-                    return result;
-                }
-                var s2 = assignedWorkers.FirstOrDefault(w => string.Equals(w?.Role, "S2", StringComparison.OrdinalIgnoreCase));
-                var sb = mainMinerals.FirstOrDefault(m => string.Equals(m?.FinalLabel, "SB", StringComparison.OrdinalIgnoreCase));
-                if (s2 == null || sb?.Position == null)
-                {
-                    return result;
-                }
-                _sbLoopTownHallTag = snapshot.CurrentTownHalls.Keys.First();
-                var hatchery = Settings.CurrentSpawnLocation;
-                _sbLoopStandX = sb.Position.X - 1.30f;
-                _sbLoopStandY = sb.Position.Y + 0.72f;
-                var cdx = sb.Position.X - _sbLoopStandX;
-                var cdy = sb.Position.Y - _sbLoopStandY;
-                var clen = (float)Math.Sqrt(cdx * cdx + cdy * cdy);
-                _sbLoopThruX = _sbLoopStandX + cdx / clen * 0.25f;
-                _sbLoopThruY = _sbLoopStandY + cdy / clen * 0.25f;
-                var hdx = _sbLoopStandX - hatchery.X;
-                var hdy = _sbLoopStandY - hatchery.Y;
-                var hlen = (float)Math.Sqrt(hdx * hdx + hdy * hdy);
-                _sbLoopRetThruX = hatchery.X + hdx / hlen * 2.41f;
-                _sbLoopRetThruY = hatchery.Y + hdy / hlen * 2.41f;
-                _sbLoopCornerX = hatchery.X - 5f;
-                _sbLoopCornerY = hatchery.Y + 5f;
-                _sbLoopS2Tag = s2.UnitID;
-                _sbLoopMineralTag = sb.UnitTag;
-                _sbLoopIssued = true;
-                _sbLoopState = 0;
-                _sbLoopTrip = 0;
-
-                var move = CreateInstructionMoveAction(s2.UnitID, new Point2D { X = _sbLoopThruX, Y = _sbLoopThruY }, false);
-                if (move != null)
-                {
-                    result.Add(move);
-                }
-                foreach (var w in assignedWorkers.Where(w => w != null && w.UnitID != 0 && w.UnitID != s2.UnitID))
-                {
-                    var park = CreateInstructionMoveAction(w.UnitID, new Point2D { X = _sbLoopCornerX, Y = _sbLoopCornerY }, false);
-                    if (park != null)
-                    {
-                        result.Add(park);
-                    }
-                    _sbLoopSquadTags.Add(w.UnitID);
-                }
-                Console.WriteLine($"[SB-LOOP] frame={_currentFrame} S2={s2.UnitID} stand=({_sbLoopStandX:F3},{_sbLoopStandY:F3}) thru=({_sbLoopThruX:F3},{_sbLoopThruY:F3}) retThru=({_sbLoopRetThruX:F3},{_sbLoopRetThruY:F3})");
-                return result;
-            }
-
-            if (!_sbLoopIssued || snapshot?.SelfUnits == null)
-            {
-                return result;
-            }
-
-            // Leash the suicide squad.
-            foreach (var tag in _sbLoopSquadTags)
-            {
-                if (!snapshot.SelfUnits.TryGetValue(tag, out var sq) || sq?.Position == null)
-                {
-                    continue;
-                }
-                var sdx = sq.Position.X - _sbLoopCornerX;
-                var sdy = sq.Position.Y - _sbLoopCornerY;
-                if ((float)Math.Sqrt(sdx * sdx + sdy * sdy) > 1.5f
-                    && (!_sbLoopLeashLastFrame.TryGetValue(tag, out var lastLeash) || _currentFrame > lastLeash))
-                {
-                    _sbLoopLeashLastFrame[tag] = _currentFrame;
-                    var leash = CreateInstructionMoveAction(tag, new Point2D { X = _sbLoopCornerX, Y = _sbLoopCornerY }, false);
-                    if (leash != null)
-                    {
-                        result.Add(leash);
-                    }
-                }
-            }
-
-            if (_sbLoopDone)
-            {
-                var allTags = _sbLoopSquadTags.ToList();
-                allTags.Add(_sbLoopS2Tag);
-                var command = new ActionRawUnitCommand
-                {
-                    AbilityId = SuicideAttackAbilityId,
-                    TargetUnitTag = _sbLoopTownHallTag,
-                    QueueCommand = false
-                };
-                command.UnitTags.AddRange(allTags);
-                result.Add(new SC2Action { ActionRaw = new ActionRaw { UnitCommand = command } });
-                return result;
-            }
-
-            if (!snapshot.SelfUnits.TryGetValue(_sbLoopS2Tag, out var live) || live?.Position == null)
-            {
-                return result;
-            }
-
-            if (_sbLoopState == 0)
-            {
-                var dx = live.Position.X - _sbLoopStandX;
-                var dy = live.Position.Y - _sbLoopStandY;
-                if ((float)Math.Sqrt(dx * dx + dy * dy) <= 1.15f)
-                {
-                    _sbLoopState = 1;
-                    _sbLoopHarvestFrame = _currentFrame;
-                    var smart = CreateInstructionGatherAction(_sbLoopS2Tag, _sbLoopMineralTag, false);
-                    if (smart != null)
-                    {
-                        result.Add(smart);
-                    }
-                }
-            }
-            else if (_sbLoopState == 1)
-            {
-                if (live.IsCarrying)
-                {
-                    _sbLoopState = 2;
-                    _sbLoopFlipFrame = _currentFrame;
-                    var retMove = CreateInstructionMoveAction(_sbLoopS2Tag, new Point2D { X = _sbLoopRetThruX, Y = _sbLoopRetThruY }, false);
-                    if (retMove != null)
-                    {
-                        result.Add(retMove);
-                    }
-                }
-            }
-            else if (_sbLoopState == 2)
-            {
-                var hatcheryPos = Settings.CurrentSpawnLocation;
-                var dx = live.Position.X - hatcheryPos.X;
-                var dy = live.Position.Y - hatcheryPos.Y;
-                if ((float)Math.Sqrt(dx * dx + dy * dy) <= 3.0f)
-                {
-                    _sbLoopState = 3;
-                    var retSmart = CreateInstructionReturnAction(_sbLoopS2Tag, _sbLoopTownHallTag, false);
-                    if (retSmart != null)
-                    {
-                        result.Add(retSmart);
-                    }
-                }
-            }
-            else if (_sbLoopState == 3)
-            {
-                if (!live.IsCarrying)
-                {
-                    var returnLeg = _currentFrame - _sbLoopFlipFrame;
-                    var outboundLeg = _sbLoopLastDepositFrame >= 0 ? _sbLoopFlipFrame - _sbLoopLastDepositFrame : -1;
-                    var cycle = _sbLoopLastDepositFrame >= 0 ? _currentFrame - _sbLoopLastDepositFrame : -1;
-                    Console.WriteLine($"[SB-LOOP RESULT] trip={_sbLoopTrip} outbound(deposit->flip)={outboundLeg}f return(flip->deposit)={returnLeg}f cycle(deposit->deposit)={cycle}f deposit=({live.Position.X:F3},{live.Position.Y:F3})");
-                    _sbLoopTrip++;
-                    _sbLoopLastDepositFrame = _currentFrame;
-                    if (_sbLoopTrip >= Settings.PatternJitSbLoopTrips)
-                    {
-                        _sbLoopDone = true;
-                        Console.WriteLine($"[SB-LOOP] frame={_currentFrame} loop complete");
-                    }
-                    else
-                    {
-                        _sbLoopState = 0;
-                        var move = CreateInstructionMoveAction(_sbLoopS2Tag, new Point2D { X = _sbLoopThruX, Y = _sbLoopThruY }, false);
-                        if (move != null)
-                        {
-                            result.Add(move);
-                        }
-                    }
-                }
-            }
-            return result;
-        }
-
-        // PatternJIT park (owner spec 2026-11-10 08:00): one-shot Move for each
-        // bookless worker to 5u west / 5u north of the hatchery (west = -x,
-        // north = +y) so only S2's book moves on screen. Issued from the
-        // empty-book branch of the instruction loop, once per tag.
-        private void TryParkPatternJitWorkerOnce(RuntimeWorkerState runtimeWorker, List<SC2Action> actions, List<InstructionCommandContext> contexts)
-        {
-            if (runtimeWorker == null || runtimeWorker.UnitTag == 0 || !_patternJitParkedTags.Add(runtimeWorker.UnitTag))
-            {
-                return;
-            }
-            // Bite 5a (owner spec 2026-11-10 21:00): T2 mineral-walks toward
-            // the --t2walk= mineral instead of parking — one-shot f0 Smart.
-            // This bite only RECORDS the clean walk line (mineral walk passes
-            // through workers); the real choreo will stop the walk at the
-            // bump position, like the old T4 bumper.
-            if (!string.IsNullOrWhiteSpace(Settings.PatternJitT2WalkLabel))
-            {
-                var walkStartIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                var t2Record = _mapData?.AssignedWorkers?.ElementAtOrDefault(walkStartIndex)
-                    ?.FirstOrDefault(candidate => string.Equals(candidate?.Role, "T2", StringComparison.OrdinalIgnoreCase));
-                if (t2Record != null && t2Record.UnitID == runtimeWorker.UnitTag)
-                {
-                    var walkMineral = _mapData?.OrderedMainMinerals?.ElementAtOrDefault(walkStartIndex)
-                        ?.FirstOrDefault(mineral => string.Equals(mineral?.FinalLabel, Settings.PatternJitT2WalkLabel, StringComparison.OrdinalIgnoreCase));
-                    if (walkMineral != null && walkMineral.UnitTag != 0)
-                    {
-                        var walkCommand = new ActionRawUnitCommand
-                        {
-                            AbilityId = (int)Abilities.SMART,
-                            TargetUnitTag = walkMineral.UnitTag,
-                            QueueCommand = false
-                        };
-                        walkCommand.UnitTags.Add(runtimeWorker.UnitTag);
-                        actions.Add(new SC2Action
-                        {
-                            ActionRaw = new ActionRaw { UnitCommand = walkCommand }
-                        });
-                        contexts?.Add(new InstructionCommandContext
-                        {
-                            WorkerTag = runtimeWorker.UnitTag,
-                            InstructionSet = "patternjit-t2walk",
-                            InstructionIndex = -1,
-                            InstructionCommand = "Smart",
-                            InstructionPoint = Settings.PatternJitT2WalkLabel + "Mineral"
-                        });
-                        Console.WriteLine($"[PATTERN-JIT T2 WALK] frame={_currentFrame} worker={runtimeWorker.UnitTag} mineral={walkMineral.UnitTag} label={Settings.PatternJitT2WalkLabel}");
-                        return;
-                    }
-                }
-            }
-            // Move probe (owner spec 2026-11-11 13:41): S3 is probe-driven
-            // (mineral walk SB -> peel 1u west of SA -> stop at S1's seat ->
-            // Smart on SA one frame after S1's flip) — never park it.
-            if (Settings.PatternJitMoveProbe && Settings.PatternJitS3StopBump)
-            {
-                var probeStartIndex = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
-                var s3Record = _mapData?.AssignedWorkers?.ElementAtOrDefault(probeStartIndex)
-                    ?.FirstOrDefault(candidate => string.Equals(candidate?.Role, "S3", StringComparison.OrdinalIgnoreCase));
-                if (s3Record != null && s3Record.UnitID == runtimeWorker.UnitTag)
-                {
-                    return;
-                }
-            }
-            var hatchery = Settings.CurrentSpawnLocation;
-            if (hatchery == null)
-            {
-                return;
-            }
-            var park = new Point2D { X = hatchery.X - 5f, Y = hatchery.Y + 5f };
-            var action = CreateInstructionMoveAction(runtimeWorker.UnitTag, park, false);
-            if (action == null)
-            {
-                return;
-            }
-            actions.Add(action);
-            contexts?.Add(new InstructionCommandContext
-            {
-                WorkerTag = runtimeWorker.UnitTag,
-                InstructionSet = "patternjit-park",
-                InstructionIndex = -1,
-                InstructionCommand = "Move",
-                InstructionPoint = "ParkPoint"
-            });
-            Console.WriteLine($"[PATTERN-JIT PARK] frame={_currentFrame} worker={runtimeWorker.UnitTag} target=({park.X:F2},{park.Y:F2})");
-        }
-
         // Experiment-1 bump stop: cancels the mineral-walk harvest the frame the
         // alignment gate resolves. Single frame, not queued — the wait-point moves
         // behind it must override the walk, not line up behind it.
@@ -11786,6 +9023,52 @@ namespace BabySharkBot.Managers
             {
                 AbilityId = (int)Abilities.SMART,
                 TargetUnitTag = townHallTag,
+                QueueCommand = queued
+            };
+            command.UnitTags.Add(workerTag);
+            return new SC2Action
+            {
+                ActionRaw = new ActionRaw { UnitCommand = command }
+            };
+        }
+
+        // flip68 suicide row (owner spec 2026-11-16 19:11 "suicide is a build
+        // order instruction — at some condition do something"): raw ATTACK on
+        // the target unit. The drone pathfinds to the hatchery and keeps
+        // attacking; with no rows behind it the book exhausts and no further
+        // command ever cancels the attack.
+        private static SC2Action? CreateInstructionAttackAction(ulong workerTag, ulong targetTag, bool queued)
+        {
+            if (workerTag == 0 || targetTag == 0)
+            {
+                return null;
+            }
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = (int)Abilities.ATTACK,
+                TargetUnitTag = targetTag,
+                QueueCommand = queued
+            };
+            command.UnitTags.Add(workerTag);
+            return new SC2Action
+            {
+                ActionRaw = new ActionRaw { UnitCommand = command }
+            };
+        }
+
+        // flip68 raw point ability (owner spec 2026-11-17 06:00): issue any
+        // point-target ability (EFFECT_SPRAY 3684 for 4-T2's Spray) at the
+        // row's resolved point. Shape matches CreateInstructionMoveAction.
+        private static SC2Action? CreateInstructionPointAbilityAction(ulong workerTag, int abilityId, Point2D target, bool queued)
+        {
+            if (workerTag == 0 || abilityId < 0 || target == null)
+            {
+                return null;
+            }
+            var command = new ActionRawUnitCommand
+            {
+                AbilityId = abilityId,
+                TargetWorldSpacePos = target,
                 QueueCommand = queued
             };
             command.UnitTags.Add(workerTag);
@@ -12945,6 +10228,66 @@ namespace BabySharkBot.Managers
                             if (unitTargetPos != null)
                             {
                                 _bumpVizLiveTargets[workerLabel] = (unitTargetPos.X, unitTargetPos.Y, command.AbilityId == (int)Abilities.HARVEST_GATHER);
+                            }
+                        }
+                    }
+
+                    // Owner request 2026-11-06 15:58, extended owner report
+                    // 2026-11-15 ("all 12 workers ... I only see that on S2 and
+                    // T1"): the book-path latch in ExecuteWorkerInstruction
+                    // only covers workers executing book rows; probe-driven
+                    // workers (removed with the PatternJIT drivers) issue
+                    // straight to the action factories and never
+                    // latched a target. This latch sits in LogMiningCommands,
+                    // the one funnel EVERY issued command flows through, so
+                    // all 12 workers get their current-position -> target
+                    // line in DrawWorkerTargetLines. Intent semantics match
+                    // the book latch: a gather/walk Smart points at the SMH
+                    // tip (never the mineral center), a return Smart points
+                    // at the current mineral's SMR rim point, a Move keeps
+                    // the worker's last mineral color.
+                    if (command.AbilityId == (int)Abilities.MOVE && command.TargetWorldSpacePos != null)
+                    {
+                        var prevLabel = _workerTargetViz.TryGetValue(workerTag, out var prevMove) ? prevMove.MineralLabel : string.Empty;
+                        _workerTargetViz[workerTag] = (command.TargetWorldSpacePos.X, command.TargetWorldSpacePos.Y, prevLabel);
+                    }
+                    else if ((command.AbilityId == (int)Abilities.HARVEST_GATHER || command.AbilityId == (int)Abilities.SMART)
+                        && command.TargetUnitTag != 0)
+                    {
+                        var vizMineral = ResolveVizMineralByTag(command.TargetUnitTag);
+                        if (vizMineral?.Position != null)
+                        {
+                            var vizTip = HasNonZeroPoint(vizMineral.SmHarvestPoint) ? vizMineral.SmHarvestPoint : vizMineral.Position;
+                            var vizLabel = !string.IsNullOrWhiteSpace(vizMineral.FinalLabel) ? vizMineral.FinalLabel : vizMineral.Label;
+                            _workerTargetViz[workerTag] = (vizTip.X, vizTip.Y, vizLabel ?? string.Empty);
+                        }
+                        else
+                        {
+                            // Return Smart on the hatchery (or any non-mineral
+                            // unit target): the SMR rim of the worker's
+                            // current mineral — the book-path standard — with
+                            // the live unit position as fallback.
+                            var prevLabel = _workerTargetViz.TryGetValue(workerTag, out var prevRet) ? prevRet.MineralLabel : string.Empty;
+                            Vector2Dto latchPoint = null;
+                            if (!string.IsNullOrWhiteSpace(prevLabel))
+                            {
+                                var startIdx = Globals.CurrentStartIndex >= 0 ? Globals.CurrentStartIndex : Settings.CurrentSpawnIndex;
+                                var curMineral = startIdx >= 0 && _mapData?.TeamPatchAssignments != null && startIdx < _mapData.TeamPatchAssignments.Count
+                                    ? _mapData.TeamPatchAssignments[startIdx]
+                                        .SelectMany(a => a?.Minerals ?? Enumerable.Empty<OrderedMineral>())
+                                        .FirstOrDefault(m => m != null
+                                            && (string.Equals(m.FinalLabel, prevLabel, StringComparison.OrdinalIgnoreCase)
+                                                || string.Equals(m.Label, prevLabel, StringComparison.OrdinalIgnoreCase)))
+                                    : null;
+                                if (curMineral != null && HasNonZeroPoint(curMineral.SmReturnPoint))
+                                {
+                                    latchPoint = curMineral.SmReturnPoint;
+                                }
+                            }
+                            latchPoint ??= LivePositionOfUnitTag(command.TargetUnitTag);
+                            if (latchPoint != null)
+                            {
+                                _workerTargetViz[workerTag] = (latchPoint.X, latchPoint.Y, prevLabel);
                             }
                         }
                     }

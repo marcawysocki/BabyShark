@@ -113,6 +113,17 @@ namespace BabySharkBot
                 Console.WriteLine("NATURALTEST ENABLED — zero worker mining commands; natural engine mining observed; production schedule only");
             }
 
+            // --flip68build (owner spec 2026-11-16 19:06): the build class writes
+            // every worker's instruction book (flip68 choreography + suicide
+            // rows); the mining manager runs ONLY the book executor. Parsed
+            // HERE, before the build selection, for the same reason as
+            // --naturaltest above.
+            Settings.Flip68BuildMode = args.Any(a => string.Equals(a, "--flip68build", StringComparison.OrdinalIgnoreCase));
+            if (Settings.Flip68BuildMode)
+            {
+                Console.WriteLine("FLIP68BUILD ENABLED — build owns worker instruction books; mining manager executes books only");
+            }
+
             // --smsweep (owner spec 2026-10-29 08:39): SM-harvest-point angular
             // sweep. Parsed HERE, before the build selection below, for the same
             // reason as --naturaltest above (the Sharky pipeline picks the build
@@ -410,351 +421,37 @@ namespace BabySharkBot
                 Settings.PatternBMineralSwitch = false;
                 Console.WriteLine("PATTERN-D ENABLED — return-swap: T1 TA/TB, T2 TB/TA, Y1 YA/YB, Y2 YB/YA, S2 SB/BB, B2 BB/SB, T4 SB then BB/SB; T3 solo SA");
             }
-
-            // --patternjit (owner spec 2026-11-09 17:59): PatternJIT harness,
-            // teams of three per mineral pair, flat W->role map; bite 1 gives
-            // ONLY S2 a book (staymin thru shape to SB) and moves the suicide
-            // trigger to S2's first 1184 flip. Everyone else auto-harvests.
-            if (args.Any(a => string.Equals(a, "--patternjit", StringComparison.OrdinalIgnoreCase)))
+            // --stepwindow=N (owner spec 2026-11-14 06:30): extend the
+            // Debugger.Break() step-thru window to frame N.
+            var stepWindowArg = args.FirstOrDefault(a => a.StartsWith("--stepwindow=", StringComparison.OrdinalIgnoreCase));
+            if (stepWindowArg != null && int.TryParse(stepWindowArg.Substring("--stepwindow=".Length), out var parsedStepWindow) && parsedStepWindow > 0)
             {
-                Settings.PatternJitMode = true;
-                // Bite-1 lock (owner spec 2026-11-10 15:27): "On the first set
-                // we lock in frame" — the sweep winner is a direct Smart on SB
-                // at frame 16 (flip f67, stand closest to the {SA,SB} return
-                // point). A later --sbsmart=N still overrides; --sbsmart=-1
-                // disables for pure stand-point probes.
-                Settings.PatternJitSbSmartFrame = 16;
-                // Bite 4 (owner spec 2026-11-10 18:48): S1 speed-mines SA on
-                // the same shape (f0 Move to the stand + direct Smart);
-                // --sasmart=N overrides. S1+S3 take turns on SA (S3 stages on
-                // the 32-harvest-frame release gate); S2 stays on SB; the run
-                // ends at the 200-mineral bank.
-                Settings.PatternJitSaSmartFrame = 16;
-                Console.WriteLine("PATTERN-JIT ENABLED — W1=S3 W2=T3 W3=T1 W4=T2 W5=S1 W6=S2 W7=B1 W8=B2 W9=Y1 W10=Y2 W11=Y3 W12=B3; bite 4: S1 SA stand+Smart, S3 SA wait+HRG, S2 SB locked, suicide at 200 bank");
+                Settings.StepBreakWindowOverride = parsedStepWindow;
+                Console.WriteLine($"STEP WINDOW OVERRIDE — Debugger.Break() window extended to f{parsedStepWindow}");
             }
-
-            // --sbsmh=X,Y (owner spec 2026-11-09 21:36): override the PatternJIT
-            // SB stand point without a rebuild, e.g. --sbsmh=132.00,19.60
-            // (invariant-culture floats).
-            var sbSmhArg = args.FirstOrDefault(a => a.StartsWith("--sbsmh=", StringComparison.OrdinalIgnoreCase));
-            if (sbSmhArg != null)
+            // --jitlog (owner spec 2026-11-14 14:36): JIT collision tracking,
+            // log-only — flip ETAs, outbound ETAs vs occupancy, predicted
+            // crossing frames.
+            if (args.Any(a => string.Equals(a, "--jitlog", StringComparison.OrdinalIgnoreCase)))
             {
-                var parts = sbSmhArg.Substring("--sbsmh=".Length).Split(',');
-                if (parts.Length == 2
-                    && float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sx)
-                    && float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sy))
-                {
-                    Settings.PatternJitSbSmhX = sx;
-                    Settings.PatternJitSbSmhY = sy;
-                    Console.WriteLine($"PATTERN-JIT SB STAND OVERRIDE — smH=({sx:F3},{sy:F3})");
-                }
-                else
-                {
-                    Console.WriteLine($"PATTERN-JIT SB STAND OVERRIDE REJECTED — could not parse '{sbSmhArg}' (want --sbsmh=X,Y)");
-                }
+                Settings.JitCollisionLog = true;
+                Console.WriteLine("JIT COLLISION LOG — flip ETAs / occupancy / crossing predictions (log-only)");
             }
-
-            // --sbsmart=N (owner spec 2026-11-10 09:22: "f22 issue a Smart on
-            // SB, run test again with f21, f20, f19"): S2 gets a direct Smart
-            // on SB at exactly frame N.
-            var sbSmartArg = args.FirstOrDefault(a => a.StartsWith("--sbsmart=", StringComparison.OrdinalIgnoreCase));
-            if (sbSmartArg != null)
+            // --jitact (owner go 2026-11-14 16:39): JIT action layer rule 1 —
+            // redirect the closest outbound worker to a flipped mineral when
+            // the predicted post-flip idle window exceeds --jitidle (def 25).
+            if (args.Any(a => string.Equals(a, "--jitact", StringComparison.OrdinalIgnoreCase)))
             {
-                if (int.TryParse(sbSmartArg.Substring("--sbsmart=".Length), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var smartFrame))
-                {
-                    Settings.PatternJitSbSmartFrame = smartFrame;
-                    Console.WriteLine($"PATTERN-JIT SB SMART — direct Smart on SB at frame {smartFrame}");
-                }
-                else
-                {
-                    Console.WriteLine($"PATTERN-JIT SB SMART REJECTED — could not parse '{sbSmartArg}' (want --sbsmart=N)");
-                }
+                Settings.JitActionLayer = true;
+                Settings.JitCollisionLog = true;
+                Console.WriteLine("JIT ACTION LAYER — idle-window reassignment active");
             }
-
-            // --sasmh=X,Y (bite 4, owner spec 2026-11-10 18:48): S1's SA stand
-            // override for the west-angle sweep (invariant-culture floats).
-            var saSmhArg = args.FirstOrDefault(a => a.StartsWith("--sasmh=", StringComparison.OrdinalIgnoreCase));
-            if (saSmhArg != null)
+            var jitIdleArg = args.FirstOrDefault(a => a.StartsWith("--jitidle=", StringComparison.OrdinalIgnoreCase));
+            if (jitIdleArg != null
+                && int.TryParse(jitIdleArg.Substring("--jitidle=".Length), out var jitIdleFrames))
             {
-                var parts = saSmhArg.Substring("--sasmh=".Length).Split(',');
-                if (parts.Length == 2
-                    && float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sax)
-                    && float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var say))
-                {
-                    Settings.PatternJitSaSmhX = sax;
-                    Settings.PatternJitSaSmhY = say;
-                    Console.WriteLine($"PATTERN-JIT SA STAND OVERRIDE — smH=({sax:F3},{say:F3})");
-                }
-                else
-                {
-                    Console.WriteLine($"PATTERN-JIT SA STAND OVERRIDE REJECTED — could not parse '{saSmhArg}' (want --sasmh=X,Y)");
-                }
-            }
-
-            // --sasmart=N (bite 4): frame of S1's direct Smart on SA.
-            var saSmartArg = args.FirstOrDefault(a => a.StartsWith("--sasmart=", StringComparison.OrdinalIgnoreCase));
-            if (saSmartArg != null)
-            {
-                if (int.TryParse(saSmartArg.Substring("--sasmart=".Length), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var saSmartFrame))
-                {
-                    Settings.PatternJitSaSmartFrame = saSmartFrame;
-                    Console.WriteLine($"PATTERN-JIT SA SMART — direct Smart on SA at frame {saSmartFrame}");
-                }
-                else
-                {
-                    Console.WriteLine($"PATTERN-JIT SA SMART REJECTED — could not parse '{saSmartArg}' (want --sasmart=N)");
-                }
-            }
-
-            // --sasawait=X,Y (bite 4): S3's SA wait spot override.
-            var saWaitArg = args.FirstOrDefault(a => a.StartsWith("--sasawait=", StringComparison.OrdinalIgnoreCase));
-            if (saWaitArg != null)
-            {
-                var parts = saWaitArg.Substring("--sasawait=".Length).Split(',');
-                if (parts.Length == 2
-                    && float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var swx)
-                    && float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var swy))
-                {
-                    Settings.PatternJitSa3WaitX = swx;
-                    Settings.PatternJitSa3WaitY = swy;
-                    Console.WriteLine($"PATTERN-JIT SA WAIT OVERRIDE — S3 wait=({swx:F3},{swy:F3})");
-                }
-                else
-                {
-                    Console.WriteLine($"PATTERN-JIT SA WAIT OVERRIDE REJECTED — could not parse '{saWaitArg}' (want --sasawait=X,Y)");
-                }
-            }
-
-            // --t2walk=SB|BB|BA (bite 5a, owner spec 2026-11-10 21:00): T2
-            // mineral-walks toward the named mineral instead of parking —
-            // walk-line telemetry for the S1 bump geometry. BA added for the
-            // owner probe 2026-11-11 07:56 ("Mineral Walk T2 to BA").
-            var t2WalkArg = args.FirstOrDefault(a => a.StartsWith("--t2walk=", StringComparison.OrdinalIgnoreCase));
-            if (t2WalkArg != null)
-            {
-                var walkLabel = t2WalkArg.Substring("--t2walk=".Length).Trim().ToUpperInvariant();
-                if (walkLabel == "SB" || walkLabel == "BB" || walkLabel == "BA")
-                {
-                    Settings.PatternJitT2WalkLabel = walkLabel;
-                    Console.WriteLine($"PATTERN-JIT T2 WALK — T2 mineral-walks toward {walkLabel} (telemetry only, no arrival intent)");
-                }
-                else
-                {
-                    Console.WriteLine($"PATTERN-JIT T2 WALK REJECTED — could not parse '{t2WalkArg}' (want --t2walk=SB, --t2walk=BB or --t2walk=BA)");
-                }
-            }
-
-            // --t2bump / --t2meet=N / --t2push=N (bite 5b, owner spec
-            // 2026-11-10 21:35): the T2->S1 bump choreography. --t2bump
-            // implies T2's mineral walk (default SB) since the walk IS the
-            // bump approach.
-            if (args.Any(a => string.Equals(a, "--t2bump", StringComparison.OrdinalIgnoreCase)))
-            {
-                Settings.PatternJitT2Bump = true;
-                if (string.IsNullOrWhiteSpace(Settings.PatternJitT2WalkLabel))
-                {
-                    Settings.PatternJitT2WalkLabel = "SB";
-                }
-                Console.WriteLine($"PATTERN-JIT T2 BUMP — S1 angled start, meet f{Settings.PatternJitT2MeetFrame}, push {Settings.PatternJitT2PushFrames}f, T2 -> TB -> park");
-            }
-
-            // --juggler (bite 5c, owner spec 2026-11-10 21:00): SA/SB
-            // three-worker rotation books + corridor cross-bump protocol.
-            if (args.Any(a => string.Equals(a, "--juggler", StringComparison.OrdinalIgnoreCase)))
-            {
-                Settings.PatternJitJuggler = true;
-                Console.WriteLine("PATTERN-JIT JUGGLER — S1{SA,SB} S2{SB,SA} S3{SA,SB}, shared {SA,SB} return point, corridor mineral-walk crossings, suicide at 200 bank");
-            }
-            var t2MeetArg = args.FirstOrDefault(a => a.StartsWith("--t2meet=", StringComparison.OrdinalIgnoreCase));
-            if (t2MeetArg != null
-                && int.TryParse(t2MeetArg.Substring("--t2meet=".Length), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var t2MeetFrame))
-            {
-                Settings.PatternJitT2MeetFrame = t2MeetFrame;
-                Console.WriteLine($"PATTERN-JIT T2 MEET — meet frame {t2MeetFrame}");
-            }
-            var t2PushArg = args.FirstOrDefault(a => a.StartsWith("--t2push=", StringComparison.OrdinalIgnoreCase));
-            if (t2PushArg != null
-                && int.TryParse(t2PushArg.Substring("--t2push=".Length), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var t2PushFrames))
-            {
-                Settings.PatternJitT2PushFrames = t2PushFrames;
-                Console.WriteLine($"PATTERN-JIT T2 PUSH — {t2PushFrames} frames");
-            }
-
-            // --moveprobe (owner spec 2026-11-11 08:36): f8 STOP T2 + Move S1
-            // to 0.5W/0.6N of SA, f9 the same Move to T2.
-            if (args.Any(a => string.Equals(a, "--moveprobe", StringComparison.OrdinalIgnoreCase)))
-            {
-                Settings.PatternJitMoveProbe = true;
-                Console.WriteLine($"PATTERN-JIT MOVE PROBE — f{Settings.PatternJitProbeStopFrame} STOP T2 + Move S1 to SA+({Settings.PatternJitProbeDx:F2},{Settings.PatternJitProbeDy:F2}), f{Settings.PatternJitProbeT2MoveFrame} same Move to T2");
-            }
-            if (args.Any(a => string.Equals(a, "--s3stopbump", StringComparison.OrdinalIgnoreCase)))
-            {
-                Settings.PatternJitS3StopBump = true;
-                Console.WriteLine("PATTERN-JIT S3 STOP-BUMP — probe drives S3: walk SB, peel 1u west of SA, stop at S1's seat, Smart SA at flip+1");
-            }
-            if (args.Any(a => string.Equals(a, "--minofftest", StringComparison.OrdinalIgnoreCase)))
-            {
-                Settings.PatternJitMinOffTest = true;
-                Console.WriteLine("PATTERN-JIT MIN-OFF TEST — Move one parked worker to N 0.05 / W 1.05 of SB, BB, BA, YB, YA and log rest positions");
-            }
-            var smartProbeArg = args.FirstOrDefault(a => a.StartsWith("--smartprobe=", StringComparison.OrdinalIgnoreCase));
-            if (smartProbeArg != null
-                && float.TryParse(smartProbeArg.Substring("--smartprobe=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var smartProbeDist))
-            {
-                Settings.PatternJitSmartProbe = true;
-                Settings.PatternJitSmartProbeDist = smartProbeDist;
-                Console.WriteLine($"PATTERN-JIT SMART PROBE — park 8 workers at ideal+{smartProbeDist:F1}u toward hatchery, Smart, log harvest stand");
-            }
-            var thruProbeArg = args.FirstOrDefault(a => a.StartsWith("--thruprobe=", StringComparison.OrdinalIgnoreCase));
-            if (thruProbeArg != null
-                && float.TryParse(thruProbeArg.Substring("--thruprobe=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var thruProbeDepth))
-            {
-                Settings.PatternJitThruProbe = true;
-                Settings.PatternJitThruProbeDepth = thruProbeDepth;
-                Console.WriteLine($"PATTERN-JIT THRU PROBE — thru depth {thruProbeDepth:F2}u past stand toward center, Smart at 1.15u gate, log thru->harvest frames");
-            }
-            var standPastArg = args.FirstOrDefault(a => a.StartsWith("--standpast=", StringComparison.OrdinalIgnoreCase));
-            if (standPastArg != null
-                && float.TryParse(standPastArg.Substring("--standpast=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var standPastDist))
-            {
-                Settings.PatternJitStandPastProbe = true;
-                Settings.PatternJitStandPastDist = standPastDist;
-                Console.WriteLine($"PATTERN-JIT STAND-PAST PROBE — Move one worker per mineral to stand+{standPastDist:F2}u toward center, log rest vs stand");
-            }
-            if (args.Any(a => string.Equals(a, "--retprobe", StringComparison.OrdinalIgnoreCase)))
-            {
-                Settings.PatternJitReturnProbe = true;
-                Console.WriteLine("PATTERN-JIT RETURN PROBE — S2 on SB, Smart-return hatchery-distance ladder 4.0->1.0 step 0.25, 11 leashed");
-            }
-            if (args.Any(a => string.Equals(a, "--sbloop", StringComparison.OrdinalIgnoreCase)))
-            {
-                Settings.PatternJitSbLoop = true;
-                Console.WriteLine("PATTERN-JIT SB LOOP — continuous S2 SB speed mining, both tuned legs, per-trip cycle timing");
-            }
-            var probeFramesArg = args.FirstOrDefault(a => a.StartsWith("--probeframes=", StringComparison.OrdinalIgnoreCase));
-            if (probeFramesArg != null)
-            {
-                var parts = probeFramesArg.Substring("--probeframes=".Length).Split(',');
-                if (parts.Length == 2
-                    && int.TryParse(parts[0], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var pfStop)
-                    && int.TryParse(parts[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var pfMove))
-                {
-                    Settings.PatternJitProbeStopFrame = pfStop;
-                    Settings.PatternJitProbeT2MoveFrame = pfMove;
-                    Console.WriteLine($"PATTERN-JIT MOVE PROBE FRAMES — stop f{pfStop}, T2 move f{pfMove}");
-                }
-            }
-            var probePointArg = args.FirstOrDefault(a => a.StartsWith("--probepoint=", StringComparison.OrdinalIgnoreCase));
-            if (probePointArg != null)
-            {
-                var parts = probePointArg.Substring("--probepoint=".Length).Split(',');
-                if (parts.Length == 2
-                    && float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pdx)
-                    && float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pdy))
-                {
-                    Settings.PatternJitProbeDx = pdx;
-                    Settings.PatternJitProbeDy = pdy;
-                    Console.WriteLine($"PATTERN-JIT MOVE PROBE POINT — SA+({pdx:F3},{pdy:F3})");
-                }
-            }
-            // --sustainpush (owner spec 2026-11-13 12:10): T2 Moves to E1u/
-            // S1u of S1's live position every frame of the probe window —
-            // sustained mutual push instead of a stop bump. --pushoff=dx,dy
-            // overrides the E1u/S1u default.
-            if (args.Any(a => string.Equals(a, "--sustainpush", StringComparison.OrdinalIgnoreCase)))
-            {
-                Settings.PatternJitSustainPush = true;
-                Console.WriteLine($"PATTERN-JIT SUSTAIN PUSH — T2 Move to S1+({Settings.PatternJitPushDx:F2},{Settings.PatternJitPushDy:F2}) each frame f{Settings.PatternJitProbeStopFrame}..f{Settings.PatternJitProbeT2MoveFrame}, TB peel f{Settings.PatternJitProbeT2MoveFrame + 1}");
-            }
-            var pushOffArg = args.FirstOrDefault(a => a.StartsWith("--pushoff=", StringComparison.OrdinalIgnoreCase));
-            if (pushOffArg != null)
-            {
-                var parts = pushOffArg.Substring("--pushoff=".Length).Split(',');
-                if (parts.Length == 2
-                    && float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var poffx)
-                    && float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var poffy))
-                {
-                    Settings.PatternJitPushDx = poffx;
-                    Settings.PatternJitPushDy = poffy;
-                    Console.WriteLine($"PATTERN-JIT SUSTAIN PUSH OFFSET — S1+({poffx:F3},{poffy:F3})");
-                }
-            }
-            var s1RedirArg = args.FirstOrDefault(a => a.StartsWith("--s1redir=", StringComparison.OrdinalIgnoreCase));
-            if (s1RedirArg != null
-                && int.TryParse(s1RedirArg.Substring("--s1redir=".Length), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var s1RedirFrame))
-            {
-                Settings.PatternJitS1RedirectFrame = s1RedirFrame;
-                Console.WriteLine($"PATTERN-JIT S1 REDIRECT — probe Move fires f{s1RedirFrame}");
-            }
-            // --s1stopbump (owner spec 2026-11-13 13:57): one stop bump on
-            // S2's return line, then S1 turns NW — SA-side return, then back
-            // to SA before S3's flip. --s1bumppos=t sets the intercept
-            // fraction from the SB seat toward the SMR (default 0.35).
-            if (args.Any(a => string.Equals(a, "--s1stopbump", StringComparison.OrdinalIgnoreCase)))
-            {
-                Settings.PatternJitS1StopBump = true;
-                Console.WriteLine($"PATTERN-JIT S1 STOP-BUMP — intercept t={Settings.PatternJitS1BumpPos:F2} on S2 return line, NW return, SA arrival vs S3 flip");
-            }
-            var s1BumpPosArg = args.FirstOrDefault(a => a.StartsWith("--s1bumppos=", StringComparison.OrdinalIgnoreCase));
-            if (s1BumpPosArg != null
-                && float.TryParse(s1BumpPosArg.Substring("--s1bumppos=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var s1BumpPos))
-            {
-                Settings.PatternJitS1BumpPos = s1BumpPos;
-                Console.WriteLine($"PATTERN-JIT S1 STOP-BUMP POS — t={s1BumpPos:F2}");
-            }
-            if (args.Any(a => string.Equals(a, "--hatchbump", StringComparison.OrdinalIgnoreCase)))
-            {
-                Settings.PatternJitHatchBump = true;
-                Console.WriteLine("PATTERN-JIT HATCH BUMP — S1 plants at S2's deposit point; S2 move-thru f(deposit+1), S1 move-thru SA f(deposit+2)");
-            }
-            var s1StopAtArg = args.FirstOrDefault(a => a.StartsWith("--s1stopat=", StringComparison.OrdinalIgnoreCase));
-            if (s1StopAtArg != null
-                && int.TryParse(s1StopAtArg.Substring("--s1stopat=".Length), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var s1StopAtFrame))
-            {
-                Settings.PatternJitS1StopAtFrame = s1StopAtFrame;
-                Console.WriteLine($"PATTERN-JIT S1 STOP-AT — STOP S1 f{s1StopAtFrame}, Smart return f{s1StopAtFrame + 1}");
-            }
-
-            // --s2sa=N (owner spec 2026-11-11 09:13): S2-on-SA frame battery
-            // — S2 Moves to the SA stand at f0, direct Smart on SA at frame N.
-            var s2saArg = args.FirstOrDefault(a => a.StartsWith("--s2sa=", StringComparison.OrdinalIgnoreCase));
-            if (s2saArg != null
-                && int.TryParse(s2saArg.Substring("--s2sa=".Length), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var s2saFrame))
-            {
-                Settings.PatternJitS2SaSmartFrame = s2saFrame;
-                Console.WriteLine($"PATTERN-JIT S2-SA BATTERY — S2 Move to SA stand f0, Smart SA at frame {s2saFrame}");
-            }
-
-            // --s1f0=X,Y (owner spec 2026-11-11 07:56): absolute frame-0 Move
-            // target for S1 — a pure move probe (pair with --sasmart=-1 so no
-            // later Smart overrides the walk; D6 addendum rule 4).
-            var s1F0Arg = args.FirstOrDefault(a => a.StartsWith("--s1f0=", StringComparison.OrdinalIgnoreCase));
-            if (s1F0Arg != null)
-            {
-                var parts = s1F0Arg.Substring("--s1f0=".Length).Split(',');
-                if (parts.Length == 2
-                    && float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var s1x)
-                    && float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var s1y))
-                {
-                    Settings.PatternJitS1F0X = s1x;
-                    Settings.PatternJitS1F0Y = s1y;
-                    Console.WriteLine($"PATTERN-JIT S1 F0 MOVE — target=({s1x:F3},{s1y:F3})");
-                }
-                else
-                {
-                    Console.WriteLine($"PATTERN-JIT S1 F0 MOVE REJECTED — could not parse '{s1F0Arg}' (want --s1f0=X,Y)");
-                }
-            }
-
-            // --s1bumpoff=X (owner spec 2026-11-11 22:24): S1's bump-target
-            // east offset from S2's straight-line SB SMR — battery walks it
-            // west from +1.0 in 0.25u steps.
-            var s1BumpOffArg = args.FirstOrDefault(a => a.StartsWith("--s1bumpoff=", StringComparison.OrdinalIgnoreCase));
-            if (s1BumpOffArg != null
-                && float.TryParse(s1BumpOffArg.Substring("--s1bumpoff=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var s1BumpOff))
-            {
-                Settings.PatternJitS1BumpOffsetEast = s1BumpOff;
-                Console.WriteLine($"PATTERN-JIT S1 BUMP OFFSET — SMR + {s1BumpOff:F2}u east");
+                Settings.JitIdleThreshold = jitIdleFrames;
+                Console.WriteLine($"JIT IDLE THRESHOLD — {jitIdleFrames}f");
             }
 
             // --nocolavoid (owner spec 2026-11-07 18:57: "every mineral walk to
@@ -834,11 +531,11 @@ namespace BabySharkBot
             }
 
             var miningManager = babySharkBot.Managers.OfType<BabySharkMiningManager>().FirstOrDefault();
-            // PatternJIT mutates live map data (e.g. the SB stand override) —
-            // never persist those harness-only mutations into the cached dat.
-            if (Settings.PatternJitMode)
+            // --flip68build rewrites the teal four's AssignedWorkers routes in
+            // memory — never persist that harness-only mutation into the cached dat.
+            if (Settings.Flip68BuildMode)
             {
-                Console.WriteLine("BabySharkBot: PATTERN-JIT active — skipping BaseDtos dat save so the cached dat stays clean.");
+                Console.WriteLine("BabySharkBot: FLIP68 active — skipping BaseDtos dat save so the cached dat stays clean.");
             }
             else
             {
@@ -856,7 +553,8 @@ namespace BabySharkBot
                 || string.Equals(arg, "--no-spawn-guard", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--bumpviz", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--hbands", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--live", StringComparison.OrdinalIgnoreCase))
+                || string.Equals(arg, "--live", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "--flip68build", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
@@ -880,7 +578,6 @@ namespace BabySharkBot
                 || string.Equals(arg, "--patterna", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--patternc", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--patternd", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--patternjit", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--nocolavoid", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--t1trace", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--naturaltest", StringComparison.OrdinalIgnoreCase)
@@ -889,36 +586,10 @@ namespace BabySharkBot
                 || string.Equals(arg, "--smhandoff", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--f0test", StringComparison.OrdinalIgnoreCase)
                 || arg.StartsWith("--f0gate=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--sbsmh=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--sbsmart=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--sasmh=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--sasmart=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--sasawait=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--t2walk=", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--t2bump", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--juggler", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--t2meet=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--t2push=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--s1f0=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--s2sa=", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--moveprobe", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--s3stopbump", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--minofftest", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--smartprobe=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--thruprobe=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--standpast=", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--retprobe", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--sbloop", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--probeframes=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--probepoint=", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--sustainpush", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--pushoff=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--s1redir=", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--s1stopbump", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(arg, "--hatchbump", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--s1stopat=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--s1bumppos=", StringComparison.OrdinalIgnoreCase)
-                || arg.StartsWith("--s1bumpoff=", StringComparison.OrdinalIgnoreCase)
+                || arg.StartsWith("--stepwindow=", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "--jitlog", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "--jitact", StringComparison.OrdinalIgnoreCase)
+                || arg.StartsWith("--jitidle=", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(arg, "--f0nobump", StringComparison.OrdinalIgnoreCase)
                 || arg.StartsWith("--f0return=", StringComparison.OrdinalIgnoreCase)
                 || arg.StartsWith("--f0switch=", StringComparison.OrdinalIgnoreCase)

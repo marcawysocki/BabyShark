@@ -28,7 +28,17 @@ namespace BabySharkBot.Setup
         Stop,
         StoreTargetPoint,
         UseTargetPoint,
-        LoadInstructionSet
+        LoadInstructionSet,
+        // flip68 build (owner spec 2026-11-16 19:11 "suicide is a build
+        // order instruction — at some condition do something"): ATTACK the
+        // row TargetId unit (own hatchery for the suicide row). Terminal —
+        // the book ends after it and the order persists.
+        Attack,
+        // flip68 build (owner spec 2026-11-17 06:00): issue a RAW point-target
+        // ability (RawAbilityId) at the row's resolved point — 4-T2's Spray
+        // (EFFECT_SPRAY 3684, command-card "C") at its park point after the
+        // Move row. NoCondition like the Attack row: execute when reached.
+        RawAbility
     }
 
     public enum WorkerInstructionPoint
@@ -415,25 +425,6 @@ namespace BabySharkBot.Setup
         // S2 can never park Y3 with cargo.
         BumpS2LaneIntercept,
         BumpS2WalkStartedGate,
-        // PatternJIT bite 4 (owner spec 2026-11-10 18:48): S3's SA wait spot —
-        // "the other two take turns on SA and will have time to reposition to
-        // a different wait spot waiting for harvest frame 32". A literal point
-        // from Settings.PatternJitSa3WaitX/Y (default: 2.0u from the SA stand
-        // toward the hatchery, derived in ApplyPatternJitSaStand; --sasawait=
-        // overrides). S3 stands there on the harvest-release gate until S1 has
-        // accumulated 32 harvest frames, then Smarts onto SA.
-        PatternJitSaWait,
-        // PatternJIT bite 5b (owner spec 2026-11-10 21:35): S1's f0 angled
-        // Move target for the T2 bump — 2.0u past the meeting point on the
-        // line from S1's start. A literal point from
-        // Settings.PatternJitS1BumpThruX/Y (computed in
-        // BabySharkBot.ComputePatternJitT2BumpGeometry).
-        PatternJitS1BumpThru,
-        // PatternJIT owner probe (owner spec 2026-11-11 07:56): "Move S1
-        // west 4u and South 1u" — a literal frame-0 Move target from
-        // Settings.PatternJitS1F0X/Y (--s1f0=X,Y). Issued ONCE, exactly the
-        // specified point, no thru offset (D6 addendum).
-        PatternJitS1F0Point
         // NOTE (owner spec 2026-11-08 17:13, busy-mineral wait zones): the
         // wait-zone divert is implemented as a resolver redirect inside
         // BabySharkMiningManager (SmhThruPoint returns the wait-zone point and
@@ -522,6 +513,31 @@ namespace BabySharkBot.Setup
         // fine-tune Smart rows use it to send SMART (right-click) on the mineral,
         // matching the Smart the game itself reports for harvest orders.
         public int AbilityIdOverride { get; set; } = -1;
+        // ── flip68 build rows (owner spec 2026-11-16 19:11): "at some
+        // condition do something" generalized to ANOTHER worker's state.
+        // GateWorkerTag != 0 makes the row conditional on the gate worker's
+        // CURRENT ability: Wait rows HOLD the book until the gate passes;
+        // every other row is simply not due (skipped/fallen through) while
+        // it does not. Used for the T3 takeover (T1's 1184 flip) and the
+        // suicide row (T2's TB flip).
+        public ulong GateWorkerTag { get; set; }
+        public int GateWorkerAbilityId { get; set; } = -1;
+        public int GateWorkerAbilityId2 { get; set; } = -1;
+        // Mineral-bank gate (owner spec 2026-11-17 06:20 "change the suicide
+        // to Bank 200"): the row's gate passes — latched, like the flip gate —
+        // once the bot's mineral bank reaches this value (-1 = disabled).
+        // Bank gates take precedence over a GateWorkerTag when both are set.
+        public int GateBankMinerals { get; set; } = -1;
+        // Literal fixed point (owner spec 2026-11-16 19:11: fixed build-order
+        // points are acceptable — the build is map/start-specific): when both
+        // are set, the row's point resolves to this coordinate instead of any
+        // enum resolution.
+        public float? LiteralX { get; set; }
+        public float? LiteralY { get; set; }
+        // Raw point-target ability id (owner spec 2026-11-17 06:00), valid on
+        // RawAbility rows (-1 = unset): the ability issued at the row's
+        // resolved point, e.g. 3684 EFFECT_SPRAY.
+        public int RawAbilityId { get; set; } = -1;
     }
 
     public sealed class RuntimeWorkerState

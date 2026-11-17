@@ -92,6 +92,12 @@ namespace BabySharkBot.Setup
             RuntimeInstructionSets.Clear();
         }
         public static bool BuildOwnsWorkerCommands = false;
+        // 2026-11-16 (owner 19:06): "Magannatha SE flip68" build mode. The build
+        // class seeds every worker's instruction book itself; the mining manager
+        // ONLY runs the book executor (all PatternJIT side-drivers and the old
+        // EarlySuicide harness are gated off). The book encodes the full flip68
+        // choreography including the suicide attack as plain rows.
+        public static bool Flip68BuildMode = false;
         // Master switch selecting the active opening build in BabySharkBot. True = the
         // 12-pool race (TwelvePoolBuild: no drone morphing past 12, pool at 200 minerals);
         // false = the BuildIne mining-test build.
@@ -174,6 +180,25 @@ namespace BabySharkBot.Setup
         // every worker runs an identical repeating cycle for leg-timing and
         // turn-around queueing tests. Pair with --suicide-end --suicide-200.
         public static bool StayMineralLoop = false;
+        // --stepwindow=N (owner spec 2026-11-14 06:30): override the
+        // Debugger.Break() frame window so a step-thru can run past the
+        // hard-coded branch caps (e.g. 215 under the old suicide-end probe runs).
+        public static int StepBreakWindowOverride = -1;
+        // --jitlog (owner spec 2026-11-14 14:36): JIT collision-avoidance
+        // tracking, log-only — per-worker gather engagement (flip ETA =
+        // gather + 46), outbound ETAs vs occupancy, and predicted crossing
+        // frames for returner×outbound and returner×returner pairs.
+        public static bool JitCollisionLog = false;
+        // --jitact (owner go 2026-11-14 16:39): JIT action layer, rule 1 —
+        // on a mineral flip, if the predicted post-flip idle window (next
+        // assigned worker's ETA minus the flip frame) exceeds
+        // JitIdleThreshold frames, redirect the closest OUTBOUND worker whose
+        // book targets the other mineral, provided the other mineral keeps a
+        // seated miner and its own predicted idle stays under the threshold.
+        // Implies JitCollisionLog (tracking state feeds the rule).
+        public static bool JitActionLayer = false;
+        // --jitidle=N: post-flip idle window threshold (frames) for --jitact.
+        public static int JitIdleThreshold = 25;
         // Pattern B (owner spec 2026-11-07 05:47): under --staymin the four
         // second miners (T4/T5/Y5/Y4) switch permanently to the team A
         // mineral after their first B-mineral flip. ON by default under
@@ -210,177 +235,6 @@ namespace BabySharkBot.Setup
         //   SA -> SB. The crossing bump (T1 mineral-walks thru T2's return
         //   path) is a later stage — this flag is the schedule only.
         public static bool PatternDReturnSwap = false;
-        // --patternjit (owner spec 2026-11-09 17:59): PatternJIT harness —
-        // four teams of THREE, one per mineral pair (T={TA,TB}, S={SA,SB},
-        // B={BB,BA}, Y={YA,YB}). Flat W->role map: W1=S3 W2=T3 W3=T1 W4=T2
-        // W5=S1 W6=S2 W7=B1 W8=B2 W9=Y1 W10=Y2 W11=Y3 W12=B3.
-        // Built one bite at a time: BITE 1 = S2 alone gets a book (the proven
-        // staymin thru shape onto SB's SMH); every other worker has NO book
-        // (engine auto-harvest) until the owner adds its instructions.
-        // Suicide trigger (bite 4, owner spec 2026-11-10 18:48): 200-mineral
-        // bank — S1+S3 share SA, S2 speed-mines SB, all collect continuously.
-        public static bool PatternJitMode = false;
-        // PatternJIT SB stand override (owner spec 2026-11-10 09:10:
-        // "1u West and 0.3 North of SB" = (132.00, 19.80)).
-        // -1 = use the owner point; --sbsmh=X,Y overrides for no-rebuild
-        // iteration.
-        public static float PatternJitSbSmhX = -1f;
-        public static float PatternJitSbSmhY = -1f;
-        // --sbsmart=N (owner spec 2026-11-10 09:22: "f22 issue a Smart on SB,
-        // run test again with f21, f20, f19"): PatternJIT experiment — S2's
-        // book is only the frame-0 Move to the stand; the mining manager
-        // fires a DIRECT (unqueued) Smart on SB at exactly frame N.
-        // -1 = disabled (book keeps its arrival-gate queued Smart).
-        public static int PatternJitSbSmartFrame = -1;
-        // PatternJIT bite 4 (owner spec 2026-11-10 18:48): SA stand override
-        // for S1's speed-mining — "have S1 and S3 trying new West angles on SA
-        // at the same time... find the tipping point where it falls over to
-        // the west Diagonal". -1 = S1's measured natural stand (129.85,19.37);
-        // --sasmh=X,Y walks it west.
-        public static float PatternJitSaSmhX = -1f;
-        public static float PatternJitSaSmhY = -1f;
-        // --sasmart=N: frame of S1's direct Smart on SA (same harness shape as
-        // S2's --sbsmart). Defaulted to 16 by --patternjit.
-        public static int PatternJitSaSmartFrame = -1;
-        // S3's SA wait spot ("reposition to a different wait spot waiting for
-        // harvest frame 32"). -1 = derived in ApplyPatternJitSaStand: 2.0u
-        // from the SA stand toward the hatchery. --sasawait=X,Y overrides.
-        public static float PatternJitSa3WaitX = -1f;
-        public static float PatternJitSa3WaitY = -1f;
-        // --t2walk=SB|BB (owner spec 2026-11-10 21:00, bite 5): T2 mineral-
-        // walks toward the named mineral ONLY to its bump position (like the
-        // old T4 bumper — never all the way); bite 5a records the walk line
-        // as telemetry for the S1 bump geometry. Empty = T2 parks with the
-        // suicide squad.
-        public static string PatternJitT2WalkLabel = "";
-        // --t2bump (owner spec 2026-11-10 21:35, bite 5b): the T2->S1 bump
-        // choreography. S1's f0 Move becomes an angled line that meets T2's
-        // mineral walk at the meet frame; at the meet frame BOTH Move to the
-        // same SA-stand thru point (T2's push); T2 breaks off to TB after
-        // --t2push=N frames and Moves to the park point 5 frames after it
-        // touches TB ("Do not let T2 mine more than 5 frames").
-        public static bool PatternJitT2Bump = false;
-        public static int PatternJitT2MeetFrame = 15;
-        public static int PatternJitT2PushFrames = 5;
-        // Geometry computed in BabySharkBot.ComputePatternJitT2BumpGeometry:
-        // S1's f0 angled thru target and the shared meet-frame stand-thru
-        // target. -1 = not computed (bite 5b off).
-        public static float PatternJitS1BumpThruX = -1f;
-        public static float PatternJitS1BumpThruY = -1f;
-        public static float PatternJitSaStandThruX = -1f;
-        public static float PatternJitSaStandThruY = -1f;
-        // --s2sa=N (owner spec 2026-11-11 09:13): "Run a frame test on S2
-        // harvesting SA ... like we did for S2 [on SB]" — S2's book becomes
-        // the SB-battery shape on SA: ONE f0 Move to the SA stand, then a
-        // direct Smart on SA at frame N. Sweep N for the best flip frame.
-        // -1 = off. Suppresses the default f16 S2->SB Smart shot.
-        public static int PatternJitS2SaSmartFrame = -1;
-        // --moveprobe (owner spec 2026-11-11 08:36): frame-8 STOP to T2 +
-        // Move S1 to (ProbeDx, ProbeDy) offset from SA's center (default
-        // 0.5 west / 0.6 north), frame-9 the same Move to T2. Frames via
-        // --probeframes=8,9, offset via --probepoint=-0.5,0.6.
-        public static bool PatternJitMoveProbe = false;
-        // --s3stopbump (owner spec 2026-11-11 13:41): the probe drives S3
-        // (mineral walk SB -> peel 1u west of SA -> stop at S1's seat ->
-        // Smart SA at flip+1). OFF by default: measured 2026-11-11 (runs
-        // 140312/165529) the parked S3 overlapped S1 0.10u and ground S1's
-        // return to f107; book-driven S3 (run 113218) keeps S1 at f70/f98.
-        public static bool PatternJitS3StopBump = false;
-        // --minofftest (owner question 2026-11-12 06:43): can a worker be
-        // given a Move to N 0.05 / W 1.05 of SB, BB, BA, YB, YA? Probe sends
-        // one parked worker to mineral.Center + (-1.05, +0.05) on each of
-        // those five minerals and logs where each worker actually rests.
-        public static bool PatternJitMinOffTest = false;
-        // --smartprobe=d (owner spec 2026-11-12 07:45): park one of the 8
-        // non-book workers at each mineral's ideal point + d units toward the
-        // hatchery center, then Smart it and log where it harvests from.
-        // Ideal points: TA/TB = center+(E0.3,N0.5), SA = center+(W0.3,N0.5),
-        // SB/BB/BA/YB/YA = center+(W1.0,N0.0). S1/S2/S3/T2 are leashed to the
-        // park corner (suicide squad) so their books cannot interfere.
-        public static bool PatternJitSmartProbe = false;
-        public static float PatternJitSmartProbeDist = 0f;
-        // --thruprobe=t (owner question 2026-11-12 09:54): "If we give them a
-        // 0.05 off the mineral do we lose to deceleration?" One worker per
-        // mineral: cold-start Move to a 4u origin on the hatchery side of the
-        // §77 stand, then Move to a thru point t units past the stand toward
-        // the mineral center, Smart at the §67 gate (1.15u from the stand).
-        // Logs thru->harvest frames and any around-the-back wrap per mineral.
-        public static bool PatternJitThruProbe = false;
-        public static float PatternJitThruProbeDepth = 0.05f;
-        // --standpast=d (owner question 2026-11-13 07:03): "we can tell a
-        // worker to move to 0.25 past where we want it to stand, is this
-        // correct?" Move one worker per mineral to stand + d toward the
-        // mineral center (no Smart) and log rest position vs the stand.
-        public static bool PatternJitStandPastProbe = false;
-        public static float PatternJitStandPastDist = 0.25f;
-        // --retprobe (owner spec 2026-11-13 08:04): S2 alone on SB, 11 on the
-        // suicide squad. Each trip the Smart-return fires closer to the
-        // mineral (hatchery-distance ladder 4.0 -> 1.0 step 0.25) to find the
-        // no-move deposit window and the minimum-frame return leg.
-        public static bool PatternJitReturnProbe = false;
-        // --sbloop (owner spec 2026-11-13 08:40): continuous SB speed mining
-        // with BOTH tuned legs (thru stand+0.25, Smart at 1.15u; return thru
-        // 2.41u circle, Smart-return at 3.0u) — measures the combined cycle.
-        public static bool PatternJitSbLoop = false;
-        public static int PatternJitSbLoopTrips = 12;
-        public static int PatternJitProbeStopFrame = 8;
-        public static int PatternJitProbeT2MoveFrame = 9;
-        public static float PatternJitProbeDx = -0.5f;
-        public static float PatternJitProbeDy = 0.6f;
-        // --sustainpush (owner spec 2026-11-13 12:10): instead of a stop
-        // bump, T2 gets a Move to E{dx}u/S{dy}u of S1's LIVE position on
-        // every frame of the probe window (probeframes A,B = push window
-        // A..B), so the two workers keep pushing against each other. No
-        // STOP, no S1 redirect Move. T2 peels to the TB thru at B+1.
-        public static bool PatternJitSustainPush = false;
-        public static float PatternJitPushDx = 1.0f;
-        public static float PatternJitPushDy = -1.0f;
-        // --s1redir=N: override the frame S1's probe redirect Move fires on.
-        // -1 = legacy (stop frame, or move frame - 1 in the no-stop series).
-        // Decoupled so the sustain-push window can sweep without dragging
-        // S1's redirect earlier (owner spec 2026-11-13 battery).
-        public static int PatternJitS1RedirectFrame = -1;
-        // --s1bumpoff=X (owner spec 2026-11-11 22:24 battery): S1's bump
-        // target east offset from S2's straight-line SB SMR, in units.
-        // Battery result (§75): plateau f179-183 for offsets in +-0.5u;
-        // +0.50 is the middle of the plateau.
-        public static float PatternJitS1BumpOffsetEast = 0.5f;
-        // --s1stopbump (owner spec 2026-11-13 13:57): ONE stop bump — S1
-        // moves to an intercept on S2's return line (fraction t from the SB
-        // seat toward the SMR), STOPs as a wall, then turns NW: Move to the
-        // SA-side return thru (hatchery->SA ray, 2.75u), Smart return at the
-        // 3.0u gate, then Move to the SA stand and Smart SA. Measures whether
-        // S1 is in position to harvest SA when S3 flips.
-        public static bool PatternJitS1StopBump = false;
-        public static float PatternJitS1BumpPos = 0.35f;
-        // --hatchbump (owner spec 2026-11-13 16:48): S1 and S2 in the same
-        // spot at the same time at the hatchery. S1 Moves to S2's deposit
-        // point (seat->hatchery ray at 2.82u), Smart-returns at 1.15u and
-        // IDLES there. S2's Smart return fires before contact so it phases
-        // through S1 and deposits. One frame after S2's deposit S2 gets a
-        // Move thru toward the SB stand (collision back on — S1 is the wall
-        // that accelerates it); one frame after that S1 gets a Move thru to
-        // the SA stand + Smart SA at the 1.15u gate.
-        public static bool PatternJitHatchBump = false;
-        // --s1stopat=N (owner spec 2026-11-13 18:19): in hatchbump mode,
-        // replace the distance-gated Smart with a frame-exact STOP to S1 at
-        // frame N ("a move to the exact spot one frame before arrival, then
-        // a stop on arrival"), then re-issue the Smart return at N+1 so the
-        // deposit completes in place.
-        public static int PatternJitS1StopAtFrame = -1;
-        // --s1f0=X,Y (owner spec 2026-11-11 07:56): absolute frame-0 Move
-        // target override for S1 — "Move S1 west 4u and South 1u" (from its
-        // (129.5,21.5) spawn => 125.5,20.5). -1 = off. Takes priority over
-        // the t2bump bump-line startup.
-        public static float PatternJitS1F0X = -1f;
-        public static float PatternJitS1F0Y = -1f;
-        // --juggler (owner spec 2026-11-10 21:00, bite 5c): the SA/SB
-        // three-worker rotation — "like a juggler with three balls and two
-        // hands". S1 {SA,SB}, S2 {SB,SA}, S3 {SA,SB}; every leg rides the
-        // shared {SA,SB} pair return point; outbound legs mineral-walk
-        // through inbound carriers on the corridor (cross-bump gate), then
-        // switch back to the move-thru. Suicide stays at the 200 bank.
-        public static bool PatternJitJuggler = false;
         // --smhcorner (owner spec 2026-11-06 14:30): "S2 should be returning
         // cargo much faster but takes a detour to the center of the mineral
         // instead of the left point which is a shorter walk in both
